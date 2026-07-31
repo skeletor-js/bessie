@@ -888,6 +888,9 @@ private struct WorkspaceSurface: View {
                         Button("Split down") { model.perform(.paneSplit(targetPaneID: targetPaneID, direction: .down, ratio: 0.5, cwd: nil, focus: true)) }
                         Button("Split right") { model.perform(.paneSplit(targetPaneID: targetPaneID, direction: .right, ratio: 0.5, cwd: nil, focus: true)) }
                         Button("Zoom pane") { model.perform(.paneZoom(id: targetPaneID, mode: .toggle)) }
+                        if let choices = PaneMoveChoices(projection: projection, paneID: targetPaneID) {
+                            PaneMoveMenuItems(paneID: targetPaneID, choices: choices) { model.perform($0) }
+                        }
                     } label: {
                         Label("Pane actions", systemImage: "ellipsis.circle")
                             .font(.system(size: 11, weight: .medium))
@@ -977,6 +980,7 @@ private struct WorkspaceSurface: View {
                     focus: { model.perform(.paneFocus(id: $0)) },
                     edit: { editor = $0 },
                     action: { model.perform($0) },
+                    moveChoices: { PaneMoveChoices(projection: projection, paneID: $0) },
                     close: { pendingClose = .pane($0) }
                 )
                 .padding(paneGap)
@@ -1259,6 +1263,7 @@ private struct ProductPaneLayout: View {
     let focus: (String) -> Void
     let edit: (ProductEditor) -> Void
     let action: (HerdrAction) -> Void
+    let moveChoices: (String) -> PaneMoveChoices?
     let close: (String) -> Void
 
     var body: some View {
@@ -1272,6 +1277,7 @@ private struct ProductPaneLayout: View {
                 controller: registry.controllers[leaf.paneID],
                 terminalFontSize: terminalFontSize,
                 select: { selectedPaneID = leaf.paneID; focus(leaf.paneID) },
+                moveChoices: moveChoices(leaf.paneID),
                 edit: edit, action: action, close: close
             )
         case .split(let branch):
@@ -1284,8 +1290,8 @@ private struct ProductPaneLayout: View {
     }
 
     @ViewBuilder private func children(_ branch: PaneLayoutBranch) -> some View {
-        ProductPaneLayout(node: branch.first, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, close: close)
-        ProductPaneLayout(node: branch.second, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, close: close)
+        ProductPaneLayout(node: branch.first, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, moveChoices: moveChoices, close: close)
+        ProductPaneLayout(node: branch.second, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, moveChoices: moveChoices, close: close)
     }
 }
 
@@ -1297,6 +1303,7 @@ private struct ProductPane: View {
     let controller: PaneTerminalController?
     let terminalFontSize: Double
     let select: () -> Void
+    let moveChoices: PaneMoveChoices?
     let edit: (ProductEditor) -> Void
     let action: (HerdrAction) -> Void
     let close: (String) -> Void
@@ -1359,9 +1366,39 @@ private struct ProductPane: View {
             Button("Up") { action(.paneResize(id: leaf.paneID, direction: .up, amount: 0.05)) }
             Button("Down") { action(.paneResize(id: leaf.paneID, direction: .down, amount: 0.05)) }
         }
+        if let moveChoices {
+            PaneMoveMenuItems(paneID: leaf.paneID, choices: moveChoices, action: action)
+        }
         Button("Rename") { edit(.renamePane(id: leaf.paneID, value: pane?.label ?? "")) }
         Divider()
         Button("Close pane", role: .destructive) { close(leaf.paneID) }
+    }
+}
+
+private struct PaneMoveMenuItems: View {
+    let paneID: String
+    let choices: PaneMoveChoices
+    let action: (HerdrAction) -> Void
+
+    var body: some View {
+        Menu("Move to tab") {
+            ForEach(choices.tabs) { choice in
+                Button(choice.title) { move(to: choice.destination) }
+            }
+            if !choices.tabs.isEmpty { Divider() }
+            Button("New tab") { move(to: choices.newTab) }
+        }
+        Menu("Move to workspace") {
+            ForEach(choices.workspaces) { choice in
+                Button(choice.title) { move(to: choice.destination) }
+            }
+            if !choices.workspaces.isEmpty { Divider() }
+            Button("New workspace") { move(to: choices.newWorkspace) }
+        }
+    }
+
+    private func move(to destination: PaneMoveDestination) {
+        action(.paneMove(id: paneID, destination: destination, focus: true))
     }
 }
 

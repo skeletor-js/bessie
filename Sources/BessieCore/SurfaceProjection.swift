@@ -19,6 +19,61 @@ public struct PaneOpenTarget: Equatable, Sendable {
     public let paneID: String
 }
 
+public struct PaneMoveChoice: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let destination: PaneMoveDestination
+
+    public init(id: String, title: String, destination: PaneMoveDestination) {
+        self.id = id
+        self.title = title
+        self.destination = destination
+    }
+}
+
+public struct PaneMoveChoices: Equatable, Sendable {
+    public let tabs: [PaneMoveChoice]
+    public let workspaces: [PaneMoveChoice]
+    public let newTab: PaneMoveDestination
+    public let newWorkspace: PaneMoveDestination
+
+    public init?(projection: HerdrSessionProjection, paneID: String) {
+        guard let pane = projection.panes.first(where: { $0.id == paneID }) else { return nil }
+
+        tabs = projection.tabs
+            .filter { $0.workspaceID == pane.workspaceID && $0.id != pane.tabID }
+            .sorted { $0.number < $1.number }
+            .map { tab in
+                let targetPane = projection.panes.first { $0.tabID == tab.id && $0.focused }
+                    ?? projection.panes.first { $0.tabID == tab.id }
+                return PaneMoveChoice(
+                    id: tab.id,
+                    title: tab.label,
+                    destination: .tab(
+                        tabID: tab.id,
+                        targetPaneID: targetPane?.id,
+                        split: .right,
+                        ratio: 0.5
+                    )
+                )
+            }
+
+        workspaces = projection.workspaces
+            .filter { $0.id != pane.workspaceID }
+            .sorted { $0.number < $1.number }
+            .map {
+                PaneMoveChoice(
+                    id: $0.id,
+                    title: $0.label,
+                    destination: .newTab(workspaceID: $0.id, label: nil)
+                )
+            }
+
+        newTab = .newTab(workspaceID: pane.workspaceID, label: nil)
+        newWorkspace = .newWorkspace(label: nil, tabLabel: nil)
+    }
+}
+
 public struct WorkspaceSurfaceSummary: Identifiable, Equatable, Sendable {
     public let id: String
     public let number: Int

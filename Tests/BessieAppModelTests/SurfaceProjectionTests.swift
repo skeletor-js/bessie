@@ -46,9 +46,45 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(target.paneID, "p2")
         XCTAssertNil(BessieSurfaceProjection(projection: projection).openTarget(paneID: "missing"))
     }
+
+    func testPaneMoveChoicesUseCurrentTopologyWithoutGuessingDestinations() throws {
+        let projection = try HerdrSessionProjection(snapshot: .paneMoveFixture)
+        let choices = try XCTUnwrap(PaneMoveChoices(projection: projection, paneID: "p1"))
+
+        XCTAssertEqual(choices.tabs.map(\.title), ["review"])
+        XCTAssertEqual(
+            choices.tabs.first?.destination,
+            .tab(tabID: "t2", targetPaneID: "p2", split: .right, ratio: 0.5)
+        )
+        XCTAssertEqual(choices.workspaces.map(\.title), ["beta"])
+        XCTAssertEqual(choices.workspaces.first?.destination, .newTab(workspaceID: "w2", label: nil))
+        XCTAssertEqual(choices.newTab, .newTab(workspaceID: "w1", label: nil))
+        XCTAssertEqual(choices.newWorkspace, .newWorkspace(label: nil, tabLabel: nil))
+        XCTAssertNil(PaneMoveChoices(projection: projection, paneID: "missing"))
+    }
 }
 
 private extension HerdrSnapshot {
+    static let paneMoveFixture = HerdrSnapshot(
+        version: "0.7.5", protocolVersion: 17,
+        focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p1",
+        workspaces: [
+            .object(["workspace_id": .string("w1"), "number": .number(1), "label": .string("alpha"), "focused": .bool(true), "pane_count": .number(2), "tab_count": .number(2), "active_tab_id": .string("t1"), "agent_status": .string("idle")]),
+            .object(["workspace_id": .string("w2"), "number": .number(2), "label": .string("beta"), "focused": .bool(false), "pane_count": .number(1), "tab_count": .number(1), "active_tab_id": .string("t3"), "agent_status": .string("idle")]),
+        ],
+        tabs: [
+            .object(["tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1), "label": .string("build"), "focused": .bool(true), "pane_count": .number(1), "agent_status": .string("idle")]),
+            .object(["tab_id": .string("t2"), "workspace_id": .string("w1"), "number": .number(2), "label": .string("review"), "focused": .bool(false), "pane_count": .number(1), "agent_status": .string("idle")]),
+            .object(["tab_id": .string("t3"), "workspace_id": .string("w2"), "number": .number(1), "label": .string("shell"), "focused": .bool(false), "pane_count": .number(1), "agent_status": .string("idle")]),
+        ],
+        panes: [
+            .object(["pane_id": .string("p1"), "terminal_id": .string("term1"), "workspace_id": .string("w1"), "tab_id": .string("t1"), "focused": .bool(true), "agent_status": .string("idle"), "revision": .number(1)]),
+            .object(["pane_id": .string("p2"), "terminal_id": .string("term2"), "workspace_id": .string("w1"), "tab_id": .string("t2"), "focused": .bool(false), "agent_status": .string("idle"), "revision": .number(1)]),
+            .object(["pane_id": .string("p3"), "terminal_id": .string("term3"), "workspace_id": .string("w2"), "tab_id": .string("t3"), "focused": .bool(false), "agent_status": .string("idle"), "revision": .number(1)]),
+        ],
+        layouts: [], agents: []
+    )
+
     static let surfaceFixture = HerdrSnapshot(
         version: "0.7.5", protocolVersion: 17,
         focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p2",
