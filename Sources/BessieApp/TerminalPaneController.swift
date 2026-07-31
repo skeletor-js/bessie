@@ -38,6 +38,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     let herdrController: HerdrTerminalController
     let inputRouter: TerminalInputRouter
     @Published private(set) var status: TerminalControllerStatus = .starting
+    @Published private(set) var sessionMode: TerminalSessionMode = .control
     private let bridge: PaneTerminalBridge
     private var automationStarted = false
 
@@ -70,7 +71,16 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     }
 
     func release() { herdrController.release() }
+    func observe() { sessionMode = .observe; herdrController.observe() }
+    func takeOver() { sessionMode = .control; herdrController.takeOver() }
+    func retry() { herdrController.retry() }
     func reconnectForVerification() { herdrController.reconnect(reason: "verification requested controller reconnect") }
+
+    var acceptsInput: Bool {
+        sessionMode != .observe && status.isReady
+    }
+
+    var hasReadyFrame: Bool { status.isReady }
 
     private func handle(_ state: TerminalControllerStatus) {
         status = state
@@ -105,6 +115,13 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         }
     }
 
+}
+
+private extension TerminalControllerStatus {
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
 }
 
 private final class PaneTerminalBridge: @unchecked Sendable {

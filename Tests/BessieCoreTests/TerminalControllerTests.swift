@@ -67,6 +67,25 @@ final class TerminalControllerTests: XCTestCase {
         XCTAssertFalse(invocation.arguments.contains("--takeover"))
     }
 
+    func testProcessInvocationMakesObserveAndTakeoverExplicit() {
+        let observe = HerdrTerminalProcessInvocation(
+            executablePath: "/repo/.local/herdr/herdr",
+            paneID: "w1:p2",
+            grid: .init(columns: 80, rows: 24),
+            mode: .observe
+        )
+        let takeover = HerdrTerminalProcessInvocation(
+            executablePath: "/repo/.local/herdr/herdr",
+            paneID: "w1:p2",
+            grid: .init(columns: 80, rows: 24),
+            mode: .takeover
+        )
+
+        XCTAssertEqual(observe.arguments, ["terminal", "session", "observe", "w1:p2", "--cols", "80", "--rows", "24"])
+        XCTAssertEqual(takeover.arguments, ["terminal", "session", "control", "w1:p2", "--takeover", "--cols", "80", "--rows", "24"])
+        XCTAssertEqual(TerminalReconnectPolicy.delays, [0.25, 0.5, 1, 2, 4])
+    }
+
     func testProcessFailureSeparatesOwnershipConflictFromReconnectableExit() {
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "terminal x already has an attached client; retry with --takeover", status: 1), .ownershipConflict("terminal x already has an attached client; retry with --takeover"))
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "", status: 9), .processExit("terminal controller exited 9"))

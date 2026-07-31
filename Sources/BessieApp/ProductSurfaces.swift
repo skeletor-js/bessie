@@ -659,8 +659,7 @@ private struct AgentDetailSurface: View {
                         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
 
                         if let controller {
-                            GhosttyPaneSurface(controller: controller, fontSize: terminalFontSize)
-                                .background(BessieDesign.code)
+                            RecoverableTerminalSurface(controller: controller, fontSize: terminalFontSize)
                         } else {
                             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
                         }
@@ -676,7 +675,7 @@ private struct AgentDetailSurface: View {
                                 .onSubmit(sendInput)
                             Button("Send", action: sendInput)
                                 .buttonStyle(BessiePrimaryButtonStyle())
-                                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller == nil)
+                                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller?.acceptsInput != true)
                         }
                         .padding(9)
                         .background(BessieDesign.panel)
@@ -743,7 +742,7 @@ private struct AgentDetailSurface: View {
 
     private func sendInput() {
         let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, let controller else { return }
+        guard !value.isEmpty, let controller, controller.acceptsInput else { return }
         controller.session.sendInput(Data(value.utf8))
         try? controller.inputRouter.send(.keys(["enter"]))
         prompt = ""
@@ -1341,7 +1340,7 @@ private struct ProductPane: View {
             }
             .buttonStyle(.plain).foregroundStyle(ProductPalette.text)
             if let controller {
-                GhosttyPaneSurface(controller: controller, fontSize: terminalFontSize).background(BessieDesign.code)
+                RecoverableTerminalSurface(controller: controller, fontSize: terminalFontSize)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
             }
@@ -1399,6 +1398,73 @@ private struct PaneMoveMenuItems: View {
 
     private func move(to destination: PaneMoveDestination) {
         action(.paneMove(id: paneID, destination: destination, focus: true))
+    }
+}
+
+private struct RecoverableTerminalSurface: View {
+    @ObservedObject var controller: PaneTerminalController
+    let fontSize: Double
+    @State private var confirmingTakeover = false
+
+    var body: some View {
+        ZStack {
+            GhosttyPaneSurface(controller: controller, fontSize: fontSize)
+                .background(BessieDesign.code)
+            recoveryOverlay
+        }
+        .alert("Take over this pane?", isPresented: $confirmingTakeover) {
+            Button("Cancel", role: .cancel) {}
+            Button("Take over", role: .destructive) { controller.takeOver() }
+        } message: {
+            Text("The other terminal client will lose control of this pane.")
+        }
+    }
+
+    @ViewBuilder private var recoveryOverlay: some View {
+        switch controller.status {
+        case .ownershipConflict:
+            terminalMessage(
+                title: "Pane is already in use",
+                detail: "Another terminal client controls this pane."
+            ) {
+                Button("Observe") { controller.observe() }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                Button("Take over") { confirmingTakeover = true }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+            }
+        case .failed:
+            terminalMessage(title: "Terminal unavailable", detail: "Bessie couldn't open this terminal.") {
+                Button("Try again") { controller.retry() }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+            }
+        case .stopped:
+            terminalMessage(title: "Terminal stopped", detail: "The terminal connection is closed.") {
+                Button("Try again") { controller.retry() }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func terminalMessage<Actions: View>(
+        title: String,
+        detail: String,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(BessieDesign.strong)
+            Text(detail)
+                .font(.system(size: 11))
+                .foregroundStyle(BessieDesign.subtle)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 8) { actions() }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(BessieDesign.code.opacity(0.94))
     }
 }
 
@@ -1640,8 +1706,8 @@ private struct PaneControllerStatusLabel: View {
     @ObservedObject var controller: PaneTerminalController
 
     var body: some View {
-        Text(controller.status.productLabel)
-            .font(.system(size: 9, design: .monospaced))
+        Text(controller.sessionMode == .observe && controller.hasReadyFrame ? "READ ONLY" : controller.status.productLabel)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
             .foregroundStyle(ProductPalette.subtle)
     }
 }

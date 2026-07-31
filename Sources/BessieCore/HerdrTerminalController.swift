@@ -35,6 +35,10 @@ public enum TerminalControllerFailure: Equatable, Sendable {
     }
 }
 
+public enum TerminalReconnectPolicy {
+    public static let delays: [TimeInterval] = [0.25, 0.5, 1, 2, 4]
+}
+
 public final class HerdrTerminalController: TerminalInputTransport, @unchecked Sendable {
     public typealias FrameHandler = @Sendable (Data) -> Void
     public typealias StateHandler = @Sendable (TerminalControllerStatus) -> Void
@@ -58,7 +62,8 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     private var active = false
     private var restartWhenProcessExits = false
     private var restartAttempt = 0
-    private let restartDelays: [TimeInterval] = [0.1, 0.25, 0.5, 1, 2, 4]
+    private var mode: TerminalSessionMode = .control
+    private let restartDelays = TerminalReconnectPolicy.delays
     private let stderrLimit = 16_384
 
     public init(
@@ -81,8 +86,21 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func start() {
+        start(mode: .control)
+    }
+
+    public func observe() {
+        start(mode: .observe)
+    }
+
+    public func takeOver() {
+        start(mode: .takeover)
+    }
+
+    public func retry() {
         queue.async { [weak self] in
-            guard let self, !active else { return }
+            guard let self, !active, process == nil else { return }
+            if mode == .takeover { mode = .control }
             active = true
             restartAttempt = 0
             launch()
@@ -117,7 +135,7 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     ) {
         guard grid.columns > 0, grid.rows > 0 else { return }
         queue.async { [weak self] in
-            guard let self, active else { return }
+            guard let self, active, mode != .observe else { return }
             let nextCellWidth = max(0, cellWidthPixels)
             let nextCellHeight = max(0, cellHeightPixels)
             guard self.grid != grid
@@ -178,8 +196,8 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     private func requireReady() throws {
-        guard active, sequencer.acceptsInput else {
-            throw HerdrClientError.process(path: executablePath, message: "terminal is waiting for a full Herdr frame")
+        guard active, mode != .observe, sequencer.acceptsInput else {
+            throw HerdrClientError.process(path: executablePath, message: "terminal is waiting for a writable Herdr frame")
         }
     }
 
@@ -189,7 +207,13 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         sequencer.reset(grid: grid)
         outputFramer = NDJSONFramer()
         stderr = ""
-        let invocation = HerdrTerminalProcessInvocation(executablePath: executablePath, paneID: paneID, grid: grid)
+        let launchMode = mode
+        let invocation = HerdrTerminalProcessInvocation(
+            executablePath: executablePath,
+            paneID: paneID,
+            grid: grid,
+            mode: launchMode
+        )
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -215,6 +239,7 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         }
         do {
             try process.run()
+            if launchMode == .takeover { mode = .control }
             self.process = process
             inputHandle = inputPipe.fileHandleForWriting
             onState(.waitingForFull)
@@ -313,6 +338,16 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         restartAttempt += 1
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, active, process == nil else { return }
+            launch()
+        }
+    }
+
+    private func start(mode: TerminalSessionMode) {
+        queue.async { [weak self] in
+            guard let self, !active, process == nil else { return }
+            self.mode = mode
+            active = true
+            restartAttempt = 0
             launch()
         }
     }

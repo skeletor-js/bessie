@@ -194,18 +194,39 @@ public enum TerminalControlCommand: Equatable, Sendable {
     }
 }
 
+public enum TerminalSessionMode: Equatable, Sendable {
+    case control
+    case observe
+    case takeover
+}
+
 public struct HerdrTerminalProcessInvocation: Equatable, Sendable {
     public let executablePath: String
     public let paneID: String
     public let grid: TerminalGrid
+    public let mode: TerminalSessionMode
 
-    public init(executablePath: String, paneID: String, grid: TerminalGrid) {
+    public init(
+        executablePath: String,
+        paneID: String,
+        grid: TerminalGrid,
+        mode: TerminalSessionMode = .control
+    ) {
         self.executablePath = executablePath
         self.paneID = paneID
         self.grid = grid
+        self.mode = mode
     }
 
     public var arguments: [String] {
-        ["terminal", "session", "control", paneID, "--cols", String(grid.columns), "--rows", String(grid.rows)]
+        let size = ["--cols", String(grid.columns), "--rows", String(grid.rows)]
+        switch mode {
+        case .control:
+            return ["terminal", "session", "control", paneID] + size
+        case .observe:
+            return ["terminal", "session", "observe", paneID] + size
+        case .takeover:
+            return ["terminal", "session", "control", paneID, "--takeover"] + size
+        }
     }
 }
