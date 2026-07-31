@@ -4,6 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class BessieSettingsModel: ObservableObject {
@@ -36,6 +37,7 @@ final class BessieSettingsModel: ObservableObject {
 
 struct BessieSettingsView: View {
     @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
     let embedded: Bool
 
     init(embedded: Bool = false) {
@@ -65,6 +67,7 @@ struct BessieSettingsView: View {
         .preferredColorScheme(.dark)
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
+        .task { notifications.refreshAuthorization() }
     }
 
     private var settingsScroll: some View {
@@ -104,6 +107,25 @@ struct BessieSettingsView: View {
                         .accessibilityValue("\(Int(model.preferences.paneGap)) points")
                 }
 
+                BessieSectionLabel("NOTIFICATIONS")
+                    .padding(.top, 28)
+                    .padding(.bottom, 7)
+
+                BessieSettingRow(label: "Notify me", hint: "Only when the pane isn't active.") {
+                    Picker("Notify me", selection: $model.preferences.notifications) {
+                        ForEach(BessieNotifications.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 190)
+                }
+
+                if model.preferences.notifications != .off {
+                    BessieSettingRow(label: "Permission") {
+                        notificationPermissionControl
+                    }
+                }
+
                 BessieSectionLabel("STARTUP")
                     .padding(.top, 28)
                     .padding(.bottom, 7)
@@ -141,6 +163,25 @@ struct BessieSettingsView: View {
             .padding(.bottom, 60)
         }
         .background(Color.clear)
+    }
+
+    @ViewBuilder private var notificationPermissionControl: some View {
+        switch notifications.authorizationStatus {
+        case .notDetermined:
+            Button("Allow notifications") { notifications.requestAuthorization() }
+                .buttonStyle(BessieSecondaryButtonStyle())
+        case .denied:
+            Button("Open System Settings") { notifications.openSystemSettings() }
+                .buttonStyle(BessieSecondaryButtonStyle())
+        case .authorized, .provisional, .ephemeral:
+            Text("Allowed")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(BessieDesign.strong)
+        @unknown default:
+            Text("Unavailable")
+                .font(.system(size: 11))
+                .foregroundStyle(BessieDesign.subtle)
+        }
     }
 }
 
@@ -198,6 +239,16 @@ private struct BessieDiagnosticRow: View {
 
 private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
+}
+
+private extension BessieNotifications {
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .blockedOnly: "When work needs me"
+        case .blockedAndDone: "Needs me and done"
+        }
+    }
 }
 
 struct BessieWindowSnapshotProbe: NSViewRepresentable {

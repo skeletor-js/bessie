@@ -6,11 +6,13 @@ import SwiftUI
 @main
 struct BessieApp: App {
     @StateObject private var settings = BessieSettingsModel()
+    @StateObject private var notifications = BessieNotificationCoordinator()
 
     var body: some Scene {
         WindowGroup {
             ConnectView()
                 .environmentObject(settings)
+                .environmentObject(notifications)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)
@@ -21,6 +23,7 @@ struct BessieApp: App {
         Settings {
             BessieSettingsView()
                 .environmentObject(settings)
+                .environmentObject(notifications)
         }
     }
 }

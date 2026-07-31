@@ -15,6 +15,8 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(surfaces.attention[0].location, "alpha / build / blocked pane")
         XCTAssertEqual(surfaces.attention[0].provenance, .herdr)
         XCTAssertEqual(surfaces.attention[0].action, .openPane(paneID: "p1"))
+        XCTAssertEqual(surfaces.notificationPanes.map(\.paneID), ["p1", "p2", "p3"])
+        XCTAssertEqual(surfaces.notificationPanes[0].target, PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1"))
     }
 
     func testPreferencesRoundTripEveryApprovedV1SettingAndDecodeLegacyValues() throws {
@@ -61,6 +63,64 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(choices.newTab, .newTab(workspaceID: "w1", label: nil))
         XCTAssertEqual(choices.newWorkspace, .newWorkspace(label: nil, tabLabel: nil))
         XCTAssertNil(PaneMoveChoices(projection: projection, paneID: "missing"))
+    }
+
+    func testNotificationPlannerSeedsThenEmitsOnlyNewAllowedTransitions() {
+        var planner = BessieNotificationPlanner()
+        let blocked = BessieNotificationPane(
+            paneID: "p1", state: .blocked, revision: 1,
+            identity: "Claude", location: "alpha / build / Claude",
+            target: PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        )
+        let done = BessieNotificationPane(
+            paneID: "p2", state: .done, revision: 1,
+            identity: "Codex", location: "alpha / review / Codex",
+            target: PaneOpenTarget(workspaceID: "w1", tabID: "t2", paneID: "p2")
+        )
+
+        XCTAssertEqual(planner.events(for: [blocked, done], policy: .blockedAndDone, activePaneID: nil), [])
+
+        let idle = BessieNotificationPane(
+            paneID: "p1", state: .idle, revision: 2,
+            identity: blocked.identity, location: blocked.location, target: blocked.target
+        )
+        let working = BessieNotificationPane(
+            paneID: "p2", state: .working, revision: 2,
+            identity: done.identity, location: done.location, target: done.target
+        )
+        XCTAssertEqual(planner.events(for: [idle, working], policy: .blockedAndDone, activePaneID: nil), [])
+
+        let blockedAgain = BessieNotificationPane(
+            paneID: "p1", state: .blocked, revision: 3,
+            identity: blocked.identity, location: blocked.location, target: blocked.target
+        )
+        let doneAgain = BessieNotificationPane(
+            paneID: "p2", state: .done, revision: 3,
+            identity: done.identity, location: done.location, target: done.target
+        )
+        let events = planner.events(for: [blockedAgain, doneAgain], policy: .blockedAndDone, activePaneID: "p2")
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.title, "Claude needs you")
+        XCTAssertEqual(events.first?.body, "alpha / build / Claude")
+        XCTAssertEqual(events.first?.target, blocked.target)
+        XCTAssertEqual(planner.events(for: [blockedAgain, doneAgain], policy: .blockedAndDone, activePaneID: nil), [])
+    }
+
+    func testNotificationPlannerHonorsPolicyWithoutRetroactiveDelivery() {
+        var planner = BessieNotificationPlanner()
+        let idle = BessieNotificationPane(
+            paneID: "p1", state: .idle, revision: 1,
+            identity: "Claude", location: "alpha / build / Claude",
+            target: PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        )
+        _ = planner.events(for: [idle], policy: .blockedOnly, activePaneID: nil)
+        let done = BessieNotificationPane(
+            paneID: "p1", state: .done, revision: 2,
+            identity: idle.identity, location: idle.location, target: idle.target
+        )
+        XCTAssertEqual(planner.events(for: [done], policy: .blockedOnly, activePaneID: nil), [])
+        XCTAssertEqual(planner.events(for: [done], policy: .blockedAndDone, activePaneID: nil), [])
     }
 }
 

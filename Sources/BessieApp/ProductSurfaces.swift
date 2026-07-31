@@ -36,12 +36,29 @@ struct BessieProductShell: View {
     let terminalEndpoint: HerdrTerminalEndpoint
     @ObservedObject var terminalRegistry: TerminalControllerRegistry
     @EnvironmentObject private var settings: BessieSettingsModel
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
+    @Environment(\.scenePhase) private var scenePhase
     @State private var destination: ProductDestination = .initial
     @State private var selectedWorkspaceID: String?
     @State private var selectedPaneID: String?
     @State private var processAutomationStarted = false
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
+    private var activeNotificationPaneID: String? {
+        guard scenePhase == .active, destination == .workspace || destination == .agent else { return nil }
+        let candidate = selectedPaneID ?? projection.focusedPane?.id
+        guard let candidate,
+              let pane = projection.panes.first(where: { $0.id == candidate }),
+              pane.workspaceID == selectedWorkspaceID
+        else { return nil }
+        return candidate
+    }
+    private var notificationSignature: String {
+        let panes = surfaces.notificationPanes
+            .map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }
+            .joined(separator: "|")
+        return "\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
+    }
 
     var body: some View {
         ZStack {
@@ -82,6 +99,7 @@ struct BessieProductShell: View {
                 selectedWorkspaceID = projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
                 destination = .workspaces
             }
+            routePendingNotification()
         }
         .onChange(of: projection.workspaces.count) { _, count in
             if count > 0,
@@ -101,6 +119,14 @@ struct BessieProductShell: View {
         }
         .onChange(of: selectedWorkspaceID) { _, id in settings.recordLastWorkspace(id) }
         .task(id: "\(projection.panes.count)-\(model.agentCatalog.items.count)") { runProcessAutomationIfRequested() }
+        .task(id: notificationSignature) {
+            notifications.reconcile(
+                panes: surfaces.notificationPanes,
+                policy: settings.preferences.notifications,
+                activePaneID: activeNotificationPaneID
+            )
+        }
+        .onChange(of: notifications.pendingTarget) { _, _ in routePendingNotification() }
         .alert("Action failed", isPresented: Binding(
             get: { model.actionError != nil },
             set: { if !$0 { model.clearActionError() } }
@@ -366,6 +392,21 @@ struct BessieProductShell: View {
 
     private func openPane(_ paneID: String) {
         guard let target = surfaces.openTarget(paneID: paneID) else { return }
+        model.openPane(target) { _ in
+            selectedWorkspaceID = target.workspaceID
+            selectedPaneID = target.paneID
+            destination = .workspace
+        }
+    }
+
+    private func routePendingNotification() {
+        guard let pending = notifications.pendingTarget else { return }
+        notifications.consumePendingTarget()
+        let target = surfaces.openTarget(paneID: pending.paneID) ?? pending
+        guard projection.panes.contains(where: { $0.id == target.paneID }) else {
+            destination = .attention
+            return
+        }
         model.openPane(target) { _ in
             selectedWorkspaceID = target.workspaceID
             selectedPaneID = target.paneID
