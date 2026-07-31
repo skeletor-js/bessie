@@ -316,7 +316,9 @@ enum BessieWindowSnapshot {
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
         let bitmap: NSBitmapImageRep?
-        if let image = captureWindowImage(windowNumber: window.windowNumber) {
+        if let image = captureWindowImage(windowNumber: window.windowNumber),
+           image.width >= Int(content.bounds.width.rounded(.down)),
+           image.height >= Int(content.bounds.height.rounded(.down)) {
             bitmap = NSBitmapImageRep(cgImage: image)
         } else if let cached = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
             content.displayIfNeeded()

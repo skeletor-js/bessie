@@ -39,6 +39,15 @@ public struct BessieNotificationEvent: Identifiable, Equatable, Sendable {
     }
 }
 
+public enum BessieNotificationRoute {
+    public static func resolve(
+        pending: PaneOpenTarget,
+        projection: HerdrSessionProjection
+    ) -> PaneOpenTarget? {
+        BessieSurfaceProjection(projection: projection).openTarget(paneID: pending.paneID)
+    }
+}
+
 public struct BessieNotificationPlanner: Sendable {
     private var seeded = false
     private var previousStates: [String: AgentSemanticState] = [:]

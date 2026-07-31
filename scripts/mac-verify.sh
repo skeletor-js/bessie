@@ -4,7 +4,13 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mac_host=${BESSIE_MAC_HOST:-jordan-macbook}
 mac_dir=${BESSIE_MAC_DIR:-/Users/jordanstella/GitHub/bessie}
+agent_kind=${BESSIE_AGENT_KIND:-codex}
 mirror_marker='source=/home/hermes/code/bessie'
+
+case "$agent_kind" in
+    pi|claude|codex|gemini|amp|grok|hermes) ;;
+    *) echo "Refusing unsupported live verification agent: $agent_kind" >&2; exit 1 ;;
+esac
 
 if [[ "$mac_dir" != /Users/jordanstella/GitHub/bessie ]]; then
     echo "Refusing unapproved Mac mirror path: $mac_dir" >&2
@@ -47,10 +53,22 @@ rsync -az \
     --exclude='dist/' \
     "$repo_root/" "$mac_host:$mac_dir/"
 
-ssh "$mac_host" bash -s -- "$mac_dir" <<'REMOTE'
+ssh "$mac_host" bash -s -- "$mac_dir" "$agent_kind" <<'REMOTE'
 set -euo pipefail
+trap 'status=$?; trap - ERR; echo "Mac verification failed at remote line $LINENO (exit $status)." >&2; exit $status' ERR
 mac_dir=$1
+requested_agent_kind=$2
 cd "$mac_dir"
+
+login_path=$(zsh -lic 'printf "%s\n" "$PATH"' 2>/dev/null | tail -n 1)
+[[ -n "$login_path" ]] || { echo "Could not resolve the Mac login PATH." >&2; exit 1; }
+PATH=$login_path
+export PATH
+requested_agent_path=$(command -v "$requested_agent_kind" || true)
+[[ -n "$requested_agent_path" && -x "$requested_agent_path" ]] || {
+    echo "Requested agent is unavailable on the Mac login PATH: $requested_agent_kind" >&2
+    exit 1
+}
 
 herdr_version=0.7.5
 herdr_sha256=37350546b0012555943b92eaf962665de4e264395baeb44227b8015e8ff5b0d6
@@ -67,31 +85,52 @@ app_log="$herdr_dir/runtime/bessie-app.log"
 snapshot_path="$mac_dir/dist/Bessie-window.png"
 herdr_pid=''
 app_pid=''
+launch_counter=0
+cli_workspace_id=''
 process_automation=0
 process_agent_kind=''
+terminal_automation=1
 snapshot_trigger=live-two-pane
+design_preview=''
 
 launch_app() {
     local app_bundle="$mac_dir/dist/Bessie.app"
     local app_executable="$app_bundle/Contents/MacOS/BessieApp"
-    open -n "$app_bundle" --stdout "$app_log" --stderr "$app_log" \
-        --env "BESSIE_REPOSITORY_ROOT=$mac_dir" \
-        --env "BESSIE_HERDR_PATH=$herdr_bin" \
-        --env "HERDR_CONFIG_PATH=$herdr_config" \
-        --env "HERDR_SOCKET_PATH=$herdr_socket" \
-        --env "XDG_CONFIG_HOME=$herdr_xdg_config" \
-        --env "XDG_STATE_HOME=$herdr_xdg_state" \
-        --env "BESSIE_STATE_LOG_PATH=$state_log" \
-        --env "BESSIE_PRESENTATION_PATH=$herdr_dir/runtime/bessie-presentation-$$.json" \
-        --env "BESSIE_TERMINAL_LIVE_AUTOMATION=1" \
-        --env "BESSIE_WINDOW_SNAPSHOT_PATH=$snapshot_path" \
-        --env "BESSIE_WINDOW_SNAPSHOT_TRIGGER=$snapshot_trigger" \
-        --env "BESSIE_PROCESS_LIVE_AUTOMATION=$process_automation" \
-        --env "BESSIE_PROCESS_AGENT_KIND=$process_agent_kind" \
+    launch_counter=$((launch_counter + 1))
+    local run_token="verify-$$-$launch_counter"
+    local open_args=(
+        --stdout "$app_log"
+        --stderr "$app_log"
+        --env "BESSIE_REPOSITORY_ROOT=$mac_dir"
+        --env "BESSIE_HERDR_PATH=$herdr_bin"
+        --env "HERDR_CONFIG_PATH=$herdr_config"
+        --env "HERDR_SOCKET_PATH=$herdr_socket"
+        --env "XDG_CONFIG_HOME=$herdr_xdg_config"
+        --env "XDG_STATE_HOME=$herdr_xdg_state"
+        --env "PATH=$PATH"
+        --env "BESSIE_STATE_LOG_PATH=$state_log"
+        --env "BESSIE_RUN_TOKEN=$run_token"
+        --env "BESSIE_PRESENTATION_PATH=$herdr_dir/runtime/bessie-presentation-$$.json"
+        --env "BESSIE_TERMINAL_LIVE_AUTOMATION=$terminal_automation"
+        --env "BESSIE_WINDOW_SNAPSHOT_PATH=$snapshot_path"
+        --env "BESSIE_PROCESS_LIVE_AUTOMATION=$process_automation"
+        --env "BESSIE_PROCESS_AGENT_KIND=$process_agent_kind"
         --env "BESSIE_PROCESS_CWD=$mac_dir"
+    )
+    [[ -z "$snapshot_trigger" ]] || open_args+=(--env "BESSIE_WINDOW_SNAPSHOT_TRIGGER=$snapshot_trigger")
+    [[ -z "$design_preview" ]] || open_args+=(--env "BESSIE_DESIGN_PREVIEW=$design_preview")
+    open -n "$app_bundle" "${open_args[@]}"
     for _ in {1..40}; do
-        app_pid=$(pgrep -f "^$app_executable$" | tail -n 1 || true)
-        [[ -n "$app_pid" ]] && return
+        local run_line
+        run_line=$(grep -F "App run=$run_token pid=" "$state_log" | tail -n 1 || true)
+        if [[ -n "$run_line" ]]; then
+            app_pid=${run_line##* pid=}
+            [[ "$app_pid" =~ ^[0-9]+$ ]] || { echo "Bessie reported an invalid process ID." >&2; return 1; }
+            local executable
+            executable=$(ps -p "$app_pid" -o command=)
+            [[ "$executable" == "$app_executable" ]] || { echo "Bessie launch token resolved to an unexpected process: $executable" >&2; return 1; }
+            return
+        fi
         sleep 0.25
     done
     echo "Bessie did not launch through LaunchServices." >&2
@@ -126,12 +165,20 @@ stop_app() {
 
 cleanup() {
     stop_app || true
+    if [[ -n "$cli_workspace_id" && -S "$herdr_socket" ]]; then
+        XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
+        HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
+            "$herdr_bin" workspace close "$cli_workspace_id" >/dev/null 2>&1 || true
+    fi
     if [[ -n "$herdr_pid" ]] && kill -0 "$herdr_pid" 2>/dev/null; then
         executable=$(ps -p "$herdr_pid" -o command=)
         case "$executable" in
             "$herdr_bin"\ server*) kill "$herdr_pid"; wait "$herdr_pid" 2>/dev/null || true ;;
             *) echo "Refusing to stop unexpected Herdr process: $executable" >&2 ;;
         esac
+    fi
+    if ! pgrep -f "^$herdr_bin server" >/dev/null; then
+        rm -f "$herdr_socket" "$herdr_dir/runtime/herdr-client.sock"
     fi
 }
 trap cleanup EXIT
@@ -183,6 +230,8 @@ status_json=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_sta
 grep -Fq '"running":true' <<<"$status_json"
 grep -Fq '"protocol":17' <<<"$status_json"
 
+# rsync preserves source mtimes, so clean SwiftPM state before trusting the mirrored build.
+xcrun swift package clean
 XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
     BESSIE_LIVE_HERDR_SOCKET="$herdr_socket" BESSIE_LIVE_RUN_ID="verify-$$" xcrun swift test
 ./scripts/package-app.sh
@@ -355,32 +404,118 @@ shell_read=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_stat
     "$herdr_bin" pane read "$shell_pane_id" --source recent --lines 200)
 grep -Fq "RAW_${shell_token}_牛é🐄" <<<"$shell_read"
 
-# The manifest is authoritative for supported kinds. Run an agent only when its canonical binary is present.
+# The manifest is authoritative for supported kinds. The requested executable comes from the Mac login PATH.
 manifest_json=$(printf '%s\n' '{"id":"mac-agent-manifests","method":"server.agent_manifests","params":{}}' | nc -U "$herdr_socket")
 grep -Fq '"type":"agent_manifest_status"' <<<"$manifest_json"
-installed_agent=''
-for kind in pi claude codex gemini cursor devin agy cline opencode copilot kimi kiro droid amp grok hermes kilo qodercli maki; do
-    if grep -Fq "\"agent\":\"$kind\"" <<<"$manifest_json" && command -v "$kind" >/dev/null 2>&1; then
-        installed_agent=$kind
-        break
-    fi
+grep -Fq "\"agent\":\"$requested_agent_kind\"" <<<"$manifest_json" || {
+    echo "Herdr does not report the requested agent kind: $requested_agent_kind" >&2
+    exit 1
+}
+
+agent_status_from_snapshot() {
+    local pane_id="$1"
+    local agent_kind="$2"
+    /usr/bin/python3 -c '
+import json, sys
+root = json.load(sys.stdin)
+target, requested = sys.argv[1:3]
+
+def walk(value):
+    if isinstance(value, dict):
+        if value.get("pane_id") == target and value.get("agent") == requested:
+            status = value.get("agent_status") or value.get("status") or ""
+            if status:
+                print(status)
+                raise SystemExit
+        for child in value.values():
+            walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            walk(child)
+
+walk(root)
+' "$pane_id" "$agent_kind"
+}
+
+stop_app
+terminal_automation=0
+process_agent_kind=$requested_agent_kind
+launch_app
+for _ in {1..160}; do
+    grep -Fq "kind=$requested_agent_kind agent_started=true shell_preserved=false" "$state_log" && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
 done
-if [[ -n "$installed_agent" ]]; then
-    stop_app
-    process_agent_kind=$installed_agent
-    launch_app
-    for _ in {1..160}; do
-        grep -Fq "kind=$installed_agent agent_started=true shell_preserved=false" "$state_log" && break
-        sleep 0.25
-    done
-    grep -Fq "kind=$installed_agent agent_started=true shell_preserved=false" "$state_log"
-else
-    printf '%s\n' 'Agent live prerequisite unavailable: no Herdr-supported agent executable is installed on the Mac PATH.' >> "$state_log"
-fi
+grep -Fq "kind=$requested_agent_kind agent_started=true shell_preserved=false" "$state_log"
+agent_launch_line=$(grep "Process launch pane=.*kind=$requested_agent_kind agent_started=true shell_preserved=false" "$state_log" | tail -n 1)
+agent_pane_id=$(sed -n 's/.*Process launch pane=\([^ ]*\) kind=.*/\1/p' <<<"$agent_launch_line")
+[[ -n "$agent_pane_id" ]]
+
+agent_status=''
+for _ in {1..80}; do
+    agent_snapshot=$(printf '%s\n' '{"id":"mac-agent-snapshot","method":"session.snapshot","params":{}}' | nc -U "$herdr_socket")
+    agent_status=$(agent_status_from_snapshot "$agent_pane_id" "$requested_agent_kind" <<<"$agent_snapshot")
+    case "$agent_status" in
+        blocked|idle|working|done) break ;;
+    esac
+    sleep 0.25
+done
+case "$agent_status" in
+    blocked|idle|working|done) ;;
+    *) echo "Live $requested_agent_kind pane did not reach a semantic agent state: ${agent_status:-missing}" >&2; exit 1 ;;
+esac
+
+# Bessie can quit without killing the Herdr-owned agent, then reopen onto that same pane without launching another one.
+stop_app
+surviving_agent_snapshot=$(printf '%s\n' '{"id":"mac-agent-survival","method":"session.snapshot","params":{}}' | nc -U "$herdr_socket")
+surviving_agent_status=$(agent_status_from_snapshot "$agent_pane_id" "$requested_agent_kind" <<<"$surviving_agent_snapshot")
+case "$surviving_agent_status" in
+    blocked|idle|working|done) ;;
+    *) echo "Live $requested_agent_kind pane did not survive app exit as the same authoritative agent record" >&2; exit 1 ;;
+esac
+process_automation=0
+process_agent_kind=''
+agent_ready_before_reopen=$(grep -c "Terminal pane=$agent_pane_id state=ready_" "$state_log" || true)
+connected_before_agent_reopen=$(grep -c '^Connected$' "$state_log" || true)
+launch_app
+for _ in {1..80}; do
+    agent_ready_after_reopen=$(grep -c "Terminal pane=$agent_pane_id state=ready_" "$state_log" || true)
+    connected_after_agent_reopen=$(grep -c '^Connected$' "$state_log" || true)
+    [[ "$agent_ready_after_reopen" -gt "$agent_ready_before_reopen" && "$connected_after_agent_reopen" -gt "$connected_before_agent_reopen" ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ $(grep -c "Terminal pane=$agent_pane_id state=ready_" "$state_log" || true) -gt "$agent_ready_before_reopen" ]]
+[[ $(grep -c '^Connected$' "$state_log" || true) -gt "$connected_before_agent_reopen" ]]
+printf 'Live agent proof pane=%s kind=%s status=%s executable=%s\n' \
+    "$agent_pane_id" "$requested_agent_kind" "$agent_status" "$requested_agent_path" >> "$state_log"
+
+# Capture the notification controls in the connected Settings surface as a second native artifact.
+stop_app
+settings_snapshot_path="$mac_dir/dist/Bessie-settings.png"
+rm -f "$settings_snapshot_path"
+snapshot_path=$settings_snapshot_path
+snapshot_trigger=''
+design_preview=settings
+launch_app
+for _ in {1..80}; do
+    [[ -s "$settings_snapshot_path" ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ -s "$settings_snapshot_path" ]]
+file "$settings_snapshot_path" | grep -Fq 'PNG image data'
+settings_width=$(sips -g pixelWidth "$settings_snapshot_path" | awk '/pixelWidth/ {print $2}')
+settings_height=$(sips -g pixelHeight "$settings_snapshot_path" | awk '/pixelHeight/ {print $2}')
+[[ "$settings_width" -ge 760 && "$settings_height" -ge 520 ]]
+[[ $(stat -f %z "$settings_snapshot_path") -gt 20000 ]]
+xcrun swift scripts/verify-design-snapshot.swift "$settings_snapshot_path"
+grep -Fq "Window snapshot path=$settings_snapshot_path" "$state_log"
 
 XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
 HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
     "$herdr_bin" workspace close "$cli_workspace_id" >/dev/null
+cli_workspace_id=''
 for _ in {1..40}; do
     grep -Eq '^Snapshot workspace_labels=$' "$state_log" && break
     sleep 0.25
@@ -432,5 +567,5 @@ snapshot_json=$(printf '%s\n' '{"id":"mac-final-snapshot","method":"session.snap
 grep -Fq '"id":"mac-final-snapshot"' <<<"$snapshot_json"
 grep -Fq '"type":"session_snapshot"' <<<"$snapshot_json"
 
-echo "Mac tests, focused native surfaces, a validated live-window PNG, live libghostty panes, composite input, app-driven shell launch, manifest discovery, controller recovery, app reopen survival, external CLI convergence, isolated Herdr restart, release packaging, and connected app launch passed."
+echo "Mac tests, focused native surfaces, validated workspace and Settings PNGs, live libghostty panes, composite input, app-driven shell and $requested_agent_kind launches, semantic agent state, agent survival across app reopen, manifest discovery, controller recovery, external CLI convergence, isolated Herdr restart, release packaging, and connected app launch passed."
 REMOTE

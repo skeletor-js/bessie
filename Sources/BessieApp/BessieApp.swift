@@ -45,6 +45,10 @@ final class ConnectionViewModel: ObservableObject {
 
     func start() {
         guard connectionTask == nil else { return }
+        if let runToken = ProcessInfo.processInfo.environment["BESSIE_RUN_TOKEN"] {
+            let processID = ProcessInfo.processInfo.processIdentifier
+            BessieDiagnosticLog.append("App run=\(runToken) pid=\(processID)")
+        }
         let runner = HerdrConnectionRunner(repositoryRoot: Self.repositoryRoot)
         connectionRunner = runner
         connectionTask = Task {

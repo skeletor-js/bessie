@@ -25,6 +25,22 @@ public struct PaneOpenTarget: Equatable, Sendable {
     }
 }
 
+public enum BessiePaneActionTarget {
+    public static func resolve(
+        selectedPaneID: String?,
+        visiblePaneIDs: Set<String>,
+        projection: HerdrSessionProjection
+    ) -> String? {
+        if let selectedPaneID,
+           visiblePaneIDs.contains(selectedPaneID),
+           projection.panes.contains(where: { $0.id == selectedPaneID }) {
+            return selectedPaneID
+        }
+        return projection.panes.first { visiblePaneIDs.contains($0.id) && $0.focused }?.id
+            ?? projection.panes.first { visiblePaneIDs.contains($0.id) }?.id
+    }
+}
+
 public struct PaneMoveChoice: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String

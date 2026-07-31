@@ -94,7 +94,30 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func takeOver() {
-        start(mode: .takeover)
+        queue.async { [weak self] in
+            guard let self else { return }
+            if active || process != nil {
+                guard mode == .observe else { return }
+                restartWhenProcessExits = false
+                pendingResize?.cancel()
+                pendingResize = nil
+                try? write(.release)
+                try? inputHandle?.close()
+                inputHandle = nil
+                if let process {
+                    (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+                    (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+                    process.terminationHandler = nil
+                    if process.isRunning { process.terminate() }
+                }
+                process = nil
+                active = false
+            }
+            mode = .takeover
+            active = true
+            restartAttempt = 0
+            launch()
+        }
     }
 
     public func retry() {

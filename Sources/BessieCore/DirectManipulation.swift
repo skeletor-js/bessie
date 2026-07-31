@@ -47,10 +47,12 @@ public enum BessieReorderDrop {
     ) -> HerdrAction? {
         guard payload.kind == .workspace,
               payload.id != targetID,
-              projection.workspaces.contains(where: { $0.id == payload.id }),
+              let sourceIndex = projection.workspaces.firstIndex(where: { $0.id == payload.id }),
               let targetIndex = projection.workspaces.firstIndex(where: { $0.id == targetID })
         else { return nil }
-        return .workspaceMove(id: payload.id, insertIndex: targetIndex)
+        // Herdr interprets insert_index as a slot in the pre-removal collection.
+        let insertIndex = sourceIndex < targetIndex ? targetIndex + 1 : targetIndex
+        return .workspaceMove(id: payload.id, insertIndex: insertIndex)
     }
 
     public static func tabAction(
@@ -63,10 +65,11 @@ public enum BessieReorderDrop {
         guard payload.kind == .tab,
               payload.workspaceID == workspaceID,
               payload.id != targetID,
-              tabs.contains(where: { $0.id == payload.id }),
+              let sourceIndex = tabs.firstIndex(where: { $0.id == payload.id }),
               let targetIndex = tabs.firstIndex(where: { $0.id == targetID })
         else { return nil }
-        return .tabMove(id: payload.id, insertIndex: targetIndex)
+        let insertIndex = sourceIndex < targetIndex ? targetIndex + 1 : targetIndex
+        return .tabMove(id: payload.id, insertIndex: insertIndex)
     }
 }
 

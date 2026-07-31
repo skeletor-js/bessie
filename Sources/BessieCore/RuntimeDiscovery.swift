@@ -18,7 +18,12 @@ public struct HerdrRuntimeLocator: Sendable {
         self.isExecutable = isExecutable
     }
 
-    public func locate(explicitPath: String?, path: String?, repositoryRoot: URL) -> HerdrRuntime? {
+    public func locate(
+        explicitPath: String?,
+        path: String?,
+        repositoryRoot: URL,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> HerdrRuntime? {
         if let explicitPath, !explicitPath.isEmpty {
             let candidate = URL(fileURLWithPath: explicitPath)
             if isExecutable(candidate) { return HerdrRuntime(url: candidate, source: .explicitOverride) }
@@ -28,6 +33,9 @@ public struct HerdrRuntimeLocator: Sendable {
             let candidate = URL(fileURLWithPath: String(directory)).appendingPathComponent("herdr")
             if isExecutable(candidate) { return HerdrRuntime(url: candidate, source: .path) }
         }
+
+        let userLocal = homeDirectory.appendingPathComponent(".local/bin/herdr")
+        if isExecutable(userLocal) { return HerdrRuntime(url: userLocal, source: .path) }
 
         for relativePath in [".local/herdr/herdr", ".local/bin/herdr"] {
             let candidate = repositoryRoot.appendingPathComponent(relativePath)

@@ -253,3 +253,22 @@ Final evidence:
 - Final packaged executable: 12,379,568 bytes at `/Users/jordanstella/GitHub/bessie/dist/Bessie.app/Contents/MacOS/BessieApp`.
 - Final process inspection found no packaged Bessie app, repository-local Herdr server, or Bessie terminal-controller process.
 - The repository remains intentionally uncommitted and unpushed.
+
+## 2026-07-31 — Bessie 0.1.0 release candidate 1
+
+Status: ready for Jordan's hands-on acceptance test.
+
+Release-candidate repairs and evidence:
+
+- Added authoritative visible-pane targeting, deferred notification-click routing, and an explicit observer-to-takeover terminal transition that never silently steals control.
+- Corrected downward workspace and tab drag reordering against Herdr 0.7.5's pre-removal insertion-slot semantics.
+- Strengthened live Codex assertions so pane identity, agent kind, and semantic status come from the same authoritative object.
+- Rejected undersized CoreGraphics window thumbnails and fell back to AppKit content capture; the final Workspace and Settings artifacts were both 1180 x 740.
+- `./scripts/check.sh`, `git diff --check`, and `BESSIE_AGENT_KIND=codex ./scripts/mac-verify.sh`: exit 0.
+- Mac Swift tests: 50 executed, 0 failures. Production build, plist validation, ad-hoc signing, live Herdr/libghostty/Codex acceptance, app-reopen survival, isolated restart, screenshots, and exact-process cleanup passed.
+- Final packaged executable: 12,937,200 bytes at `/Users/jordanstella/GitHub/bessie/dist/Bessie.app/Contents/MacOS/BessieApp`; SHA-256 `21ed77d17750ad85547ae11260d707fe965ac06a8a9a4be195d8a79415ee00f9`.
+
+Acceptance boundary:
+
+- Automated release-candidate verification is complete. Hands-on testing remains required for native drag feel, split-divider feel, notification authorization and system delivery, notification click routing, and confirmed observe-to-takeover behavior.
+- Notarization and general publishing remain outside this candidate.

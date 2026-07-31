@@ -59,6 +59,14 @@ struct BessieProductShell: View {
             .joined(separator: "|")
         return "\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
+    private var notificationRouteSignature: String {
+        let pending = notifications.pendingTarget?.paneID ?? "-"
+        let panes = projection.panes
+            .map { "\($0.id):\($0.workspaceID):\($0.tabID)" }
+            .sorted()
+            .joined(separator: "|")
+        return "\(pending)|\(panes)"
+    }
 
     var body: some View {
         ZStack {
@@ -126,7 +134,7 @@ struct BessieProductShell: View {
                 activePaneID: activeNotificationPaneID
             )
         }
-        .onChange(of: notifications.pendingTarget) { _, _ in routePendingNotification() }
+        .task(id: notificationRouteSignature) { routePendingNotification() }
         .alert("Action failed", isPresented: Binding(
             get: { model.actionError != nil },
             set: { if !$0 { model.clearActionError() } }
@@ -152,6 +160,7 @@ struct BessieProductShell: View {
         case .workspaces:
             WorkspacesSurface(model: model, projection: projection) { workspaceID in
                 selectedWorkspaceID = workspaceID
+                selectedPaneID = nil
                 destination = .workspace
             }
         case .workspace:
@@ -207,6 +216,7 @@ struct BessieProductShell: View {
                         Button {
                             model.perform(.workspaceFocus(id: item.id)) { _ in
                                 selectedWorkspaceID = item.id
+                                selectedPaneID = nil
                                 destination = .workspace
                             }
                         } label: {
@@ -401,13 +411,12 @@ struct BessieProductShell: View {
 
     private func routePendingNotification() {
         guard let pending = notifications.pendingTarget else { return }
-        notifications.consumePendingTarget()
-        let target = surfaces.openTarget(paneID: pending.paneID) ?? pending
-        guard projection.panes.contains(where: { $0.id == target.paneID }) else {
+        guard let target = BessieNotificationRoute.resolve(pending: pending, projection: projection) else {
             destination = .attention
             return
         }
         model.openPane(target) { _ in
+            notifications.consumePendingTarget(paneID: pending.paneID)
             selectedWorkspaceID = target.workspaceID
             selectedPaneID = target.paneID
             destination = .workspace
@@ -936,6 +945,13 @@ private struct WorkspaceSurface: View {
     private var tabs: [TabProjection] { projection.tabs.filter { $0.workspaceID == workspace?.id } }
     private var tab: TabProjection? { tabs.first { $0.focused } ?? tabs.first }
     private var visiblePaneIDs: Set<String> { tab.flatMap { projection.layouts[$0.id] }.map { Set($0.root.paneIDs) } ?? [] }
+    private var targetPaneID: String? {
+        BessiePaneActionTarget.resolve(
+            selectedPaneID: selectedPaneID,
+            visiblePaneIDs: visiblePaneIDs,
+            projection: projection
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -944,7 +960,7 @@ private struct WorkspaceSurface: View {
                 title: tab?.label ?? "Workspace"
             ) {
                 if model.actionInFlight { ProgressView().controlSize(.small) }
-                if let targetPaneID = selectedPaneID ?? projection.focusedPane?.id {
+                if let targetPaneID {
                     Menu {
                         Button("Split down") { model.perform(.paneSplit(targetPaneID: targetPaneID, direction: .down, ratio: 0.5, cwd: nil, focus: true)) }
                         Button("Split right") { model.perform(.paneSplit(targetPaneID: targetPaneID, direction: .right, ratio: 0.5, cwd: nil, focus: true)) }
@@ -1050,7 +1066,7 @@ private struct WorkspaceSurface: View {
                     registry: registry,
                     gap: paneGap,
                     terminalFontSize: terminalFontSize,
-                    dividerEnabled: !layout.zoomed,
+                    dividerEnabled: !layout.zoomed && !model.actionInFlight,
                     focus: { model.perform(.paneFocus(id: $0)) },
                     edit: { editor = $0 },
                     action: { model.perform($0) },
@@ -1074,13 +1090,15 @@ private struct WorkspaceSurface: View {
         .task(id: visiblePaneIDs.sorted().joined(separator: ",")) { registry.synchronize(visiblePaneIDs: visiblePaneIDs, endpoint: endpoint) }
         .onAppear {
             selectedWorkspaceID = workspace?.id
-            selectedPaneID = projection.focusedPane?.id
+            selectedPaneID = targetPaneID
             if ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased() == "new-process" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                     showNewProcess = true
                 }
             }
         }
+        .onChange(of: workspace?.id) { _, _ in selectedPaneID = targetPaneID }
+        .onChange(of: tab?.id) { _, _ in selectedPaneID = targetPaneID }
         .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
         .sheet(isPresented: $showNewProcess) {
             if let workspace {
@@ -1089,7 +1107,7 @@ private struct WorkspaceSurface: View {
                     catalogLoaded: model.catalogLoaded,
                     startsInAgentMode: false,
                     workspaceID: workspace.id,
-                    targetPaneID: selectedPaneID ?? projection.focusedPane?.id,
+                    targetPaneID: targetPaneID,
                     existingNames: Set(projection.panes.compactMap { $0.label ?? $0.agent })
                 ) { placement, process in
                     model.launch(placement: placement, process: process) { result in selectedPaneID = result.paneID }
@@ -1408,6 +1426,7 @@ private struct ProductSplitBranch: View {
 
     @State private var previewRatio: Double?
     @State private var dragOrigin: Double?
+    @State private var pendingCommit: UUID?
     @State private var hovering = false
 
     private var ratio: Double { previewRatio ?? branch.ratio }
@@ -1439,8 +1458,8 @@ private struct ProductSplitBranch: View {
                 }
             }
         }
-        .onChange(of: branch.ratio) { _, _ in previewRatio = nil }
-        .onChange(of: branch.path) { _, _ in previewRatio = nil; dragOrigin = nil }
+        .onChange(of: branch.ratio) { _, _ in previewRatio = nil; dragOrigin = nil; pendingCommit = nil }
+        .onChange(of: branch.path) { _, _ in previewRatio = nil; dragOrigin = nil; pendingCommit = nil }
     }
 
     private func child(_ node: RecursivePaneLayout) -> some View {
@@ -1471,9 +1490,11 @@ private struct ProductSplitBranch: View {
             .contentShape(Rectangle().inset(by: -4))
             .onHover { inside in
                 hovering = inside
-                guard dividerEnabled else { return }
-                (branch.direction == .right ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
-                if !inside { NSCursor.arrow.set() }
+                if inside && dividerEnabled {
+                    (branch.direction == .right ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                } else {
+                    NSCursor.arrow.set()
+                }
             }
             .gesture(dragGesture(contentExtent: contentExtent), including: dividerEnabled ? .all : .none)
             .accessibilityLabel("Resize split")
@@ -1484,7 +1505,7 @@ private struct ProductSplitBranch: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let origin = dragOrigin ?? branch.ratio
-                if dragOrigin == nil { dragOrigin = origin }
+                if dragOrigin == nil { dragOrigin = origin; pendingCommit = nil }
                 let translation = branch.direction == .right ? value.translation.width : value.translation.height
                 previewRatio = BessieSplitDrag.ratio(
                     original: origin,
@@ -1502,9 +1523,14 @@ private struct ProductSplitBranch: View {
                 )
                 previewRatio = finalRatio
                 dragOrigin = nil
+                let commit = UUID()
+                pendingCommit = commit
                 action(.setSplitRatio(tabID: tabID, path: branch.path, ratio: finalRatio))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    if previewRatio == finalRatio { previewRatio = nil }
+                    if pendingCommit == commit {
+                        previewRatio = nil
+                        pendingCommit = nil
+                    }
                 }
             }
     }
@@ -1522,6 +1548,7 @@ private struct ProductPane: View {
     let edit: (ProductEditor) -> Void
     let action: (HerdrAction) -> Void
     let close: (String) -> Void
+    @State private var confirmingTakeover = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1568,6 +1595,12 @@ private struct ProductPane: View {
         }
         .shadow(color: selected ? BessieDesign.accentSoft : .clear, radius: 0, x: 0, y: 0)
         .contextMenu { paneMenu }
+        .alert("Take over this pane?", isPresented: $confirmingTakeover) {
+            Button("Cancel", role: .cancel) {}
+            Button("Take over", role: .destructive) { controller?.takeOver() }
+        } message: {
+            Text("The other terminal client will lose control of this pane.")
+        }
     }
 
     @ViewBuilder private var paneMenu: some View {
@@ -1583,6 +1616,10 @@ private struct ProductPane: View {
         }
         if let moveChoices {
             PaneMoveMenuItems(paneID: leaf.paneID, choices: moveChoices, action: action)
+        }
+        if controller?.sessionMode == .observe, controller?.hasReadyFrame == true {
+            Divider()
+            Button("Take over terminal control") { confirmingTakeover = true }
         }
         Button("Rename") { edit(.renamePane(id: leaf.paneID, value: pane?.label ?? "")) }
         Divider()

@@ -123,22 +123,35 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(planner.events(for: [done], policy: .blockedAndDone, activePaneID: nil), [])
     }
 
+    func testNotificationRouteWaitsForAnAuthoritativePane() throws {
+        let projection = try HerdrSessionProjection(snapshot: .surfaceFixture)
+        let current = BessieNotificationRoute.resolve(
+            pending: PaneOpenTarget(workspaceID: "stale", tabID: "stale", paneID: "p3"),
+            projection: projection
+        )
+
+        XCTAssertEqual(current, PaneOpenTarget(workspaceID: "w2", tabID: "t2", paneID: "p3"))
+        XCTAssertNil(
+            BessieNotificationRoute.resolve(
+                pending: PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "missing"),
+                projection: projection
+            )
+        )
+    }
+
     func testDragPayloadsProduceOnlyValidSameCollectionReorders() throws {
         let projection = try HerdrSessionProjection(snapshot: .paneMoveFixture)
+
         let workspacePayload = BessieDragPayload.workspace(id: "w2")
         XCTAssertEqual(BessieDragPayload(encoded: workspacePayload.encoded), workspacePayload)
-        XCTAssertEqual(
-            BessieReorderDrop.workspaceAction(payload: workspacePayload, over: "w1", projection: projection),
-            .workspaceMove(id: "w2", insertIndex: 0)
-        )
+        XCTAssertEqual(BessieReorderDrop.workspaceAction(payload: workspacePayload, over: "w1", projection: projection), .workspaceMove(id: "w2", insertIndex: 0))
+        XCTAssertEqual(BessieReorderDrop.workspaceAction(payload: .workspace(id: "w1"), over: "w2", projection: projection), .workspaceMove(id: "w1", insertIndex: 2))
         XCTAssertNil(BessieReorderDrop.workspaceAction(payload: workspacePayload, over: "w2", projection: projection))
 
         let tabPayload = BessieDragPayload.tab(id: "t2", workspaceID: "w1")
         XCTAssertEqual(BessieDragPayload(encoded: tabPayload.encoded), tabPayload)
-        XCTAssertEqual(
-            BessieReorderDrop.tabAction(payload: tabPayload, over: "t1", workspaceID: "w1", projection: projection),
-            .tabMove(id: "t2", insertIndex: 0)
-        )
+        XCTAssertEqual(BessieReorderDrop.tabAction(payload: tabPayload, over: "t1", workspaceID: "w1", projection: projection), .tabMove(id: "t2", insertIndex: 0))
+        XCTAssertEqual(BessieReorderDrop.tabAction(payload: .tab(id: "t1", workspaceID: "w1"), over: "t2", workspaceID: "w1", projection: projection), .tabMove(id: "t1", insertIndex: 2))
         XCTAssertNil(BessieReorderDrop.tabAction(payload: tabPayload, over: "t2", workspaceID: "w2", projection: projection))
     }
 
@@ -147,6 +160,23 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(BessieSplitDrag.ratio(original: 0.2, translation: -500, extent: 500), 0.1, accuracy: 0.0001)
         XCTAssertEqual(BessieSplitDrag.ratio(original: 0.8, translation: 500, extent: 500), 0.9, accuracy: 0.0001)
         XCTAssertEqual(BessieSplitDrag.ratio(original: 0.5, translation: 100, extent: 0), 0.5, accuracy: 0.0001)
+    }
+
+    func testPaneActionTargetNeverEscapesTheVisibleTab() throws {
+        let projection = try HerdrSessionProjection(snapshot: .paneMoveFixture)
+        let visible = Set(["p1"])
+
+        XCTAssertEqual(
+            BessiePaneActionTarget.resolve(selectedPaneID: "p1", visiblePaneIDs: visible, projection: projection),
+            "p1"
+        )
+        XCTAssertEqual(
+            BessiePaneActionTarget.resolve(selectedPaneID: "p3", visiblePaneIDs: visible, projection: projection),
+            "p1"
+        )
+        XCTAssertNil(
+            BessiePaneActionTarget.resolve(selectedPaneID: "p3", visiblePaneIDs: [], projection: projection)
+        )
     }
 }
 

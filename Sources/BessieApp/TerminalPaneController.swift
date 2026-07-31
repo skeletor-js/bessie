@@ -72,7 +72,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
 
     func release() { herdrController.release() }
     func observe() { sessionMode = .observe; herdrController.observe() }
-    func takeOver() { sessionMode = .control; herdrController.takeOver() }
+    func takeOver() { sessionMode = .takeover; herdrController.takeOver() }
     func retry() { herdrController.retry() }
     func reconnectForVerification() { herdrController.reconnect(reason: "verification requested controller reconnect") }
 
@@ -84,6 +84,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
 
     private func handle(_ state: TerminalControllerStatus) {
         status = state
+        if case .ready = state, sessionMode == .takeover { sessionMode = .control }
         BessieDiagnosticLog.append("Terminal pane=\(id) state=\(state.diagnosticLabel)")
         guard case .ready = state,
               ProcessInfo.processInfo.environment["BESSIE_TERMINAL_LIVE_AUTOMATION"] == "1",

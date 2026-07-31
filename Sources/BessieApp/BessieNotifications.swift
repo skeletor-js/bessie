@@ -59,7 +59,8 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         }
     }
 
-    func consumePendingTarget() {
+    func consumePendingTarget(paneID: String) {
+        guard pendingTarget?.paneID == paneID else { return }
         pendingTarget = nil
     }
 
