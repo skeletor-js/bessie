@@ -875,6 +875,17 @@ private struct WorkspacesSurface: View {
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(BessieDesign.strong)
+                                .draggable(BessieDragPayload.workspace(id: item.id).encoded) {
+                                    Text(item.label)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .padding(.horizontal, 12)
+                                        .frame(height: 30)
+                                        .background(BessieDesign.panel)
+                                        .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
+                                }
+                                .dropDestination(for: String.self) { values, _ in
+                                    handleWorkspaceDrop(values, over: item.id)
+                                }
                             }
                         }
                     }
@@ -893,6 +904,16 @@ private struct WorkspacesSurface: View {
         } message: {
             Text(closeWorkspace.map { projection.confirmationForClosingWorkspace(id: $0.id).message } ?? "")
         }
+    }
+
+    private func handleWorkspaceDrop(_ values: [String], over targetID: String) -> Bool {
+        guard !model.actionInFlight,
+              let value = values.first,
+              let payload = BessieDragPayload(encoded: value),
+              let action = BessieReorderDrop.workspaceAction(payload: payload, over: targetID, projection: projection)
+        else { return false }
+        model.perform(action)
+        return true
     }
 }
 
@@ -991,6 +1012,17 @@ private struct WorkspaceSurface: View {
                         Divider()
                         Button("Close tab", role: .destructive) { pendingClose = .tab(item.id) }
                     }
+                    .draggable(BessieDragPayload.tab(id: item.id, workspaceID: item.workspaceID).encoded) {
+                        Text(item.label)
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 11)
+                            .frame(height: 30)
+                            .background(BessieDesign.panel)
+                            .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
+                    }
+                    .dropDestination(for: String.self) { values, _ in
+                        handleTabDrop(values, over: item.id, workspaceID: item.workspaceID)
+                    }
                 }
                 Button { if let workspace { model.perform(.tabCreate(workspaceID: workspace.id, cwd: nil, label: nil, focus: true)) } } label: {
                     Image(systemName: "plus").frame(width: 28, height: 28)
@@ -1012,11 +1044,13 @@ private struct WorkspaceSurface: View {
             if let tab, let layout = projection.layouts[tab.id] {
                 ProductPaneLayout(
                     node: layout.root,
+                    tabID: tab.id,
                     panes: projection.panes,
                     selectedPaneID: $selectedPaneID,
                     registry: registry,
                     gap: paneGap,
                     terminalFontSize: terminalFontSize,
+                    dividerEnabled: !layout.zoomed,
                     focus: { model.perform(.paneFocus(id: $0)) },
                     edit: { editor = $0 },
                     action: { model.perform($0) },
@@ -1067,6 +1101,21 @@ private struct WorkspaceSurface: View {
             if let pendingClose { Button(pendingClose.buttonTitle, role: .destructive) { model.perform(pendingClose.action); self.pendingClose = nil } }
             Button("Cancel", role: .cancel) { pendingClose = nil }
         } message: { Text(pendingClose?.message(in: projection) ?? "") }
+    }
+
+    private func handleTabDrop(_ values: [String], over targetID: String, workspaceID: String) -> Bool {
+        guard !model.actionInFlight,
+              let value = values.first,
+              let payload = BessieDragPayload(encoded: value),
+              let action = BessieReorderDrop.tabAction(
+                payload: payload,
+                over: targetID,
+                workspaceID: workspaceID,
+                projection: projection
+              )
+        else { return false }
+        model.perform(action)
+        return true
     }
 }
 
@@ -1295,11 +1344,13 @@ private struct NewProcessSheet: View {
 
 private struct ProductPaneLayout: View {
     let node: RecursivePaneLayout
+    let tabID: String
     let panes: [PaneProjection]
     @Binding var selectedPaneID: String?
     @ObservedObject var registry: TerminalControllerRegistry
     let gap: Double
     let terminalFontSize: Double
+    let dividerEnabled: Bool
     let focus: (String) -> Void
     let edit: (ProductEditor) -> Void
     let action: (HerdrAction) -> Void
@@ -1321,17 +1372,141 @@ private struct ProductPaneLayout: View {
                 edit: edit, action: action, close: close
             )
         case .split(let branch):
-            if branch.direction == .right {
-                HStack(spacing: gap) { children(branch) }
-            } else {
-                VStack(spacing: gap) { children(branch) }
-            }
+            ProductSplitBranch(
+                branch: branch,
+                tabID: tabID,
+                panes: panes,
+                selectedPaneID: $selectedPaneID,
+                registry: registry,
+                gap: gap,
+                terminalFontSize: terminalFontSize,
+                dividerEnabled: dividerEnabled,
+                focus: focus,
+                edit: edit,
+                action: action,
+                moveChoices: moveChoices,
+                close: close
+            )
         }
     }
+}
 
-    @ViewBuilder private func children(_ branch: PaneLayoutBranch) -> some View {
-        ProductPaneLayout(node: branch.first, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, moveChoices: moveChoices, close: close)
-        ProductPaneLayout(node: branch.second, panes: panes, selectedPaneID: $selectedPaneID, registry: registry, gap: gap, terminalFontSize: terminalFontSize, focus: focus, edit: edit, action: action, moveChoices: moveChoices, close: close)
+private struct ProductSplitBranch: View {
+    let branch: PaneLayoutBranch
+    let tabID: String
+    let panes: [PaneProjection]
+    @Binding var selectedPaneID: String?
+    @ObservedObject var registry: TerminalControllerRegistry
+    let gap: Double
+    let terminalFontSize: Double
+    let dividerEnabled: Bool
+    let focus: (String) -> Void
+    let edit: (ProductEditor) -> Void
+    let action: (HerdrAction) -> Void
+    let moveChoices: (String) -> PaneMoveChoices?
+    let close: (String) -> Void
+
+    @State private var previewRatio: Double?
+    @State private var dragOrigin: Double?
+    @State private var hovering = false
+
+    private var ratio: Double { previewRatio ?? branch.ratio }
+    private var dividerExtent: CGFloat { max(1, CGFloat(gap)) }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let axisExtent = branch.direction == .right ? proxy.size.width : proxy.size.height
+            let contentExtent = max(0, axisExtent - dividerExtent)
+            if branch.direction == .right {
+                HStack(spacing: 0) {
+                    child(branch.first)
+                        .frame(width: contentExtent * ratio)
+                        .frame(maxHeight: .infinity)
+                    divider(contentExtent: contentExtent)
+                    child(branch.second)
+                        .frame(width: contentExtent * (1 - ratio))
+                        .frame(maxHeight: .infinity)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    child(branch.first)
+                        .frame(height: contentExtent * ratio)
+                        .frame(maxWidth: .infinity)
+                    divider(contentExtent: contentExtent)
+                    child(branch.second)
+                        .frame(height: contentExtent * (1 - ratio))
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .onChange(of: branch.ratio) { _, _ in previewRatio = nil }
+        .onChange(of: branch.path) { _, _ in previewRatio = nil; dragOrigin = nil }
+    }
+
+    private func child(_ node: RecursivePaneLayout) -> some View {
+        ProductPaneLayout(
+            node: node,
+            tabID: tabID,
+            panes: panes,
+            selectedPaneID: $selectedPaneID,
+            registry: registry,
+            gap: gap,
+            terminalFontSize: terminalFontSize,
+            dividerEnabled: dividerEnabled,
+            focus: focus,
+            edit: edit,
+            action: action,
+            moveChoices: moveChoices,
+            close: close
+        )
+    }
+
+    private func divider(contentExtent: CGFloat) -> some View {
+        Rectangle()
+            .fill(hovering || dragOrigin != nil ? BessieDesign.strong.opacity(0.62) : BessieDesign.border)
+            .frame(
+                width: branch.direction == .right ? dividerExtent : nil,
+                height: branch.direction == .down ? dividerExtent : nil
+            )
+            .contentShape(Rectangle().inset(by: -4))
+            .onHover { inside in
+                hovering = inside
+                guard dividerEnabled else { return }
+                (branch.direction == .right ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                if !inside { NSCursor.arrow.set() }
+            }
+            .gesture(dragGesture(contentExtent: contentExtent), including: dividerEnabled ? .all : .none)
+            .accessibilityLabel("Resize split")
+            .accessibilityHint("Drag to resize both panes")
+    }
+
+    private func dragGesture(contentExtent: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let origin = dragOrigin ?? branch.ratio
+                if dragOrigin == nil { dragOrigin = origin }
+                let translation = branch.direction == .right ? value.translation.width : value.translation.height
+                previewRatio = BessieSplitDrag.ratio(
+                    original: origin,
+                    translation: Double(translation),
+                    extent: Double(contentExtent)
+                )
+            }
+            .onEnded { value in
+                let origin = dragOrigin ?? branch.ratio
+                let translation = branch.direction == .right ? value.translation.width : value.translation.height
+                let finalRatio = BessieSplitDrag.ratio(
+                    original: origin,
+                    translation: Double(translation),
+                    extent: Double(contentExtent)
+                )
+                previewRatio = finalRatio
+                dragOrigin = nil
+                action(.setSplitRatio(tabID: tabID, path: branch.path, ratio: finalRatio))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    if previewRatio == finalRatio { previewRatio = nil }
+                }
+            }
     }
 }
 

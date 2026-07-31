@@ -122,6 +122,32 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(planner.events(for: [done], policy: .blockedOnly, activePaneID: nil), [])
         XCTAssertEqual(planner.events(for: [done], policy: .blockedAndDone, activePaneID: nil), [])
     }
+
+    func testDragPayloadsProduceOnlyValidSameCollectionReorders() throws {
+        let projection = try HerdrSessionProjection(snapshot: .paneMoveFixture)
+        let workspacePayload = BessieDragPayload.workspace(id: "w2")
+        XCTAssertEqual(BessieDragPayload(encoded: workspacePayload.encoded), workspacePayload)
+        XCTAssertEqual(
+            BessieReorderDrop.workspaceAction(payload: workspacePayload, over: "w1", projection: projection),
+            .workspaceMove(id: "w2", insertIndex: 0)
+        )
+        XCTAssertNil(BessieReorderDrop.workspaceAction(payload: workspacePayload, over: "w2", projection: projection))
+
+        let tabPayload = BessieDragPayload.tab(id: "t2", workspaceID: "w1")
+        XCTAssertEqual(BessieDragPayload(encoded: tabPayload.encoded), tabPayload)
+        XCTAssertEqual(
+            BessieReorderDrop.tabAction(payload: tabPayload, over: "t1", workspaceID: "w1", projection: projection),
+            .tabMove(id: "t2", insertIndex: 0)
+        )
+        XCTAssertNil(BessieReorderDrop.tabAction(payload: tabPayload, over: "t2", workspaceID: "w2", projection: projection))
+    }
+
+    func testSplitDragRatioUsesAxisExtentAndStaysUsable() {
+        XCTAssertEqual(BessieSplitDrag.ratio(original: 0.5, translation: 100, extent: 500), 0.7, accuracy: 0.0001)
+        XCTAssertEqual(BessieSplitDrag.ratio(original: 0.2, translation: -500, extent: 500), 0.1, accuracy: 0.0001)
+        XCTAssertEqual(BessieSplitDrag.ratio(original: 0.8, translation: 500, extent: 500), 0.9, accuracy: 0.0001)
+        XCTAssertEqual(BessieSplitDrag.ratio(original: 0.5, translation: 100, extent: 0), 0.5, accuracy: 0.0001)
+    }
 }
 
 private extension HerdrSnapshot {
