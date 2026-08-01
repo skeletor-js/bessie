@@ -45,7 +45,8 @@ final class ProcessLaunchTests: XCTestCase {
     func testAgentFailureKeepsCreatedShellPaneAndNeverClosesIt() throws {
         let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell])
         api.failMethod = "agent.start"
-        let launcher = HerdrProcessLauncher(api: api)
+        let waits = RetryWaitRecorder()
+        let launcher = HerdrProcessLauncher(api: api, wait: waits.record)
 
         let result = try launcher.launch(
             placement: .split(targetPaneID: "p1", direction: .right, cwd: "/tmp"),
@@ -56,8 +57,32 @@ final class ProcessLaunchTests: XCTestCase {
         XCTAssertFalse(result.agentStarted)
         XCTAssertEqual(result.agentError, "agent executable missing")
         XCTAssertEqual(api.calls, ["session.snapshot", "pane.split", "session.snapshot", "agent.start"])
+        XCTAssertEqual(waits.values, [])
         XCTAssertFalse(api.calls.contains("pane.close"))
         XCTAssertEqual(result.projection.panes.map(\.id).sorted(), ["p1", "p2"])
+    }
+
+    func testAgentStartWaitsForFreshPaneToReachInteractiveShell() throws {
+        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell, .launchAfterShell])
+        api.agentStartErrors = [
+            .server(code: "agent_pane_unavailable", message: "no live terminal yet"),
+            .server(code: "agent_pane_busy", message: "not an available shell yet"),
+        ]
+        let waits = RetryWaitRecorder()
+        let launcher = HerdrProcessLauncher(api: api, wait: waits.record)
+
+        let result = try launcher.launch(
+            placement: .split(targetPaneID: "p1", direction: .down, cwd: "/tmp"),
+            process: .agent(kind: "codex", name: "codex", args: [], timeoutMilliseconds: 30_000)
+        )
+
+        XCTAssertTrue(result.agentStarted)
+        XCTAssertNil(result.agentError)
+        XCTAssertEqual(waits.values, [0.25, 0.5])
+        XCTAssertEqual(api.calls, [
+            "session.snapshot", "pane.split", "session.snapshot",
+            "agent.start", "agent.start", "agent.start", "session.snapshot",
+        ])
     }
 }
 
@@ -69,16 +94,35 @@ private struct FixtureAvailability: AgentAvailabilityChecking {
 private final class LaunchRecordingAPI: HerdrMutationAPI, @unchecked Sendable {
     var calls: [String] = []
     var failMethod: String?
+    var agentStartErrors: [HerdrClientError] = []
     private var snapshots: [HerdrSnapshot]
     init(snapshots: [HerdrSnapshot]) { self.snapshots = snapshots }
     func request(method: String, params: [String: JSONValue]) throws -> JSONValue {
         calls.append(method)
+        if method == "agent.start", !agentStartErrors.isEmpty { throw agentStartErrors.removeFirst() }
         if method == failMethod { throw HerdrClientError.server(code: "agent_start_failed", message: "agent executable missing") }
         return .object([:])
     }
     func snapshot() throws -> HerdrSnapshot {
         calls.append("session.snapshot")
         return snapshots.removeFirst()
+    }
+}
+
+private final class RetryWaitRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [TimeInterval] = []
+
+    func record(_ delay: TimeInterval) {
+        lock.lock()
+        recorded.append(delay)
+        lock.unlock()
+    }
+
+    var values: [TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
     }
 }
 
