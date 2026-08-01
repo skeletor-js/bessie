@@ -69,6 +69,13 @@ The packaged application—not a separate HTML mock—uses native SwiftUI/AppKit
 - `scripts/check-ui-copy.sh`, called by `scripts/check.sh`, rejects known planning/explanatory residue and requires the accepted product vocabulary. The final humanizer scan reported 0 findings.
 - Captured and visually inspected Connect, active workspace, Workspaces, Attention, Settings, New pane, The herd, and Agent Detail. The seven full-window captures were 1180 x 740; New pane was 760 x 360. No clipped copy, missing symbol, light-system artifact, redundant static Workspace navigation item, or blocking layout defect remained.
 
+## Installed candidate
+
+- The verified candidate is installed at `/Applications/Bessie.app` on `jordan-macbook`.
+- Strict signature verification passed after installation, and the installed executable SHA-256 matched the verified package: `5d4187f2f03787968faf0f796e616d8c7524e2bd11427e23b5d1886cf015bcfe`.
+- A LaunchServices start with a Finder-minimal `PATH` and no Herdr path override logged `App icon=dark` and `Herdr stopped`. This proves the installed app loaded its packaged icon and found Jordan's supported user-local Herdr installation without relying on the repository mirror.
+- The installed candidate was left open at its honest setup surface; starting an ordinary Herdr server remains an explicit user action.
+
 ## Known limitations
 
 - The verifier does not grant macOS notification permission or manufacture system delivery. A user must choose **Allow notifications** in Settings; delivery then remains subject to macOS authorization and notification settings.

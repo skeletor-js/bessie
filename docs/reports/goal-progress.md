@@ -270,6 +270,7 @@ Release-candidate repairs and evidence:
 - Mac Swift tests: 50 executed, 0 failures. Production build, both icon resources, default icon metadata, plist validation, ad-hoc signing, live Herdr/libghostty/Codex acceptance, app-reopen survival, isolated restart, screenshots, and exact-process cleanup passed.
 - Final packaged executable: 12,980,128 bytes at `/Users/jordanstella/GitHub/bessie/dist/Bessie.app/Contents/MacOS/BessieApp`; SHA-256 `5d4187f2f03787968faf0f796e616d8c7524e2bd11427e23b5d1886cf015bcfe`.
 - Verified archive: `/Users/jordanstella/GitHub/bessie/dist/Bessie-0.1.0-rc.1.zip`, 7,744,314 bytes; SHA-256 `7b339292bd611c8fce51b32ee50af53ae732f9eceb08f740cc43fd90fadf7bd4`.
+- Installed the verified candidate at `/Applications/Bessie.app`. Its post-install signature and executable hash matched the checked package, and a LaunchServices start with a Finder-minimal `PATH` found the user-local Herdr runtime, applied the persisted dark icon, and presented the honest stopped-server setup state.
 
 Acceptance boundary:
 
