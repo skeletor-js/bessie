@@ -93,6 +93,70 @@ final class PersistenceReconnectTests: XCTestCase {
         XCTAssertTrue(statuses.environments.allSatisfy { $0["HERDR_SESSION"] == "bessie" })
     }
 
+    func testInheritedHerdrSocketCannotBypassBessieSessionIsolation() async {
+        let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
+        let statuses = ServerStatusSequence([
+            HerdrServerStatus(status: "running", running: true, version: "0.7.5", protocolVersion: 17, socketPath: "/sessions/review/herdr.sock"),
+        ])
+        let states = ConnectionStateRecorder()
+        let runner = HerdrConnectionRunner(
+            repositoryRoot: URL(fileURLWithPath: "/repo"),
+            environment: [
+                "BESSIE_HERDR_PATH": runtime.url.path,
+                "BESSIE_HERDR_SESSION": " review ",
+                "HERDR_SOCKET_PATH": "/sessions/default/herdr.sock",
+                "PATH": "",
+            ],
+            locator: HerdrRuntimeLocator(isExecutable: { $0 == runtime.url }),
+            probe: HerdrRuntimeProbe(statusProvider: { _, environment in
+                statuses.record(environment: environment)
+                return try statuses.next()
+            })
+        )
+
+        await runner.run { state in
+            states.append(state)
+            if case .connecting = state { runner.cancel() }
+        }
+
+        XCTAssertEqual(states.values.map(\.label), ["Connecting"])
+        XCTAssertEqual(statuses.environments.count, 1)
+        XCTAssertEqual(statuses.environments[0]["HERDR_SESSION"], "review")
+        XCTAssertNil(statuses.environments[0]["HERDR_SOCKET_PATH"])
+    }
+
+    func testBessieSpecificSocketOverrideReplacesGenericHerdrSocketForDiagnostics() async {
+        let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
+        let statuses = ServerStatusSequence([
+            HerdrServerStatus(status: "running", running: true, version: "0.7.5", protocolVersion: 17, socketPath: "/diagnostics/herdr.sock"),
+        ])
+        let states = ConnectionStateRecorder()
+        let runner = HerdrConnectionRunner(
+            repositoryRoot: URL(fileURLWithPath: "/repo"),
+            environment: [
+                "BESSIE_HERDR_PATH": runtime.url.path,
+                "BESSIE_HERDR_SOCKET_PATH": " /diagnostics/herdr.sock ",
+                "HERDR_SOCKET_PATH": "/sessions/default/herdr.sock",
+                "PATH": "",
+            ],
+            locator: HerdrRuntimeLocator(isExecutable: { $0 == runtime.url }),
+            probe: HerdrRuntimeProbe(statusProvider: { _, environment in
+                statuses.record(environment: environment)
+                return try statuses.next()
+            })
+        )
+
+        await runner.run { state in
+            states.append(state)
+            if case .connecting = state { runner.cancel() }
+        }
+
+        XCTAssertEqual(states.values.map(\.label), ["Connecting"])
+        XCTAssertEqual(statuses.environments.count, 1)
+        XCTAssertEqual(statuses.environments[0]["HERDR_SESSION"], "bessie")
+        XCTAssertEqual(statuses.environments[0]["HERDR_SOCKET_PATH"], "/diagnostics/herdr.sock")
+    }
+
     func testAutoStartCanBeDisabledForDiagnostics() async {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
         let launch = ServerLaunchRecorder()

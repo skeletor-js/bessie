@@ -69,12 +69,19 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
     ) {
         self.repositoryRoot = repositoryRoot
         var managedEnvironment = environment
-        if managedEnvironment["HERDR_SOCKET_PATH"] == nil {
-            let requestedSession = managedEnvironment["BESSIE_HERDR_SESSION"]?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            managedEnvironment["HERDR_SESSION"] = requestedSession?.isEmpty == false
-                ? requestedSession
-                : BessieCompatibility.sessionName
+        let requestedSession = managedEnvironment["BESSIE_HERDR_SESSION"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedSocketPath = managedEnvironment["BESSIE_HERDR_SOCKET_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // A generic Herdr socket override may belong to an unrelated shell or session.
+        // Bessie manages a named session unless its own diagnostic socket override is explicit.
+        managedEnvironment.removeValue(forKey: "HERDR_SOCKET_PATH")
+        managedEnvironment["HERDR_SESSION"] = requestedSession?.isEmpty == false
+            ? requestedSession
+            : BessieCompatibility.sessionName
+        if requestedSocketPath?.isEmpty == false {
+            managedEnvironment["HERDR_SOCKET_PATH"] = requestedSocketPath
         }
         self.environment = managedEnvironment
         self.locator = locator

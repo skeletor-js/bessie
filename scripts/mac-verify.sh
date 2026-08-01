@@ -111,7 +111,7 @@ launch_app() {
         --env "BESSIE_REPOSITORY_ROOT=$mac_dir"
         --env "BESSIE_HERDR_PATH=$herdr_bin"
         --env "HERDR_CONFIG_PATH=$herdr_config"
-        --env "HERDR_SOCKET_PATH=$herdr_socket"
+        --env "BESSIE_HERDR_SOCKET_PATH=$herdr_socket"
         --env "XDG_CONFIG_HOME=$herdr_xdg_config"
         --env "XDG_STATE_HOME=$herdr_xdg_state"
         --env "PATH=$PATH"
@@ -153,6 +153,8 @@ launch_autostart_app() {
         --stderr "$autostart_app_log" \
         --env "BESSIE_REPOSITORY_ROOT=$mac_dir" \
         --env "BESSIE_HERDR_PATH=$herdr_bin" \
+        --env "HERDR_SOCKET_PATH=$herdr_socket" \
+        --env "HERDR_SESSION=default" \
         --env "XDG_CONFIG_HOME=$autostart_xdg_config" \
         --env "XDG_STATE_HOME=$autostart_xdg_state" \
         --env "PATH=$PATH" \
@@ -287,7 +289,7 @@ test -s dist/Bessie.app/Contents/Resources/BessieDark.icns
 test -s dist/Bessie.app/Contents/Resources/BessieLight.icns
 [[ $(plutil -extract CFBundleIconFile raw dist/Bessie.app/Contents/Info.plist) == BessieDark.icns ]]
 [[ $(plutil -extract CFBundleShortVersionString raw dist/Bessie.app/Contents/Info.plist) == 0.1.0 ]]
-[[ $(plutil -extract CFBundleVersion raw dist/Bessie.app/Contents/Info.plist) == 2 ]]
+[[ $(plutil -extract CFBundleVersion raw dist/Bessie.app/Contents/Info.plist) == 3 ]]
 plutil -lint dist/Bessie.app/Contents/Info.plist
 otool -L dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-otool.txt"
 nm -gU dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-symbols.txt"

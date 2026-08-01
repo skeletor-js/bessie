@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release candidate 0.1.0 RC2" src="https://img.shields.io/badge/status-0.1.0--rc.2-f1ede3?style=flat-square&labelColor=050505">
+  <img alt="Release candidate 0.1.0 RC3" src="https://img.shields.io/badge/status-0.1.0--rc.3-f1ede3?style=flat-square&labelColor=050505">
   <img alt="macOS 14 or newer" src="https://img.shields.io/badge/macOS-14%2B-f1ede3?style=flat-square&labelColor=050505&logo=apple&logoColor=white">
   <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-f1ede3?style=flat-square&labelColor=050505&logo=swift&logoColor=white">
   <a href="https://github.com/herdrdev/herdr"><img alt="Herdr 0.7.5" src="https://img.shields.io/badge/Herdr-0.7.5-f1ede3?style=flat-square&labelColor=050505"></a>
@@ -55,7 +55,7 @@ ditto dist/Bessie.app /Applications/Bessie.app
 open /Applications/Bessie.app
 ```
 
-The bundle reports version `0.1.0` with build number `2`. This branch is the `0.1.0-rc.2` acceptance candidate.
+The bundle reports version `0.1.0` with build number `3`. This branch is the `0.1.0-rc.3` acceptance candidate.
 
 ## Using Bessie
 
@@ -67,7 +67,7 @@ The bundle reports version `0.1.0` with build number `2`. This branch is the `0.
 
 Bessie never silently steals a terminal controlled by another client. A conflicting pane opens read-only. Use **Take over terminal control** only when you mean it.
 
-The background server survives Bessie quitting, so reopening the app returns to the same shells and agents. Set `BESSIE_HERDR_AUTOSTART=0` only when diagnosing startup manually.
+The background server survives Bessie quitting, so reopening the app returns to the same shells and agents. Bessie ignores an inherited generic `HERDR_SOCKET_PATH` so an unrelated shell cannot redirect it; diagnostics can opt into a socket only with `BESSIE_HERDR_SOCKET_PATH`. Set `BESSIE_HERDR_AUTOSTART=0` only when diagnosing startup manually.
 
 ## Remote VPS sessions
 
