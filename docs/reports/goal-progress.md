@@ -265,8 +265,11 @@ Release-candidate repairs and evidence:
 - Strengthened live Codex assertions so pane identity, agent kind, and semantic status come from the same authoritative object.
 - Rejected undersized CoreGraphics window thumbnails and fell back to AppKit content capture; the final Workspace and Settings artifacts were both 1180 x 740.
 - `./scripts/check.sh`, `git diff --check`, and `BESSIE_AGENT_KIND=codex ./scripts/mac-verify.sh`: exit 0.
-- Mac Swift tests: 50 executed, 0 failures. Production build, plist validation, ad-hoc signing, live Herdr/libghostty/Codex acceptance, app-reopen survival, isolated restart, screenshots, and exact-process cleanup passed.
-- Final packaged executable: 12,937,200 bytes at `/Users/jordanstella/GitHub/bessie/dist/Bessie.app/Contents/MacOS/BessieApp`; SHA-256 `21ed77d17750ad85547ae11260d707fe965ac06a8a9a4be195d8a79415ee00f9`.
+- Added signed dark and light desktop icon resources plus a persisted Settings choice for the Dock and app switcher. The verifier loaded the light icon from the packaged resource bundle; legacy preferences retain the dark default.
+- Rebuilt `README.md` around the supplied animated light/dark GitHub artwork, verified native screenshots, badges, installation, usage, acceptance testing, architecture, development, and V1 boundaries. Matching social-preview assets are retained under `.github/assets/` for repository setup.
+- Mac Swift tests: 50 executed, 0 failures. Production build, both icon resources, default icon metadata, plist validation, ad-hoc signing, live Herdr/libghostty/Codex acceptance, app-reopen survival, isolated restart, screenshots, and exact-process cleanup passed.
+- Final packaged executable: 12,980,128 bytes at `/Users/jordanstella/GitHub/bessie/dist/Bessie.app/Contents/MacOS/BessieApp`; SHA-256 `5d4187f2f03787968faf0f796e616d8c7524e2bd11427e23b5d1886cf015bcfe`.
+- Verified archive: `/Users/jordanstella/GitHub/bessie/dist/Bessie-0.1.0-rc.1.zip`, 7,744,314 bytes; SHA-256 `7b339292bd611c8fce51b32ee50af53ae732f9eceb08f740cc43fd90fadf7bd4`.
 
 Acceptance boundary:
 

@@ -28,8 +28,9 @@ Final results:
 - `BESSIE_AGENT_KIND=codex ./scripts/mac-verify.sh`: exit 0 on `jordan-macbook` using Apple Swift 6.3.3.
 - Swift tests: 50 executed, 0 failures.
 - Debug build and production `BessieApp` build: passed without reported warnings.
-- Packaging: `dist/Bessie.app` produced; plist validation and strict ad-hoc signature verification passed.
-- Packaged executable: 12,937,200 bytes in the final checked artifact; SHA-256 `21ed77d17750ad85547ae11260d707fe965ac06a8a9a4be195d8a79415ee00f9`.
+- Packaging: `dist/Bessie.app` produced with dark and light icon resources; plist validation and strict ad-hoc signature verification passed.
+- Packaged executable: 12,980,128 bytes in the final checked artifact; SHA-256 `5d4187f2f03787968faf0f796e616d8c7524e2bd11427e23b5d1886cf015bcfe`.
+- Candidate archive: `dist/Bessie-0.1.0-rc.1.zip`, 7,744,314 bytes; SHA-256 `7b339292bd611c8fce51b32ee50af53ae732f9eceb08f740cc43fd90fadf7bd4`. Extraction, strict signature verification, default-icon metadata, and alternate-icon presence passed.
 - `git diff --check`: passed.
 - Final process check: no packaged Bessie process, repository-local Herdr server, or Bessie terminal-controller process remained.
 
@@ -48,8 +49,9 @@ The verifier downloaded official Herdr 0.7.5 only to the Mac mirror's `.local/he
 - Public `server.agent_manifests` discovery, PATH-backed availability reasons, semantic names, exact `agent.start` request construction, and shell retention after fixture-driven agent-start failure. The app also started the installed `codex` executable through real Herdr 0.7.5, observed its `idle` semantic state without sending a model prompt, quit, and reopened onto the surviving agent pane.
 - Pane movement choices derive from authoritative topology. Workspace cards and tabs expose native drag reorder, and split dividers provide live resize previews that commit public `workspace.move`, `tab.move`, and `layout.set_split_ratio` actions. Pure mapping and clamping behavior is covered by focused tests; the native controls compiled in the packaged app and the divider was visually reviewed in the live split grid.
 - Notification planning covers needs-you/done transitions, initial-snapshot suppression, deduplication, active-pane suppression, and exact workspace/tab/pane routing. Permission is requested only by the explicit Settings action.
+- The supplied dark desktop icon is the signed bundle default. A retained light-polarity alternate is selectable in Settings, persisted with presentation preferences, loaded from the packaged resource bundle, and reapplied to the Dock and app switcher on launch. Legacy preference files default to dark.
 - Native 1180 x 740 app-owned PNG captures at `/Users/jordanstella/GitHub/bessie/dist/Bessie-window.png` and `Bessie-settings.png`. Visual inspection confirmed the retained dark Bessie shell, supplied cow logo, visible ASCII cowprint field, clean draggable split divider, two distinct terminal viewports, readable notification controls, and no clipping or overlapping content.
-- A native AppKit screenshot guard rejected light/warm regressions, missing cowprint, and undersized system thumbnails. The final Workspace capture measured rail luminance `11.34`, dark-pixel cowprint standard deviation `3.35`, and mean chroma `0.00`; Settings measured `13.41`, `4.08`, and `0.00` respectively.
+- A native AppKit screenshot guard rejected light/warm regressions, missing cowprint, and undersized system thumbnails. The final Workspace capture measured rail luminance `11.20`, dark-pixel cowprint standard deviation `3.18`, and mean chroma `0.00`; Settings measured `13.50`, `4.07`, and `0.00` respectively. The Settings review found the new Appearance control legible, aligned, and unclipped.
 
 ## Design-system fidelity
 
@@ -70,6 +72,7 @@ The packaged application—not a separate HTML mock—uses native SwiftUI/AppKit
 ## Known limitations
 
 - The verifier does not grant macOS notification permission or manufacture system delivery. A user must choose **Allow notifications** in Settings; delivery then remains subject to macOS authorization and notification settings.
+- Runtime icon selection changes the Dock and app switcher icon. Finder continues to show the signed bundle's dark default.
 - V1 intentionally excludes remote/multiple runtime endpoints, graphical approval inference, inner-application mouse reporting, focus reporting, Kitty keyboard protocol support, worktrees, plugins, generic IDE surfaces, Rust FFI, notarization, and publishing.
 
 ## Reproduce, inspect, and clean up
