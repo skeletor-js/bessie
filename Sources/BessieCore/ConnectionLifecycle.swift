@@ -27,6 +27,8 @@ public struct ReconnectPolicy: Equatable, Sendable {
 public enum HerdrConnectionState: Equatable, Sendable {
     case notFound
     case stopped(runtime: HerdrRuntime, socketPath: String)
+    case starting(runtime: HerdrRuntime)
+    case startFailed(runtime: HerdrRuntime, reason: String)
     case incompatible(runtime: HerdrRuntime, identity: HerdrServerIdentity, reason: String)
     case connecting(runtime: HerdrRuntime)
     case connected(runtime: HerdrRuntime, socketPath: String, snapshot: HerdrSnapshot)
@@ -37,6 +39,8 @@ public enum HerdrConnectionState: Equatable, Sendable {
         switch self {
         case .notFound: "Herdr not found"
         case .stopped: "Herdr stopped"
+        case .starting: "Starting Herdr"
+        case .startFailed: "Herdr start failed"
         case .incompatible: "Herdr incompatible"
         case .connecting: "Connecting"
         case .connected: "Connected"
@@ -51,6 +55,7 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
     private let environment: [String: String]
     private let locator: HerdrRuntimeLocator
     private let probe: HerdrRuntimeProbe
+    private let launcher: HerdrServerLauncher
     private let policy: ReconnectPolicy
     private let cancellation = ConnectionCancellation()
 
@@ -59,12 +64,22 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         locator: HerdrRuntimeLocator = HerdrRuntimeLocator(),
         probe: HerdrRuntimeProbe = HerdrRuntimeProbe(),
+        launcher: HerdrServerLauncher = HerdrServerLauncher(),
         policy: ReconnectPolicy = ReconnectPolicy()
     ) {
         self.repositoryRoot = repositoryRoot
-        self.environment = environment
+        var managedEnvironment = environment
+        if managedEnvironment["HERDR_SOCKET_PATH"] == nil {
+            let requestedSession = managedEnvironment["BESSIE_HERDR_SESSION"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            managedEnvironment["HERDR_SESSION"] = requestedSession?.isEmpty == false
+                ? requestedSession
+                : BessieCompatibility.sessionName
+        }
+        self.environment = managedEnvironment
         self.locator = locator
         self.probe = probe
+        self.launcher = launcher
         self.policy = policy
     }
 
@@ -82,10 +97,41 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
             repositoryRoot: repositoryRoot
         ) else { onState(.notFound); return }
 
-        let status: HerdrServerStatus
+        var status: HerdrServerStatus
         do { status = try probe.status(runtime: runtime, environment: environment) }
         catch { onState(.lost(runtime: runtime, reason: error.localizedDescription)); return }
-        guard status.running else { onState(.stopped(runtime: runtime, socketPath: status.socketPath)); return }
+        if !status.running {
+            guard autoStartEnabled else {
+                onState(.stopped(runtime: runtime, socketPath: status.socketPath))
+                return
+            }
+            onState(.starting(runtime: runtime))
+            do {
+                try launcher.start(
+                    runtime: runtime,
+                    environment: environment,
+                    startupDirectory: startupDirectory
+                )
+            } catch {
+                onState(.startFailed(runtime: runtime, reason: error.localizedDescription))
+                return
+            }
+
+            var startupFailure = "Herdr did not become ready."
+            for delay in policy.delays {
+                guard cancellation.wait(for: delay) else { return }
+                do {
+                    status = try probe.status(runtime: runtime, environment: environment)
+                    if status.running { break }
+                } catch {
+                    startupFailure = error.localizedDescription
+                }
+            }
+            guard status.running else {
+                onState(.startFailed(runtime: runtime, reason: startupFailure))
+                return
+            }
+        }
 
         let statusIdentity = HerdrServerIdentity(version: status.version ?? "unknown", protocolVersion: status.protocolVersion ?? -1)
         if let reason = HerdrCompatibility.incompatibility(for: statusIdentity) {
@@ -136,6 +182,21 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
                 guard cancellation.wait(for: delay) else { return }
             }
         }
+    }
+
+    private var autoStartEnabled: Bool {
+        guard let configured = environment["BESSIE_HERDR_AUTOSTART"]?.lowercased() else { return true }
+        return !["0", "false", "no"].contains(configured)
+    }
+
+    private var startupDirectory: URL {
+        if let configured = environment["BESSIE_HERDR_STARTUP_CWD"], !configured.isEmpty {
+            return URL(fileURLWithPath: configured)
+        }
+        if let home = environment["HOME"], !home.isEmpty {
+            return URL(fileURLWithPath: home)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 }
 

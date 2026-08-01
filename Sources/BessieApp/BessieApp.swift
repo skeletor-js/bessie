@@ -304,7 +304,7 @@ struct ConnectView: View {
                             }
                             if presentation.status != .connecting {
                                 DisclosureGroup("How to connect") {
-                                    Text("Install Herdr 0.7.5 and start its local server. If Herdr isn't on your PATH, set BESSIE_HERDR_PATH to the executable.")
+                                    Text("Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable.")
                                         .font(.system(size: 11))
                                         .foregroundStyle(BessieDesign.subtle)
                                         .padding(.top, 6)

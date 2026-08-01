@@ -84,6 +84,12 @@ state_log="$herdr_dir/runtime/bessie-state.log"
 app_log="$herdr_dir/runtime/bessie-app.log"
 presentation_path="$herdr_dir/runtime/bessie-presentation-$$.json"
 snapshot_path="$mac_dir/dist/Bessie-window.png"
+autostart_root="/tmp/bessie-autostart-verify-$$"
+autostart_xdg_config="$autostart_root/xdg-config"
+autostart_xdg_state="$autostart_root/xdg-state"
+autostart_state_log="$autostart_root/bessie-state.log"
+autostart_app_log="$autostart_root/bessie-app.log"
+autostart_presentation_path="$autostart_root/bessie-presentation.json"
 herdr_pid=''
 app_pid=''
 launch_counter=0
@@ -138,6 +144,40 @@ launch_app() {
     return 1
 }
 
+launch_autostart_app() {
+    local app_bundle="$mac_dir/dist/Bessie.app"
+    local app_executable="$app_bundle/Contents/MacOS/BessieApp"
+    local run_token="verify-autostart-$$"
+    open -n "$app_bundle" \
+        --stdout "$autostart_app_log" \
+        --stderr "$autostart_app_log" \
+        --env "BESSIE_REPOSITORY_ROOT=$mac_dir" \
+        --env "BESSIE_HERDR_PATH=$herdr_bin" \
+        --env "XDG_CONFIG_HOME=$autostart_xdg_config" \
+        --env "XDG_STATE_HOME=$autostart_xdg_state" \
+        --env "PATH=$PATH" \
+        --env "BESSIE_STATE_LOG_PATH=$autostart_state_log" \
+        --env "BESSIE_RUN_TOKEN=$run_token" \
+        --env "BESSIE_PRESENTATION_PATH=$autostart_presentation_path" \
+        --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
+        --env "BESSIE_PROCESS_LIVE_AUTOMATION=0"
+    for _ in {1..40}; do
+        local run_line
+        run_line=$(grep -F "App run=$run_token pid=" "$autostart_state_log" | tail -n 1 || true)
+        if [[ -n "$run_line" ]]; then
+            app_pid=${run_line##* pid=}
+            [[ "$app_pid" =~ ^[0-9]+$ ]] || { echo "Autostart Bessie reported an invalid process ID." >&2; return 1; }
+            local executable
+            executable=$(ps -p "$app_pid" -o command=)
+            [[ "$executable" == "$app_executable" ]] || { echo "Autostart token resolved to an unexpected process: $executable" >&2; return 1; }
+            return
+        fi
+        sleep 0.25
+    done
+    echo "Autostart Bessie did not launch through LaunchServices." >&2
+    return 1
+}
+
 stop_app() {
     [[ -n "$app_pid" ]] || return 0
     if ! kill -0 "$app_pid" 2>/dev/null; then
@@ -166,6 +206,10 @@ stop_app() {
 
 cleanup() {
     stop_app || true
+    if [[ -x "$herdr_bin" && -d "$autostart_xdg_config" ]]; then
+        XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+        HERDR_SESSION=bessie "$herdr_bin" server stop >/dev/null 2>&1 || true
+    fi
     if [[ -n "$cli_workspace_id" && -S "$herdr_socket" ]]; then
         XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
         HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
@@ -242,6 +286,8 @@ test -x dist/Bessie.app/Contents/MacOS/BessieApp
 test -s dist/Bessie.app/Contents/Resources/BessieDark.icns
 test -s dist/Bessie.app/Contents/Resources/BessieLight.icns
 [[ $(plutil -extract CFBundleIconFile raw dist/Bessie.app/Contents/Info.plist) == BessieDark.icns ]]
+[[ $(plutil -extract CFBundleShortVersionString raw dist/Bessie.app/Contents/Info.plist) == 0.1.0 ]]
+[[ $(plutil -extract CFBundleVersion raw dist/Bessie.app/Contents/Info.plist) == 2 ]]
 plutil -lint dist/Bessie.app/Contents/Info.plist
 otool -L dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-otool.txt"
 nm -gU dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-symbols.txt"
@@ -574,5 +620,37 @@ snapshot_json=$(printf '%s\n' '{"id":"mac-final-snapshot","method":"session.snap
 grep -Fq '"id":"mac-final-snapshot"' <<<"$snapshot_json"
 grep -Fq '"type":"session_snapshot"' <<<"$snapshot_json"
 
-echo "Mac tests, focused native surfaces, validated workspace and Settings PNGs, live libghostty panes, composite input, app-driven shell and $requested_agent_kind launches, semantic agent state, agent survival across app reopen, manifest discovery, controller recovery, external CLI convergence, isolated Herdr restart, release packaging, and connected app launch passed."
+# A normal Bessie launch must start an isolated named session as a detached server and reconnect without user intervention.
+mkdir -p "$autostart_xdg_config" "$autostart_xdg_state"
+: > "$autostart_state_log"
+: > "$autostart_app_log"
+printf '%s\n' '{"preferences":{"startupBehavior":"lastWorkspace"}}' > "$autostart_presentation_path"
+launch_autostart_app
+for _ in {1..80}; do
+    grep -Fq 'Connected' "$autostart_state_log" && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$autostart_app_log" >&2; exit 1; }
+    sleep 0.25
+done
+grep -Fq 'Starting Herdr' "$autostart_state_log"
+grep -Fq 'Connected' "$autostart_state_log"
+autostart_status=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+    HERDR_SESSION=bessie "$herdr_bin" status server --json)
+grep -Fq '"running":true' <<<"$autostart_status"
+grep -Fq '"session":"bessie"' <<<"$autostart_status"
+grep -Fq '"detached_server_daemon":true' <<<"$autostart_status"
+default_status=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+    HERDR_SESSION=default "$herdr_bin" status server --json)
+grep -Fq '"running":false' <<<"$default_status"
+stop_app
+autostart_after_quit=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+    HERDR_SESSION=bessie "$herdr_bin" status server --json)
+grep -Fq '"running":true' <<<"$autostart_after_quit"
+XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+    HERDR_SESSION=bessie "$herdr_bin" server stop >/dev/null
+autostart_stopped=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+    HERDR_SESSION=bessie "$herdr_bin" status server --json)
+grep -Fq '"running":false' <<<"$autostart_stopped"
+find "$autostart_root" -depth -delete
+
+echo "Mac tests, automatic detached Bessie-session startup, focused native surfaces, validated workspace and Settings PNGs, live libghostty panes, composite input, app-driven shell and $requested_agent_kind launches, semantic agent state, agent survival across app reopen, manifest discovery, controller recovery, external CLI convergence, isolated Herdr restart, release packaging, and connected app launch passed."
 REMOTE

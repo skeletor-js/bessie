@@ -96,7 +96,7 @@ final class TerminalControllerTests: XCTestCase {
         let scriptURL = directory.appendingPathComponent("fake-herdr")
         let script = """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$BESSIE_TEST_LOG"
+        printf 'socket=%s args=%s\\n' "$HERDR_SOCKET_PATH" "$*" >> "$BESSIE_TEST_LOG"
         printf '%s\\n' '{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}'
         while IFS= read -r line; do
             case "$line" in
@@ -135,6 +135,7 @@ final class TerminalControllerTests: XCTestCase {
             .split(separator: "\n")
             .map(String.init)
         XCTAssertEqual(invocations.count, 2)
+        XCTAssertTrue(invocations.allSatisfy { $0.hasPrefix("socket=/tmp/test.sock ") })
         XCTAssertTrue(invocations[0].contains("terminal session observe p1"))
         XCTAssertTrue(invocations[1].contains("--takeover"))
     }

@@ -7,7 +7,17 @@ final class ConnectPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.title, "Connecting to Herdr")
         XCTAssertEqual(presentation.status, .notChecked)
-        XCTAssertEqual(presentation.detail, "Looking for a local session…")
+        XCTAssertEqual(presentation.detail, "Opening your Bessie session…")
+    }
+
+    func testStartingPresentationKeepsAutomaticStartupCalmAndSpecific() {
+        let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/herdr"), source: .path)
+
+        let presentation = ConnectPresentation(connectionState: .starting(runtime: runtime))
+
+        XCTAssertEqual(presentation.title, "Starting Herdr")
+        XCTAssertEqual(presentation.detail, "Opening your Bessie session…")
+        XCTAssertEqual(presentation.status, .connecting)
     }
 
     func testConnectedPresentationReportsAuthoritativeSnapshotCounts() {

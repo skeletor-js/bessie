@@ -243,7 +243,9 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         let process = Process()
         process.executableURL = URL(fileURLWithPath: invocation.executablePath)
         process.arguments = invocation.arguments
-        process.environment = environment
+        var processEnvironment = environment
+        processEnvironment["HERDR_SOCKET_PATH"] = socketPath
+        process.environment = processEnvironment
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
