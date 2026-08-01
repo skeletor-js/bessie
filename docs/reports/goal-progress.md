@@ -276,3 +276,16 @@ Acceptance boundary:
 
 - Automated release-candidate verification is complete. Hands-on testing remains required for native drag feel, split-divider feel, notification authorization and system delivery, notification click routing, and confirmed observe-to-takeover behavior.
 - Notarization and general publishing remain outside this candidate.
+
+## 2026-07-31 — Bessie 0.1.0 release candidate 2
+
+Status: verified, installed, and ready for hands-on acceptance.
+
+- Bessie now locates the intended Herdr 0.7.5 runtime, reuses a healthy named `bessie` server, or starts it as a detached background process and waits for readiness before connecting. The unrelated `default` session remains untouched.
+- Terminal-controller subprocesses inherit the exact runtime/socket environment, so every visible terminal stays on the same named session.
+- A verifier-exposed race in New pane was reproduced with a deliberately slow interactive shell: immediate `agent.start` returned `agent_pane_busy`, while the same request succeeded after the shell became ready. Bessie now retries only the fresh-pane `busy` and `unavailable` errors on bounded delays and preserves the shell for every other failure.
+- `./scripts/check.sh`, `git diff --check`, and `BESSIE_AGENT_KIND=codex ./scripts/mac-verify.sh` passed. The Mac run executed 54 Swift tests with 0 failures, production-built and signed the app, exercised automatic detached startup, live Herdr/libghostty/shell/Codex behavior, survival and recovery, and validated both 1180 x 740 screenshots.
+- Packaged executable: 13,026,320 bytes; SHA-256 `faec204ea555946f6e8b8162b990e2d1f53808ceecde17f53d5fbd47eb401666`.
+- Verified archive: `/Users/jordanstella/GitHub/bessie/dist/Bessie-0.1.0-rc.2.zip`, 7,752,137 bytes; SHA-256 `799efbd84a0622194e8c136ae98f12af2ee46261987e169216a050ddac5ff9f3`.
+- Installed `/Applications/Bessie.app` reports version `0.1.0` build `2`. A launch with no runtime/socket/session/PATH override started the user-local Herdr `bessie` session, reached `Connected`, left `default` stopped, and proved the server survived Bessie exit. The app was reopened normally and left running.
+- Secure remote use remains `herdr --remote <ssh-host> --session bessie` until Herdr exposes a headless bridge that carries both sockets Bessie's graphical client requires.

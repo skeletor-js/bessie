@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release candidate 0.1.0 RC1" src="https://img.shields.io/badge/status-0.1.0--rc.1-f1ede3?style=flat-square&labelColor=050505">
+  <img alt="Release candidate 0.1.0 RC2" src="https://img.shields.io/badge/status-0.1.0--rc.2-f1ede3?style=flat-square&labelColor=050505">
   <img alt="macOS 14 or newer" src="https://img.shields.io/badge/macOS-14%2B-f1ede3?style=flat-square&labelColor=050505&logo=apple&logoColor=white">
   <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-f1ede3?style=flat-square&labelColor=050505&logo=swift&logoColor=white">
   <a href="https://github.com/herdrdev/herdr"><img alt="Herdr 0.7.5" src="https://img.shields.io/badge/Herdr-0.7.5-f1ede3?style=flat-square&labelColor=050505"></a>
@@ -30,6 +30,7 @@ Bessie is a graphical client, not a second session manager. [Herdr](https://gith
 - **Attention routing:** jump straight to panes that need you or have finished.
 - **Safe ownership:** observe a terminal without taking control, then confirm before takeover.
 - **Native notifications:** opt in from Settings; blocked and completed work routes back to the exact pane.
+- **Seamless local startup:** Bessie starts and reopens its own detached Herdr session when needed.
 - **Process survival:** close and reopen Bessie without killing the shells and agents Herdr owns.
 - **Two app icons:** choose the dark or light icon in Settings. Bessie reapplies it to the Dock and app switcher at launch.
 
@@ -40,7 +41,7 @@ Bessie is a graphical client, not a second session manager. [Herdr](https://gith
 - An agent CLI on your login `PATH` if you want to start an agent
 - Xcode command-line tools and Swift 6 only when building from source
 
-Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`, `~/.local/bin/herdr`, and the repository-local `.local/herdr/herdr`, in that order. Herdr must already be running before Bessie can connect.
+Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`, `~/.local/bin/herdr`, and the repository-local `.local/herdr/herdr`, in that order. It then opens the named Herdr session `bessie`, starting it as a detached background server if necessary. Other Herdr sessions are not reused, stopped, or modified.
 
 ## Install the release candidate
 
@@ -54,23 +55,31 @@ ditto dist/Bessie.app /Applications/Bessie.app
 open /Applications/Bessie.app
 ```
 
-Start Herdr first if it is not already running:
-
-```bash
-herdr server
-```
-
-The bundle reports version `0.1.0`. This branch is the `0.1.0-rc.1` acceptance candidate.
+The bundle reports version `0.1.0` with build number `2`. This branch is the `0.1.0-rc.2` acceptance candidate.
 
 ## Using Bessie
 
-1. Start Herdr.
-2. Open Bessie and choose a workspace from **Open** or **Workspaces**.
+1. Open Bessie. It starts or reconnects to the `bessie` Herdr session automatically.
+2. Choose a workspace from **Open** or **Workspaces**.
 3. Use **New pane** to open a shell or start a supported agent.
 4. Open **The herd** to see running agents and their state.
 5. Open **Attention** when work needs you.
 
 Bessie never silently steals a terminal controlled by another client. A conflicting pane opens read-only. Use **Take over terminal control** only when you mean it.
+
+The background server survives Bessie quitting, so reopening the app returns to the same shells and agents. Set `BESSIE_HERDR_AUTOSTART=0` only when diagnosing startup manually.
+
+## Remote VPS sessions
+
+Herdr already supports native remote attach from a terminal:
+
+```bash
+herdr --remote <ssh-host> --session bessie
+```
+
+Use an SSH config host with key or agent authentication. Herdr handles remote setup, server startup, keepalives, and the bridge; credentials stay with OpenSSH rather than Bessie. See [Herdr's persistence and remote-access guide](https://herdr.dev/docs/persistence-remote/).
+
+Bessie does not expose that connection in this candidate. Its graphical client needs both Herdr's public API socket and terminal-control socket, while Herdr 0.7.5's remote bridge currently serves the terminal client. The intended Bessie flow is **Settings → Connections → Add VPS**, choose an SSH host and Herdr session, then let Bessie open private local socket forwards and reconnect automatically. It should never expose a Herdr socket over TCP or store an SSH password. That flow needs a headless Herdr bridge contract for both sockets before it is safe to ship.
 
 ## Settings
 
@@ -132,6 +141,7 @@ The verifier:
 - runs the Swift test suite
 - builds, packages, signs, and validates `dist/Bessie.app`
 - exercises live Herdr, libghostty, shell, and agent flows
+- proves Bessie can start a detached named Herdr session without touching the default session
 - tests reconnect and survival across app reopen
 - captures and checks native Workspace and Settings screenshots
 - removes only the processes and state it created
@@ -140,6 +150,6 @@ It refuses to reuse or stop an unrelated Herdr server.
 
 ## V1 boundaries
 
-This candidate does not include remote sessions, worktrees, plugins, IDE surfaces, or generic activity feeds. Inner-terminal mouse and focus reporting and Kitty keyboard protocol handling remain outside the verified V1 baseline. Shift-drag still provides local terminal selection.
+This candidate does not include graphical remote sessions, worktrees, plugins, IDE surfaces, or generic activity feeds. Remote Herdr remains available through `herdr --remote`. Inner-terminal mouse and focus reporting and Kitty keyboard protocol handling remain outside the verified V1 baseline. Shift-drag still provides local terminal selection.
 
 The app is ad hoc signed for local testing. Public distribution still needs release signing and notarization.
