@@ -63,6 +63,7 @@ required_copy=(
     'Pane actions'
     'Action failed'
     'Allow notifications'
+    'App icon'
     'Resize split'
 )
 

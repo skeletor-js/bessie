@@ -13,6 +13,10 @@ struct BessieApp: App {
             ConnectView()
                 .environmentObject(settings)
                 .environmentObject(notifications)
+                .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
+                .onChange(of: settings.preferences.appIcon) { _, icon in
+                    BessieAppIconController.apply(icon)
+                }
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)

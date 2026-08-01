@@ -35,6 +35,18 @@ final class BessieSettingsModel: ObservableObject {
     func recordLastWorkspace(_ id: String?) { lastWorkspaceID = id; persist() }
 }
 
+@MainActor
+enum BessieAppIconController {
+    static func apply(_ icon: BessieAppIcon) {
+        let resource = icon == .dark ? "BessieDark" : "BessieLight"
+        guard let url = Bundle.module.url(forResource: resource, withExtension: "icns"),
+              let image = NSImage(contentsOf: url)
+        else { return }
+        NSApplication.shared.applicationIconImage = image
+        BessieDiagnosticLog.append("App icon=\(icon.rawValue)")
+    }
+}
+
 struct BessieSettingsView: View {
     @EnvironmentObject private var model: BessieSettingsModel
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
@@ -73,7 +85,20 @@ struct BessieSettingsView: View {
     private var settingsScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                BessieSectionLabel("APPEARANCE")
+                    .padding(.bottom, 7)
+
+                BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
+                    Picker("App icon", selection: $model.preferences.appIcon) {
+                        ForEach(BessieAppIcon.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
+
                 BessieSectionLabel("COWPRINT")
+                    .padding(.top, 28)
                     .padding(.bottom, 7)
 
                 BessieSettingRow(label: "Contrast") {
@@ -239,6 +264,10 @@ private struct BessieDiagnosticRow: View {
 
 private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
+}
+
+private extension BessieAppIcon {
+    var title: String { switch self { case .dark: "Dark"; case .light: "Light" } }
 }
 
 private extension BessieNotifications {

@@ -82,6 +82,7 @@ herdr_xdg_state="$herdr_dir/xdg-state/verify-$$"
 herdr_log="$herdr_dir/runtime/server.log"
 state_log="$herdr_dir/runtime/bessie-state.log"
 app_log="$herdr_dir/runtime/bessie-app.log"
+presentation_path="$herdr_dir/runtime/bessie-presentation-$$.json"
 snapshot_path="$mac_dir/dist/Bessie-window.png"
 herdr_pid=''
 app_pid=''
@@ -110,7 +111,7 @@ launch_app() {
         --env "PATH=$PATH"
         --env "BESSIE_STATE_LOG_PATH=$state_log"
         --env "BESSIE_RUN_TOKEN=$run_token"
-        --env "BESSIE_PRESENTATION_PATH=$herdr_dir/runtime/bessie-presentation-$$.json"
+        --env "BESSIE_PRESENTATION_PATH=$presentation_path"
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=$terminal_automation"
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$snapshot_path"
         --env "BESSIE_PROCESS_LIVE_AUTOMATION=$process_automation"
@@ -180,6 +181,7 @@ cleanup() {
     if ! pgrep -f "^$herdr_bin server" >/dev/null; then
         rm -f "$herdr_socket" "$herdr_dir/runtime/herdr-client.sock"
     fi
+    rm -f "$presentation_path"
 }
 trap cleanup EXIT
 
@@ -237,6 +239,9 @@ XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
 ./scripts/package-app.sh
 
 test -x dist/Bessie.app/Contents/MacOS/BessieApp
+test -s dist/Bessie.app/Contents/Resources/BessieDark.icns
+test -s dist/Bessie.app/Contents/Resources/BessieLight.icns
+[[ $(plutil -extract CFBundleIconFile raw dist/Bessie.app/Contents/Info.plist) == BessieDark.icns ]]
 plutil -lint dist/Bessie.app/Contents/Info.plist
 otool -L dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-otool.txt"
 nm -gU dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-symbols.txt"
@@ -245,6 +250,7 @@ grep -Fq 'GhosttyTerminal03AppB4View' "$herdr_dir/runtime/bessie-symbols.txt"
 
 : > "$state_log"
 : > "$app_log"
+printf '%s\n' '{"preferences":{"appIcon":"light"}}' > "$presentation_path"
 rm -f "$snapshot_path"
 launch_app
 
@@ -256,6 +262,7 @@ done
 
 grep -Fq 'Connecting' "$state_log"
 grep -Fq 'Connected' "$state_log"
+grep -Fq 'App icon=light' "$state_log"
 
 # Mutate through the public Herdr CLI and prove the already-running app converges from events + snapshot.
 cli_label="bessie-m3-cli-$$"

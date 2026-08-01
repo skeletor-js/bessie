@@ -26,6 +26,11 @@ fi
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$bin_path/BessieApp" "$app_path/Contents/MacOS/BessieApp"
 cp "$repo_root/scripts/Info.plist.in" "$app_path/Contents/Info.plist"
+for icon in BessieDark BessieLight; do
+    icon_path="$repo_root/Sources/BessieApp/Resources/AppIcons/$icon.icns"
+    test -s "$icon_path"
+    cp "$icon_path" "$app_path/Contents/Resources/$icon.icns"
+done
 
 while IFS= read -r -d '' bundle; do
     cp -R "$bundle" "$app_path/Contents/Resources/"
