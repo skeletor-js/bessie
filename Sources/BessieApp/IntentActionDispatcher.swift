@@ -30,11 +30,20 @@ final class BessieIntentActionDispatcher: @unchecked Sendable {
     private let live: AppIntentLivePort
     private let executor: BessieIntentExecutor
 
-    init() {
-        let live = AppIntentLivePort()
+    init(
+        live: AppIntentLivePort = AppIntentLivePort(),
+        projects: any BessieIntentProjectReadPort = BessieProjectStore()
+    ) {
         self.live = live
-        executor = BessieIntentExecutor(live: live, projects: EmptyProjectReadPort())
+        executor = BessieIntentExecutor(live: live, projects: projects)
     }
+
+    init(live: AppIntentLivePort, executor: BessieIntentExecutor) {
+        self.live = live
+        self.executor = executor
+    }
+
+    func execute(_ request: BessieIntentRequest) -> BessieIntentResult { executor.execute(request) }
 
     func update(client: HerdrActionClient?, connectionID: String, projection: HerdrSessionProjection?) {
         live.update(client: client, connectionID: connectionID, projection: projection)
@@ -76,29 +85,33 @@ private struct IntentDispatchError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-private final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
+final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
+    private struct State {
+        var client: HerdrActionClient
+        var projection: HerdrSessionProjection?
+        var generation: UUID
+    }
+
     private let lock = NSLock()
-    private var client: HerdrActionClient?
-    private var connectionID: String?
-    private var latestProjection: HerdrSessionProjection?
-    private var generation = UUID()
+    private var states: [String: State] = [:]
 
     func update(client: HerdrActionClient?, connectionID: String, projection: HerdrSessionProjection?) {
         lock.withLock {
-            generation = UUID()
-            self.client = client
-            self.connectionID = client == nil ? nil : connectionID
-            latestProjection = projection
+            if let client {
+                states[connectionID] = State(client: client, projection: projection, generation: UUID())
+            } else {
+                states[connectionID] = nil
+            }
         }
     }
 
     func isConnected(connectionID: String?) -> Bool {
-        lock.withLock { client != nil && (connectionID == nil || connectionID == self.connectionID) }
+        lock.withLock { connectionID.map { states[$0] != nil } ?? !states.isEmpty }
     }
 
     func projection(connectionID: String) throws -> HerdrSessionProjection {
         try lock.withLock {
-            guard self.connectionID == connectionID, let projection = latestProjection else {
+            guard let projection = states[connectionID]?.projection else {
                 throw IntentDispatchError(message: "Herdr connection '\(connectionID)' is not connected.")
             }
             return projection
@@ -107,20 +120,17 @@ private final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable
 
     func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection {
         let (client, requestGeneration) = try lock.withLock {
-            guard self.connectionID == connectionID, let client = self.client else {
+            guard let state = states[connectionID] else {
                 throw IntentDispatchError(message: "Herdr connection '\(connectionID)' is not connected.")
             }
-            return (client, generation)
+            return (state.client, state.generation)
         }
         let projection = try client.perform(action)
         lock.withLock {
-            if generation == requestGeneration { latestProjection = projection }
+            if states[connectionID]?.generation == requestGeneration {
+                states[connectionID]?.projection = projection
+            }
         }
         return projection
     }
-}
-
-private struct EmptyProjectReadPort: BessieIntentProjectReadPort {
-    func listProjects() throws -> [BessieProject] { [] }
-    func project(id: UUID) throws -> BessieProject? { nil }
 }

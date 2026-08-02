@@ -992,3 +992,9 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 - Added a persistent app-side dispatcher around the Core executor and routed all current pilot workspace/pane focus and workspace-close paths through it, including routed pane opening and Project handoff sequences. Non-pilot actions retain the existing action client path. Disconnected UI actions now surface an error instead of silently returning.
 - Workspace-close UI confirmations explicitly grant the destructive follow-up; an unconfirmed programmatic close receives the executor's `needs_confirmation` result and cannot auto-confirm. MainActor projection updates and connection/request generation guards remain intact.
 - Failure-first Mac compilation proved the pilot mapping seam was absent. Final `xcrun swift test --filter IntentActionDispatcherTests`: **2 tests, 0 failures**. The command compiled both `BessieApp` and `BessieAppModelTests`. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U4 local socket complete
+
+- Added the Core NDJSON Unix-socket client/server, a 0600 Application Support endpoint with isolated-path override, stale-endpoint and competing-owner protection, structured malformed-request handling, and honest `bessie_not_running` client failures. No TCP listener exists.
+- BessieApp now hosts one persistent executor/socket for the fleet, backed by the real Project store and explicit multi-connection live routing. It starts with the app and releases only the local bus endpoint on termination; Herdr and pane processes are untouched.
+- Failure-first Mac compilation proved the socket server/client contract was absent. Final `xcrun swift test --filter AgentIntent`: **15 tests, 0 failures** across XCTest and Swift Testing; `xcrun swift test --filter IntentActionDispatcherTests`: **3 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.

@@ -25,6 +25,10 @@ struct BessieApp: App {
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)
+                .task { fleet.startIntentServer() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    fleet.stopIntentServer()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 740)
@@ -63,7 +67,7 @@ final class ConnectionViewModel: ObservableObject {
     private var remoteBridge: RemoteHerdrBridge?
     private var connectionToken = UUID()
     private var actionClient: HerdrActionClient?
-    private let intentDispatcher = BessieIntentActionDispatcher()
+    private let intentDispatcher: BessieIntentActionDispatcher
     private var openPaneToken: UUID?
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
@@ -74,9 +78,14 @@ final class ConnectionViewModel: ObservableObject {
     private let runtimeValidator: HerdrRuntimeValidator?
     private let bundledRuntimeLock: BundledRuntimeLock?
 
-    init(runtimeSelection: HerdrRuntimeSelection = .bundled, bundledRuntimeURL: URL? = nil) {
+    init(
+        runtimeSelection: HerdrRuntimeSelection = .bundled,
+        bundledRuntimeURL: URL? = nil,
+        intentDispatcher: BessieIntentActionDispatcher = BessieIntentActionDispatcher()
+    ) {
         self.runtimeSelection = runtimeSelection
         self.bundledRuntimeURL = bundledRuntimeURL
+        self.intentDispatcher = intentDispatcher
         let validation = bundledRuntimeURL.map(Self.runtimeValidation(for:))
         runtimeValidator = validation?.validator
         bundledRuntimeLock = validation?.lock
@@ -591,9 +600,17 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
+    private let intentServer = AppIntentServer()
 
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
+
+    func startIntentServer() {
+        do { try intentServer.start() }
+        catch { BessieDiagnosticLog.append("Intent socket unavailable: \(error.localizedDescription)") }
+    }
+
+    func stopIntentServer() { intentServer.stop() }
 
     func start(
         connections: [BessieConnectionDefinition],
@@ -616,7 +633,11 @@ final class ConnectionFleetViewModel: ObservableObject {
             activeModel = nil
         }
         for connection in connections where models[connection.id] == nil {
-            let model = ConnectionViewModel(runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
+            let model = ConnectionViewModel(
+                runtimeSelection: runtimeSelection,
+                bundledRuntimeURL: bundledRuntimeURL,
+                intentDispatcher: intentServer.dispatcher
+            )
             models[connection.id] = model
             subscriptions[connection.id] = model.objectWillChange.sink { [weak self] _ in
                 Task { @MainActor in
