@@ -130,13 +130,41 @@ final class SurfaceProjectionTests: XCTestCase {
             paneID: "p2", state: .done, revision: 3,
             identity: done.identity, location: done.location, target: done.target
         )
-        let events = planner.events(for: [blockedAgain, doneAgain], policy: .blockedAndDone, activePaneID: "p2")
+        let events = planner.events(
+            for: [blockedAgain, doneAgain],
+            policy: .blockedAndDone,
+            activePaneID: "p2",
+            connectionLabel: "Hermes VPS"
+        )
 
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.title, "Claude needs you")
-        XCTAssertEqual(events.first?.body, "alpha / build / Claude")
+        XCTAssertEqual(events.first?.body, "alpha / build / Claude · Hermes VPS")
         XCTAssertEqual(events.first?.target, blocked.target)
         XCTAssertEqual(planner.events(for: [blockedAgain, doneAgain], policy: .blockedAndDone, activePaneID: nil), [])
+    }
+
+    func testNotificationDeepLinkRoundTripsFrozenFleetSchema() throws {
+        let target = RoutedPaneTarget(
+            connectionID: "remote",
+            workspaceID: "w1",
+            tabID: "t1",
+            paneID: "p1"
+        )
+        let deepLink = BessieNotificationDeepLink(target: target)
+
+        XCTAssertEqual(deepLink.userInfo, [
+            "connection_id": "remote",
+            "workspace_id": "w1",
+            "tab_id": "t1",
+            "pane_id": "p1",
+        ])
+        XCTAssertEqual(BessieNotificationDeepLink(userInfo: deepLink.userInfo)?.target, target)
+        XCTAssertNil(BessieNotificationDeepLink(userInfo: [
+            "workspace_id": "w1",
+            "tab_id": "t1",
+            "pane_id": "p1",
+        ]))
     }
 
     func testNotificationPlannerHonorsPolicyWithoutRetroactiveDelivery() {
@@ -155,17 +183,31 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(planner.events(for: [done], policy: .blockedAndDone, activePaneID: nil), [])
     }
 
-    func testNotificationRouteWaitsForAnAuthoritativePane() throws {
+    func testNotificationRouteRequiresOwningConnectionAndCurrentExactTopology() throws {
         let projection = try HerdrSessionProjection(snapshot: .surfaceFixture)
+        let target = RoutedPaneTarget(
+            connectionID: "remote",
+            workspaceID: "w2",
+            tabID: "t2",
+            paneID: "p3"
+        )
         let current = BessieNotificationRoute.resolve(
-            pending: PaneOpenTarget(workspaceID: "stale", tabID: "stale", paneID: "p3"),
+            pending: target,
+            connectionID: "remote",
             projection: projection
         )
 
         XCTAssertEqual(current, PaneOpenTarget(workspaceID: "w2", tabID: "t2", paneID: "p3"))
+        XCTAssertNil(BessieNotificationRoute.resolve(pending: target, connectionID: "local-bessie", projection: projection))
         XCTAssertNil(
             BessieNotificationRoute.resolve(
-                pending: PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "missing"),
+                pending: RoutedPaneTarget(
+                    connectionID: "remote",
+                    workspaceID: "stale",
+                    tabID: "t2",
+                    paneID: "p3"
+                ),
+                connectionID: "remote",
                 projection: projection
             )
         )

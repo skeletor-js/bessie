@@ -6,8 +6,8 @@ import UserNotifications
 @MainActor
 final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
-    @Published private(set) var pendingTarget: PaneOpenTarget?
-    @Published private(set) var pendingConnectionID: String?
+    @Published private(set) var authorizationError: String?
+    @Published private(set) var pendingTarget: RoutedPaneTarget?
 
     private let center: UNUserNotificationCenter
     private var planners: [String: BessieNotificationPlanner] = [:]
@@ -21,14 +21,20 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
 
     func refreshAuthorization() {
         Task {
-            authorizationStatus = await center.notificationSettings().authorizationStatus
+            updateAuthorizationStatus(await center.notificationSettings().authorizationStatus)
         }
     }
 
     func requestAuthorization() {
         Task {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound])
-            authorizationStatus = await center.notificationSettings().authorizationStatus
+            do {
+                _ = try await center.requestAuthorization(options: [.alert, .sound])
+                updateAuthorizationStatus(await center.notificationSettings().authorizationStatus)
+            } catch {
+                authorizationStatus = await center.notificationSettings().authorizationStatus
+                authorizationError = "Bessie couldn't request notification permission. \(error.localizedDescription)"
+                BessieDiagnosticLog.append("Notification authorization failed: \(String(reflecting: error))")
+            }
         }
     }
 
@@ -38,13 +44,20 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
     }
 
     func reconcile(
-        connectionID: String,
+        connection: BessieConnectionDefinition,
         panes: [BessieNotificationPane],
         policy: BessieNotifications,
         activePaneID: String?
     ) {
+        let connectionID = connection.id
         var planner = planners[connectionID] ?? BessieNotificationPlanner()
-        let events = planner.events(for: panes, policy: policy, activePaneID: activePaneID)
+        let connectionLabel = ConnectionDisplayLabel(connection: connection).short
+        let events = planner.events(
+            for: panes,
+            policy: policy,
+            activePaneID: activePaneID,
+            connectionLabel: connectionLabel
+        )
         planners[connectionID] = planner
         guard authorizationStatus.allowsDelivery else { return }
 
@@ -53,21 +66,28 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
             content.title = event.title
             content.body = event.body
             content.sound = .default
-            content.userInfo = [
-                "connection_id": connectionID,
-                "workspace_id": event.target.workspaceID,
-                "tab_id": event.target.tabID,
-                "pane_id": event.target.paneID,
-            ]
+            let routed = RoutedPaneTarget(
+                connectionID: connectionID,
+                workspaceID: event.target.workspaceID,
+                tabID: event.target.tabID,
+                paneID: event.target.paneID
+            )
+            content.userInfo = BessieNotificationDeepLink(target: routed).userInfo
             let request = UNNotificationRequest(identifier: "\(connectionID):\(event.id)", content: content, trigger: nil)
-            center.add(request)
+            Task {
+                do {
+                    try await center.add(request)
+                } catch {
+                    authorizationError = "Bessie couldn't deliver a notification. \(error.localizedDescription)"
+                    BessieDiagnosticLog.append("Notification delivery failed: \(String(reflecting: error))")
+                }
+            }
         }
     }
 
-    func consumePendingTarget(connectionID: String, paneID: String) {
-        guard pendingConnectionID == connectionID, pendingTarget?.paneID == paneID else { return }
+    func consumePendingTarget(_ target: RoutedPaneTarget) {
+        guard pendingTarget == target else { return }
         pendingTarget = nil
-        pendingConnectionID = nil
     }
 
     nonisolated func userNotificationCenter(
@@ -83,25 +103,23 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let routed = Self.target(from: response.notification.request.content.userInfo)
+        let routed = BessieNotificationDeepLink(userInfo: response.notification.request.content.userInfo)?.target
         completionHandler()
         guard let routed else { return }
         Task { @MainActor [weak self] in
-            self?.pendingConnectionID = routed.connectionID
-            self?.pendingTarget = routed.target
+            self?.pendingTarget = routed
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
-    nonisolated private static func target(from info: [AnyHashable: Any]) -> (connectionID: String?, target: PaneOpenTarget)? {
-        guard let workspaceID = info["workspace_id"] as? String,
-              let tabID = info["tab_id"] as? String,
-              let paneID = info["pane_id"] as? String
-        else { return nil }
-        return (
-            info["connection_id"] as? String,
-            PaneOpenTarget(workspaceID: workspaceID, tabID: tabID, paneID: paneID)
-        )
+    private func updateAuthorizationStatus(_ status: UNAuthorizationStatus) {
+        authorizationStatus = status
+        if status == .denied {
+            authorizationError = "Notifications are blocked in System Settings."
+            BessieDiagnosticLog.append("Notification authorization denied")
+        } else {
+            authorizationError = nil
+        }
     }
 }
 

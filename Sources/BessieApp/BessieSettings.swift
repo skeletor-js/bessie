@@ -316,6 +316,13 @@ struct BessieSettingsView: View {
                     BessieSettingRow(label: "Permission") {
                         notificationPermissionControl
                     }
+                    if let error = notifications.authorizationError {
+                        Text(error)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(BessieDesign.strong)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    }
                 }
 
                 BessieSectionLabel("STARTUP")
