@@ -482,6 +482,7 @@ public enum WorkspaceFS {
             if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
                 return candidate
             }
+            guard candidate.pathComponents.count > 1 else { return nil }
             let parent = candidate.deletingLastPathComponent()
             guard parent.path != candidate.path else { return nil }
             candidate = parent
