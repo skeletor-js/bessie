@@ -18,7 +18,7 @@ final class FollowFilesViewModel: ObservableObject {
     @Published private(set) var previewLoading = false
 
     private var contextID: String?
-    private var generation = UUID()
+    private var generation = 0
     private var watcher: WorkspaceFileWatcher?
     private var watchTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
@@ -59,13 +59,16 @@ final class FollowFilesViewModel: ObservableObject {
     }
 
     func stop() {
-        generation = UUID()
+        generation += 1
         watchTask?.cancel()
         watchTask = nil
         previewTask?.cancel()
         previewTask = nil
-        if let watcher { Task { await watcher.stop() } }
+        let previous = watcher
         watcher = nil
+        if let previous {
+            Task { await previous.stop() }
+        }
         contextID = nil
         stretch = nil
         touchState = FollowTouchState()
@@ -94,14 +97,17 @@ final class FollowFilesViewModel: ObservableObject {
         self.watcher = watcher
         let generation = self.generation
         watchTask = Task { [weak self] in
-            let batches = await watcher.start()
-            for await batch in batches {
-                guard !Task.isCancelled, let self, self.generation == generation else { return }
-                let selectedPath = self.touchState.selectedPath
-                self.touchState.record(contentsOf: batch)
-                if selectedPath != self.touchState.selectedPath
-                    || batch.contains(where: { $0.relativePath == self.touchState.selectedPath }) {
-                    self.loadSelectedPreview()
+            let stream = await watcher.start()
+            for await batch in stream {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.generation == generation else { return }
+                    let selectedPath = self.touchState.selectedPath
+                    self.touchState.record(contentsOf: batch)
+                    if selectedPath != self.touchState.selectedPath
+                        || batch.contains(where: { $0.relativePath == self.touchState.selectedPath }) {
+                        self.loadSelectedPreview()
+                    }
                 }
             }
         }
@@ -118,13 +124,14 @@ final class FollowFilesViewModel: ObservableObject {
         previewTask?.cancel()
         previewLoading = true
         previewTask = Task { [weak self] in
-            let result = await Task.detached {
-                GitDiffService().preview(root: root, relativePath: relativePath)
-            }.value
-            guard !Task.isCancelled, let self, self.generation == generation,
-                  self.touchState.selectedPath == relativePath else { return }
-            self.preview = result
-            self.previewLoading = false
+            let result = GitDiffService().preview(root: root, relativePath: relativePath)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.generation == generation,
+                      self.touchState.selectedPath == relativePath else { return }
+                self.preview = result
+                self.previewLoading = false
+            }
         }
     }
 

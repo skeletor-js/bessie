@@ -27,16 +27,21 @@ struct FollowFilesSurface: View {
     private var localSurface: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Toggle("Follow latest", isOn: Binding(
-                    get: { model.touchState.followEnabled },
-                    set: model.setFollowEnabled
-                ))
+                Toggle(
+                    "Follow latest",
+                    isOn: Binding(
+                        get: { model.touchState.followEnabled },
+                        set: { model.setFollowEnabled($0) }
+                    )
+                )
                 .toggleStyle(.switch)
                 .controlSize(.small)
                 Spacer()
-                Button(model.touchState.pinnedPath == nil ? "Pin" : "Unpin", action: model.togglePin)
-                    .buttonStyle(BessieSecondaryButtonStyle())
-                    .disabled(model.touchState.selectedPath == nil)
+                Button(model.touchState.pinnedPath == nil ? "Pin" : "Unpin") {
+                    model.togglePin()
+                }
+                .buttonStyle(BessieSecondaryButtonStyle())
+                .disabled(model.touchState.selectedPath == nil)
             }
             .padding(.horizontal, 12)
             .frame(height: 42)
@@ -66,26 +71,37 @@ struct FollowFilesSurface: View {
                     detail: "Touched files will appear here."
                 )
             } else {
-                List(model.touchState.touchedPaths, selection: Binding(
-                    get: { model.touchState.selectedPath },
-                    set: { if let path = $0 { model.select(path) } }
-                )) { path in
-                    HStack(spacing: 7) {
-                        Image(systemName: symbol(for: path.changeKind))
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(BessieDesign.subtle)
-                        Text(path.relativePath)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .lineLimit(2)
-                        Spacer(minLength: 2)
-                        if model.touchState.pinnedPath == path.relativePath {
-                            Image(systemName: "pin.fill").font(.system(size: 8))
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(model.touchState.touchedPaths) { path in
+                            Button {
+                                model.select(path.relativePath)
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: symbol(for: path.changeKind))
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(BessieDesign.subtle)
+                                    Text(path.relativePath)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .lineLimit(2)
+                                        .foregroundStyle(BessieDesign.strong)
+                                    Spacer(minLength: 2)
+                                    if model.touchState.pinnedPath == path.relativePath {
+                                        Image(systemName: "pin.fill").font(.system(size: 8))
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                                .background(
+                                    model.touchState.selectedPath == path.relativePath
+                                        ? BessieDesign.selected
+                                        : Color.clear
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .tag(path.relativePath)
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
             }
         }
     }
