@@ -5,7 +5,7 @@ final class BessieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(windowDidBecomeKey(_:)),
+            selector: #selector(bessie_windowDidBecomeKey(_:)),
             name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
@@ -16,7 +16,7 @@ final class BessieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         .terminateNow
     }
 
-    @objc private func windowDidBecomeKey(_ note: Notification) {
+    @objc private func bessie_windowDidBecomeKey(_ note: Notification) {
         guard let window = note.object as? NSWindow else { return }
         configureWindow(window)
     }
