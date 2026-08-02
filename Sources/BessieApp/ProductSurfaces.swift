@@ -111,14 +111,16 @@ struct BessieProductShell: View {
             BessieCowprintTexture(base: BessieDesign.window, crop: activeCrop, intensityScale: 0.9)
                 .ignoresSafeArea()
 
-            // HSplitView gives a real drag divider for the left rail.
+            // HSplitView: left rail stays visible when collapsed (icon rail).
             HSplitView {
-                if !sidebarCollapsed {
-                    productRail
-                        .frame(minWidth: 180, idealWidth: railWidth, maxWidth: 460)
-                        .layoutPriority(0)
-                        .bessieSurface(base: BessieDesign.rail, crop: railCrop)
-                }
+                productRail
+                    .frame(
+                        minWidth: sidebarCollapsed ? 56 : 180,
+                        idealWidth: sidebarCollapsed ? 64 : railWidth,
+                        maxWidth: sidebarCollapsed ? 72 : 460
+                    )
+                    .layoutPriority(0)
+                    .bessieSurface(base: BessieDesign.rail, crop: railCrop)
 
                 productContent
                     .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
@@ -127,6 +129,7 @@ struct BessieProductShell: View {
             }
             .padding(.horizontal, density.cardGap)
             .padding(.bottom, max(2, density.cardGap - 2))
+            .animation(.easeInOut(duration: 0.18), value: sidebarCollapsed)
         }
         .background(BessieDesign.window)
         .foregroundStyle(BessieDesign.text)
@@ -320,10 +323,100 @@ struct BessieProductShell: View {
     }
 
     private var productRail: some View {
+        Group {
+            if sidebarCollapsed {
+                collapsedProductRail
+            } else {
+                expandedProductRail
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Icon-only rail: Bessie cow + destination icons + expand control.
+    private var collapsedProductRail: some View {
+        VStack(spacing: 6) {
+            Button {
+                sidebarCollapsed = false
+            } label: {
+                BessieLogoMark(width: 26)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Expand sidebar")
+            .accessibilityLabel("Expand sidebar")
+            .padding(.top, 10)
+
+            Divider().overlay(BessieDesign.border).padding(.horizontal, 10)
+
+            collapsedIconButton(
+                destination: .herd,
+                symbol: ProductDestination.herd.symbol,
+                label: ProductDestination.herd.rawValue,
+                selected: destination == .herd || destination == .agent,
+                badge: nil
+            )
+            collapsedIconButton(
+                destination: .attention,
+                symbol: ProductDestination.attention.symbol,
+                label: ProductDestination.attention.rawValue,
+                selected: destination == .attention,
+                badge: attentionItems.isEmpty ? nil : "\(attentionItems.count)"
+            )
+            collapsedIconButton(
+                destination: .workspaces,
+                symbol: ProductDestination.workspaces.symbol,
+                label: ProductDestination.workspaces.rawValue,
+                selected: destination == .workspaces || destination == .workspace,
+                badge: nil
+            )
+            collapsedIconButton(
+                destination: .projects,
+                symbol: ProductDestination.projects.symbol,
+                label: ProductDestination.projects.rawValue,
+                selected: destination == .projects,
+                badge: nil
+            )
+            collapsedIconButton(
+                destination: .files,
+                symbol: ProductDestination.files.symbol,
+                label: ProductDestination.files.rawValue,
+                selected: destination == .files,
+                badge: nil
+            )
+
+            Spacer(minLength: 8)
+
+            collapsedIconButton(
+                destination: .settings,
+                symbol: ProductDestination.settings.symbol,
+                label: ProductDestination.settings.rawValue,
+                selected: destination == .settings,
+                badge: nil
+            )
+            .padding(.bottom, 10)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var expandedProductRail: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 BessieProductMark()
-                Spacer()
+                Spacer(minLength: 4)
+                Button {
+                    sidebarCollapsed = true
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(BessieDesign.subtle)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Collapse sidebar")
+                .accessibilityLabel("Collapse sidebar")
             }
             .padding(.horizontal, 12)
             .padding(.top, 13)
@@ -434,7 +527,51 @@ struct BessieProductShell: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func collapsedIconButton(
+        destination target: ProductDestination,
+        symbol: String,
+        label: String,
+        selected: Bool,
+        badge: String?
+    ) -> some View {
+        Button {
+            destination = target
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? BessieDesign.strong : BessieDesign.subtle)
+                    .frame(width: 40, height: 36)
+                    .background(selected ? BessieDesign.selected : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .leading) {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(BessieDesign.accent)
+                                .frame(width: 2.5, height: 16)
+                                .offset(x: -1)
+                        }
+                    }
+
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(BessieDesign.accentForeground)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 14, minHeight: 14)
+                        .background(BessieDesign.accent)
+                        .clipShape(Capsule())
+                        .offset(x: 4, y: -2)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var selectedAgentPane: PaneProjection? {
