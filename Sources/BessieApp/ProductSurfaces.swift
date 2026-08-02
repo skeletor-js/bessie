@@ -52,6 +52,7 @@ struct BessieProductShell: View {
     @State private var destination: ProductDestination = .initial
     @State private var selectedWorkspaceID: String?
     @State private var selectedPaneID: String?
+    @State private var notificationRouteInFlight: UUID?
     @State private var processAutomationStarted = false
     @StateObject private var shortcuts = BessieKeyboardShortcutCoordinator()
     @State private var sidebarCollapsed = false
@@ -80,17 +81,18 @@ struct BessieProductShell: View {
         let panes = surfaces.notificationPanes
             .map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }
             .joined(separator: "|")
-        return "\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
+        return "\(notifications.authorizationLoaded)|\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
     private var notificationRouteSignature: String {
-        let pending = notifications.pendingTarget.map {
-            "\($0.connectionID):\($0.workspaceID):\($0.tabID):\($0.paneID)"
+        let pending = notifications.pendingRoute.map {
+            "\($0.id.uuidString):\($0.target.connectionID):\($0.target.workspaceID):\($0.target.tabID):\($0.target.paneID)"
         } ?? "-"
+        let fallback = notifications.attentionFallbackRoute?.id.uuidString ?? "-"
         let panes = projection.panes
             .map { "\($0.id):\($0.workspaceID):\($0.tabID)" }
             .sorted()
             .joined(separator: "|")
-        return "\(pending)|\(panes)"
+        return "\(pending)|\(fallback)|\(model.activeConnection.id)|\(notificationRouteInFlight?.uuidString ?? "-")|\(panes)"
     }
     private var shortcutContextSignature: String {
         [
@@ -803,29 +805,45 @@ struct BessieProductShell: View {
     }
 
     private func routePendingNotification() {
-        guard let pending = notifications.pendingTarget else { return }
-        if pending.connectionID != model.activeConnection.id {
-            guard fleet.activate(connectionID: pending.connectionID) != nil else {
-                notifications.consumePendingTarget(pending)
+        if let fallback = notifications.attentionFallbackRoute {
+            notificationRouteInFlight = nil
+            destination = .attention
+            notifications.consumeAttentionFallback(fallback)
+            return
+        }
+        guard let pending = notifications.pendingRoute else { return }
+        guard notificationRouteInFlight == nil else { return }
+        let target = pending.target
+        if target.connectionID != model.activeConnection.id {
+            guard fleet.activate(connectionID: target.connectionID) != nil else {
+                notifications.fallBackToAttention(for: pending)
                 destination = .attention
                 return
             }
             return
         }
         guard let target = BessieNotificationRoute.resolve(
-            pending: pending,
+            pending: target,
             connectionID: model.activeConnection.id,
             projection: projection
         ) else {
-            notifications.consumePendingTarget(pending)
+            notifications.consumePendingRoute(pending)
             destination = .attention
             return
         }
+        notificationRouteInFlight = pending.id
         model.openPane(target) { _ in
-            notifications.consumePendingTarget(pending)
+            notificationRouteInFlight = nil
+            guard notifications.pendingRoute?.id == pending.id else { routePendingNotification(); return }
+            notifications.consumePendingRoute(pending)
             selectedWorkspaceID = target.workspaceID
             selectedPaneID = target.paneID
             destination = .workspace
+        } failure: {
+            notificationRouteInFlight = nil
+            guard notifications.pendingRoute?.id == pending.id else { routePendingNotification(); return }
+            notifications.consumePendingRoute(pending)
+            destination = .attention
         }
     }
 

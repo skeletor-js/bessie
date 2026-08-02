@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import BessieApp
 @testable import BessieCore
 
 final class SurfaceProjectionTests: XCTestCase {
@@ -174,6 +175,39 @@ final class SurfaceProjectionTests: XCTestCase {
             "tab_id": "t1",
             "pane_id": "p1",
         ]))
+    }
+
+    func testNotificationRouteQueueUsesTapIdentityAndNewTapReplacesFallback() {
+        let target = RoutedPaneTarget(
+            connectionID: "remote",
+            workspaceID: "w1",
+            tabID: "t1",
+            paneID: "p1"
+        )
+        let first = PendingNotificationRoute(id: UUID(), target: target)
+        let second = PendingNotificationRoute(id: UUID(), target: target)
+        var queue = NotificationRouteQueue()
+
+        queue.enqueue(first)
+        queue.enqueue(second)
+        queue.consume(first)
+        XCTAssertEqual(queue.pending, second)
+
+        queue.fallBackToAttention(first)
+        XCTAssertNil(queue.attentionFallback)
+        queue.fallBackToAttention(second)
+        XCTAssertEqual(queue.attentionFallback, second)
+
+        let third = PendingNotificationRoute(id: UUID(), target: target)
+        queue.enqueue(third)
+        XCTAssertEqual(queue.pending, third)
+        XCTAssertNil(queue.attentionFallback)
+    }
+
+    @MainActor
+    func testNotificationConnectionWaitsForFleetInitialization() {
+        let fleet = ConnectionFleetViewModel()
+        XCTAssertEqual(fleet.notificationConnectionState(connectionID: "remote"), .waiting)
     }
 
     func testNotificationPlannerHonorsPolicyWithoutRetroactiveDelivery() {

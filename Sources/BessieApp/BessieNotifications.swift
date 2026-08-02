@@ -3,14 +3,55 @@ import BessieCore
 import Foundation
 import UserNotifications
 
+struct PendingNotificationRoute: Equatable, Identifiable {
+    let id: UUID
+    let target: RoutedPaneTarget
+
+    init(id: UUID = UUID(), target: RoutedPaneTarget) {
+        self.id = id
+        self.target = target
+    }
+}
+
+struct NotificationRouteQueue: Equatable {
+    private(set) var pending: PendingNotificationRoute?
+    private(set) var attentionFallback: PendingNotificationRoute?
+
+    mutating func enqueue(_ route: PendingNotificationRoute) {
+        attentionFallback = nil
+        pending = route
+    }
+
+    mutating func consume(_ route: PendingNotificationRoute) {
+        guard pending?.id == route.id else { return }
+        pending = nil
+    }
+
+    mutating func fallBackToAttention(_ route: PendingNotificationRoute) {
+        guard pending?.id == route.id else { return }
+        pending = nil
+        attentionFallback = route
+    }
+
+    mutating func consumeAttentionFallback(_ route: PendingNotificationRoute) {
+        guard attentionFallback?.id == route.id else { return }
+        attentionFallback = nil
+    }
+}
+
 @MainActor
 final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
+    @Published private(set) var authorizationLoaded = false
     @Published private(set) var authorizationError: String?
-    @Published private(set) var pendingTarget: RoutedPaneTarget?
+    @Published private(set) var operationError: String?
+    @Published private var routes = NotificationRouteQueue()
 
     private let center: UNUserNotificationCenter
     private var planners: [String: BessieNotificationPlanner] = [:]
+
+    var pendingRoute: PendingNotificationRoute? { routes.pending }
+    var attentionFallbackRoute: PendingNotificationRoute? { routes.attentionFallback }
 
     override init() {
         center = .current()
@@ -22,6 +63,7 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
     func refreshAuthorization() {
         Task {
             updateAuthorizationStatus(await center.notificationSettings().authorizationStatus)
+            authorizationLoaded = true
         }
     }
 
@@ -29,10 +71,13 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         Task {
             do {
                 _ = try await center.requestAuthorization(options: [.alert, .sound])
+                operationError = nil
                 updateAuthorizationStatus(await center.notificationSettings().authorizationStatus)
+                authorizationLoaded = true
             } catch {
-                authorizationStatus = await center.notificationSettings().authorizationStatus
-                authorizationError = "Bessie couldn't request notification permission. \(error.localizedDescription)"
+                updateAuthorizationStatus(await center.notificationSettings().authorizationStatus)
+                authorizationLoaded = true
+                operationError = "Bessie couldn't request notification permission. \(error.localizedDescription)"
                 BessieDiagnosticLog.append("Notification authorization failed: \(String(reflecting: error))")
             }
         }
@@ -49,6 +94,7 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         policy: BessieNotifications,
         activePaneID: String?
     ) {
+        guard authorizationLoaded else { return }
         let connectionID = connection.id
         var planner = planners[connectionID] ?? BessieNotificationPlanner()
         let connectionLabel = ConnectionDisplayLabel(connection: connection).short
@@ -78,16 +124,27 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
                 do {
                     try await center.add(request)
                 } catch {
-                    authorizationError = "Bessie couldn't deliver a notification. \(error.localizedDescription)"
+                    operationError = "Bessie couldn't deliver a notification. \(error.localizedDescription)"
                     BessieDiagnosticLog.append("Notification delivery failed: \(String(reflecting: error))")
                 }
             }
         }
     }
 
-    func consumePendingTarget(_ target: RoutedPaneTarget) {
-        guard pendingTarget == target else { return }
-        pendingTarget = nil
+    func consumePendingRoute(_ route: PendingNotificationRoute) {
+        routes.consume(route)
+    }
+
+    func fallBackToAttention(for route: PendingNotificationRoute) {
+        routes.fallBackToAttention(route)
+    }
+
+    func consumeAttentionFallback(_ route: PendingNotificationRoute) {
+        routes.consumeAttentionFallback(route)
+    }
+
+    func clearOperationError() {
+        operationError = nil
     }
 
     nonisolated func userNotificationCenter(
@@ -100,26 +157,23 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
+        didReceive response: UNNotificationResponse
+    ) async {
         let routed = BessieNotificationDeepLink(userInfo: response.notification.request.content.userInfo)?.target
-        completionHandler()
         guard let routed else { return }
-        Task { @MainActor [weak self] in
-            self?.pendingTarget = routed
+        await MainActor.run { [weak self] in
+            self?.routes.enqueue(PendingNotificationRoute(target: routed))
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
     private func updateAuthorizationStatus(_ status: UNAuthorizationStatus) {
+        let error = status == .denied ? "Notifications are blocked in System Settings." : nil
+        guard authorizationStatus != status || authorizationError != error else { return }
+        let wasDenied = authorizationStatus == .denied
         authorizationStatus = status
-        if status == .denied {
-            authorizationError = "Notifications are blocked in System Settings."
-            BessieDiagnosticLog.append("Notification authorization denied")
-        } else {
-            authorizationError = nil
-        }
+        authorizationError = error
+        if status == .denied, !wasDenied { BessieDiagnosticLog.append("Notification authorization denied") }
     }
 }
 
