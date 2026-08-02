@@ -235,7 +235,10 @@ struct BessieProductShell: View {
         ) {
             if let shortcutClose {
                 Button(shortcutClose.buttonTitle, role: .destructive) {
-                    model.perform(shortcutClose.action)
+                    model.perform(
+                        shortcutClose.action,
+                        confirmDestructive: shortcutClose.requiresIntentConfirmation
+                    )
                     self.shortcutClose = nil
                 }
             }
@@ -1186,7 +1189,7 @@ private struct WorkspacesSurface: View {
         }
         .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
         .confirmationDialog("Close workspace?", isPresented: Binding(get: { closeWorkspace != nil }, set: { if !$0 { closeWorkspace = nil } }), titleVisibility: .visible) {
-            if let item = closeWorkspace { Button("Close \(item.label)", role: .destructive) { model.perform(.workspaceClose(id: item.id)); closeWorkspace = nil } }
+            if let item = closeWorkspace { Button("Close \(item.label)", role: .destructive) { model.perform(.workspaceClose(id: item.id), confirmDestructive: true); closeWorkspace = nil } }
             Button("Cancel", role: .cancel) { closeWorkspace = nil }
         } message: {
             Text(closeWorkspace.map { projection.confirmationForClosingWorkspace(id: $0.id).message } ?? "")
@@ -2179,6 +2182,7 @@ private extension ProductEditor {
 private enum PendingClose {
     case workspace(String), tab(String), pane(String)
     var action: HerdrAction { switch self { case .workspace(let id): .workspaceClose(id: id); case .tab(let id): .tabClose(id: id); case .pane(let id): .paneClose(id: id) } }
+    var requiresIntentConfirmation: Bool { if case .workspace = self { true } else { false } }
     var title: String { switch self { case .workspace: "Close workspace?"; case .tab: "Close tab?"; case .pane: "Close pane?" } }
     var buttonTitle: String { switch self { case .workspace: "Close workspace"; case .tab: "Close tab"; case .pane: "Close pane" } }
     func message(in projection: HerdrSessionProjection) -> String { switch self { case .workspace(let id): projection.confirmationForClosingWorkspace(id: id).message; case .tab(let id): projection.confirmationForClosingTab(id: id).message; case .pane(let id): projection.confirmationForClosingPane(id: id).message } }

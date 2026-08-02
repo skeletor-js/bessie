@@ -63,6 +63,7 @@ final class ConnectionViewModel: ObservableObject {
     private var remoteBridge: RemoteHerdrBridge?
     private var connectionToken = UUID()
     private var actionClient: HerdrActionClient?
+    private let intentDispatcher = BessieIntentActionDispatcher()
     private var openPaneToken: UUID?
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
@@ -178,6 +179,11 @@ final class ConnectionViewModel: ObservableObject {
                     self?.projection = projection
                     self?.terminalEndpoint = endpoint
                     self?.actionClient = endpoint.map { HerdrActionClient(api: HerdrSocketAPI(socketPath: $0.socketPath)) }
+                    self?.intentDispatcher.update(
+                        client: self?.actionClient,
+                        connectionID: connection.id,
+                        projection: projection
+                    )
                     if let endpoint { self?.ensureAgentCatalog(socketPath: endpoint.socketPath) }
                 }
             }
@@ -222,26 +228,38 @@ final class ConnectionViewModel: ObservableObject {
         projection = nil
         terminalEndpoint = nil
         actionClient = nil
+        intentDispatcher.update(client: nil, connectionID: activeConnection.id, projection: nil)
         catalogSocketPath = nil
         catalogLoaded = false
         agentCatalog = AgentCatalog(items: [])
         projectMaterializationConnection = nil
     }
 
-    func perform(_ action: HerdrAction, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
-        guard let actionClient else { return }
+    func perform(
+        _ action: HerdrAction,
+        confirmDestructive: Bool = false,
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil
+    ) {
+        let connectionGeneration = connectionToken
+        let connectionID = activeConnection.id
         actionInFlight = true
         actionError = nil
         Task.detached {
             do {
-                let projection = try actionClient.perform(action)
+                let projection = try self.intentDispatcher.perform(
+                    [action],
+                    connectionID: connectionID,
+                    confirmDestructive: confirmDestructive
+                )
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration else { return }
                     self.projection = projection
                     self.actionInFlight = false
                     completion?(projection)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
                 }
@@ -250,19 +268,19 @@ final class ConnectionViewModel: ObservableObject {
     }
 
     func openPane(_ target: PaneOpenTarget, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
-        guard let actionClient else { return }
         let connectionGeneration = connectionToken
+        let connectionID = activeConnection.id
         let requestToken = UUID()
         openPaneToken = requestToken
         actionInFlight = true
         actionError = nil
         Task.detached {
             do {
-                let projection = try actionClient.perform([
+                let projection = try self.intentDispatcher.perform([
                     .workspaceFocus(id: target.workspaceID),
                     .tabFocus(id: target.tabID),
                     .paneFocus(id: target.paneID),
-                ])
+                ], connectionID: connectionID)
                 await MainActor.run {
                     guard self.connectionToken == connectionGeneration,
                           self.openPaneToken == requestToken
@@ -296,8 +314,7 @@ final class ConnectionViewModel: ObservableObject {
               handoff.paneID == nil || handoffProjection.panes.contains(where: {
                   $0.id == handoff.paneID && $0.workspaceID == handoff.workspaceID
                       && (handoff.tabID == nil || $0.tabID == handoff.tabID)
-              }),
-              let actionClient
+              })
         else { return }
         var actions: [HerdrAction] = [.workspaceFocus(id: handoff.workspaceID)]
         if let tabID = handoff.tabID { actions.append(.tabFocus(id: tabID)) }
@@ -306,9 +323,10 @@ final class ConnectionViewModel: ObservableObject {
         actionError = nil
         let handoffToken = UUID()
         projectHandoffToken = handoffToken
+        let connectionID = activeConnection.id
         Task.detached {
             do {
-                let projection = try actionClient.perform(actions)
+                let projection = try self.intentDispatcher.perform(actions, connectionID: connectionID)
                 await MainActor.run {
                     guard self.projectHandoffToken == handoffToken,
                           self.projectMaterializationConnection == handoff.connection
