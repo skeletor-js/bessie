@@ -38,6 +38,21 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
             "-N", host,
         ]
     }
+
+    public static func remoteStatusCommand(for connection: BessieConnectionDefinition) -> String {
+        let session = connection.session.map { " --session \($0)" } ?? ""
+        return "herdr\(session) status --json"
+    }
+
+    public static func remoteStatusArguments(for connection: BessieConnectionDefinition) -> [String] {
+        guard let host = connection.sshHost else { return [] }
+        return [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+            host,
+            remoteStatusCommand(for: connection),
+        ]
+    }
 }
 
 public final class RemoteHerdrBridge: @unchecked Sendable {
@@ -150,21 +165,19 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
     }
 
     private func remoteStatus() throws -> RemoteStatus {
-        let data = try runRemote(command: remoteHerdrCommand(action: "status --json"), timeout: 12)
+        let data = try runRemote(
+            arguments: RemoteHerdrBridgePlan.remoteStatusArguments(for: connection),
+            timeout: 12
+        )
         do { return try JSONDecoder().decode(RemoteStatusEnvelope.self, from: data).server }
         catch { throw BessieConnectionError.remoteHerdrUnavailable("Invalid status response: \(error.localizedDescription)") }
     }
 
-    private func remoteHerdrCommand(action: String) -> String {
-        let session = connection.session.map { " --session \($0)" } ?? ""
-        return "herdr\(session) \(action)"
-    }
-
-    private func runRemote(command: String, timeout: TimeInterval) throws -> Data {
-        guard let host = connection.sshHost else { throw BessieConnectionError.invalidSSHHost }
+    private func runRemote(arguments: [String], timeout: TimeInterval) throws -> Data {
+        guard !arguments.isEmpty else { throw BessieConnectionError.invalidSSHHost }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sshPath)
-        process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, command]
+        process.arguments = arguments
         let output = Pipe(); let errors = Pipe()
         process.standardOutput = output; process.standardError = errors
         do { try process.run() }

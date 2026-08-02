@@ -8,10 +8,11 @@ import SwiftUI
 struct BessieApp: App {
     @StateObject private var settings = BessieSettingsModel()
     @StateObject private var notifications = BessieNotificationCoordinator()
+    @StateObject private var fleet = ConnectionFleetViewModel()
 
     var body: some Scene {
         WindowGroup {
-            ConnectView()
+            ConnectView(fleet: fleet)
                 .environmentObject(settings)
                 .environmentObject(notifications)
                 .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
@@ -29,6 +30,7 @@ struct BessieApp: App {
             BessieSettingsView()
                 .environmentObject(settings)
                 .environmentObject(notifications)
+                .environmentObject(fleet)
         }
     }
 }
@@ -531,6 +533,7 @@ final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var agents: [ConnectedAgentProjection] = []
     @Published private(set) var connectedCount = 0
     @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
+    @Published private(set) var connectionHealth: [ConnectionHealth] = []
 
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
@@ -538,8 +541,14 @@ final class ConnectionFleetViewModel: ObservableObject {
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
 
-    func start(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
+    func start(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        runtimeSelection: HerdrRuntimeSelection,
+        bundledRuntimeURL: URL?
+    ) {
         sync(connections: connections, runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
+        _ = activate(connectionID: selectedConnectionID)
     }
 
     func sync(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
@@ -548,6 +557,9 @@ final class ConnectionFleetViewModel: ObservableObject {
             models[id]?.stop()
             models[id] = nil
             subscriptions[id] = nil
+        }
+        if let activeConnectionID, !desired.contains(activeConnectionID) {
+            activeModel = nil
         }
         for connection in connections where models[connection.id] == nil {
             let model = ConnectionViewModel(runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
@@ -581,6 +593,10 @@ final class ConnectionFleetViewModel: ObservableObject {
         for model in models.values { model.retry() }
     }
 
+    func retry(connectionID: String) {
+        models[connectionID]?.retry()
+    }
+
     func stop() {
         for model in models.values { model.stop() }
         models.removeAll()
@@ -588,13 +604,14 @@ final class ConnectionFleetViewModel: ObservableObject {
         agents = []
         connectedCount = 0
         connectionIssues = []
+        connectionHealth = []
         activeModel = nil
     }
 
     private func refresh() {
         let connected = models.values.filter { $0.projection != nil && $0.terminalEndpoint != nil }
         connectedCount = connected.count
-        if activeModel?.projection == nil, let replacement = connected.first {
+        if activeModel == nil, let replacement = connected.first {
             activeModel = replacement
         }
         agents = connected.flatMap { model -> [ConnectedAgentProjection] in
@@ -607,6 +624,14 @@ final class ConnectionFleetViewModel: ObservableObject {
                     tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label
                 )
             }
+        }
+        connectionHealth = models.values.map {
+            ConnectionHealth(connection: $0.activeConnection, presentation: $0.presentation)
+        }.sorted { lhs, rhs in
+            let lhsLabel = models[lhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? lhs.connectionID
+            let rhsLabel = models[rhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? rhs.connectionID
+            let comparison = lhsLabel.localizedCaseInsensitiveCompare(rhsLabel)
+            return comparison == .orderedSame ? lhs.connectionID < rhs.connectionID : comparison == .orderedAscending
         }
         connectionIssues = models.values.compactMap { model in
             guard model.presentation.status != .connected else { return nil }
@@ -623,7 +648,7 @@ final class ConnectionFleetViewModel: ObservableObject {
 }
 
 struct ConnectView: View {
-    @StateObject private var fleet = ConnectionFleetViewModel()
+    @ObservedObject var fleet: ConnectionFleetViewModel
     @StateObject private var terminalRegistry = TerminalControllerRegistry()
     @StateObject private var projects = ProjectsViewModel()
     @EnvironmentObject private var settings: BessieSettingsModel
@@ -678,16 +703,35 @@ struct ConnectView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task { fleet.start(connections: settings.connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL) }
+        .environmentObject(fleet)
+        .task {
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
+        }
         .onChange(of: settings.connections) { _, connections in
             fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
-            fleet.start(connections: settings.connections, runtimeSelection: selection, bundledRuntimeURL: Self.bundledRuntimeURL)
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: selection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
         }
-        .onChange(of: fleet.activeConnectionID) { _, _ in
+        .onChange(of: settings.selectedConnectionID) { _, id in
+            _ = fleet.activate(connectionID: id)
+        }
+        .onChange(of: fleet.activeConnectionID) { _, id in
             terminalRegistry.releaseAll()
+            if let id, settings.selectedConnectionID != id {
+                settings.selectConnection(id)
+            }
         }
         .onChange(of: terminalRegistry.diagnosticRevision) { _, _ in
             guard let model = fleet.activeModel else { return }

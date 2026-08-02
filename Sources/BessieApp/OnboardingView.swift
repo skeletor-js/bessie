@@ -2,6 +2,7 @@ import BessieCore
 import SwiftUI
 
 struct OnboardingView: View {
+    @Environment(\.openSettings) private var openSettings
     let state: OnboardingState
     let connected: Bool
     let hasWorkspace: Bool
@@ -20,6 +21,18 @@ struct OnboardingView: View {
             } else {
                 Button(buttonTitle, action: continueSetup).buttonStyle(BessiePrimaryButtonStyle()).disabled(!canAdvance)
             }
+            DisclosureGroup("Use Herdr on another Mac over SSH") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Remote Herdr and its session must already be running. You can add and select the connection in Settings.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(BessieDesign.subtle)
+                    Button("Open connection settings") { openSettings() }
+                        .buttonStyle(BessieSecondaryButtonStyle())
+                }
+                .padding(.top, 6)
+            }
+            .font(.system(size: 11, weight: .medium))
+            .frame(maxWidth: 520, alignment: .leading)
         }.padding(40).frame(maxWidth: 680, alignment: .leading).bessieSurface(base: BessieDesign.background, crop: .connect)
     }
 

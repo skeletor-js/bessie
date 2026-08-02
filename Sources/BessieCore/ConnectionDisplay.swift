@@ -20,3 +20,19 @@ public struct ConnectionDisplayLabel: Equatable, Sendable {
         kind = connection.kind
     }
 }
+
+public struct ConnectionHealth: Equatable, Sendable {
+    public let connectionID: String
+    public let phase: String
+    public let isUsable: Bool
+    public let detail: String
+    public let supportsWorkspaceFS: Bool
+
+    public init(connection: BessieConnectionDefinition, presentation: ConnectPresentation) {
+        connectionID = connection.id
+        phase = presentation.title
+        isUsable = presentation.status == .connected
+        detail = presentation.detail
+        supportsWorkspaceFS = connection.kind == .local
+    }
+}
