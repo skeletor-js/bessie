@@ -998,3 +998,8 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 - Added the Core NDJSON Unix-socket client/server, a 0600 Application Support endpoint with isolated-path override, stale-endpoint and competing-owner protection, structured malformed-request handling, and honest `bessie_not_running` client failures. No TCP listener exists.
 - BessieApp now hosts one persistent executor/socket for the fleet, backed by the real Project store and explicit multi-connection live routing. It starts with the app and releases only the local bus endpoint on termination; Herdr and pane processes are untouched.
 - Failure-first Mac compilation proved the socket server/client contract was absent. Final `xcrun swift test --filter AgentIntent`: **15 tests, 0 failures** across XCTest and Swift Testing; `xcrun swift test --filter IntentActionDispatcherTests`: **3 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U5 CLI complete
+
+- Added the thin `bessie` executable with only `intents`, `status`, and generic `call` forms. It translates arguments to the shared request/client, emits one structured JSON result on stdout, keeps usage diagnostics on stderr, preserves confirmation tokens, and exits nonzero on failed results or invalid input. Offline `intents` falls back to the static Core catalog; live calls fail honestly when the app is absent.
+- Failure-first Mac build proved the executable target had no source. Final `xcrun swift test --filter BessieCLIArgumentsTests`: **8 tests, 0 failures**; `swift build --product bessie`: exit 0. Offline smoke exits were intents=0, status=1, invalid-args=2 with valid JSON results. `./scripts/check.sh` and `git diff --check`: exit 0.

@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(name: "BessieCore", targets: ["BessieCore"]),
         .executable(name: "BessieApp", targets: ["BessieApp"]),
+        .executable(name: "bessie", targets: ["BessieCLI"]),
     ],
     dependencies: [
         .package(
@@ -27,6 +28,10 @@ let package = Package(
             ],
             resources: [.process("Resources")]
         ),
+        .executableTarget(
+            name: "BessieCLI",
+            dependencies: ["BessieCore"]
+        ),
         .testTarget(
             name: "BessieCoreTests",
             dependencies: ["BessieCore"]
@@ -34,6 +39,10 @@ let package = Package(
         .testTarget(
             name: "BessieAppModelTests",
             dependencies: ["BessieCore", "BessieApp"]
+        ),
+        .testTarget(
+            name: "BessieCLITests",
+            dependencies: ["BessieCore", "BessieCLI"]
         ),
     ]
 )
