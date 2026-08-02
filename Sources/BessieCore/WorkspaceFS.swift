@@ -79,6 +79,51 @@ public enum WorkspaceFS {
         "DerivedData",
     ]
 
+    /// Default Files root when opening the sidebar destination: user home (local or remote).
+    /// Not tied to a Herdr workspace/pane.
+    public static func resolveDefaultFilesRoot(
+        connection: BessieConnectionDefinition,
+        remoteAccess: SSHRemoteFileAccess? = nil
+    ) -> Result<WorkspaceFileRoot, WorkspacePathError> {
+        if connection.kind == .ssh {
+            guard let remoteAccess else { return .failure(.remoteUnsupported) }
+            do {
+                let home = try SSHRemoteFileClient(access: remoteAccess).homeDirectory()
+                let st = try SSHRemoteFileClient(access: remoteAccess).stat(home)
+                guard st.exists, st.isDirectory else { return .failure(.notDirectory) }
+                let git = try SSHRemoteFileClient(access: remoteAccess).findGitTopLevel(from: home)
+                return .success(WorkspaceFileRoot(
+                    connectionID: connection.id,
+                    workspaceID: "files-home",
+                    rootURL: URL(fileURLWithPath: home, isDirectory: true),
+                    gitTopLevel: git.map { URL(fileURLWithPath: $0, isDirectory: true) },
+                    resolution: .herdrCwd,
+                    remote: remoteAccess
+                ))
+            } catch let error as WorkspacePathError {
+                return .failure(error)
+            } catch {
+                return .failure(.unreadable)
+            }
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: home.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return .failure(.notDirectory) }
+        guard FileManager.default.isReadableFile(atPath: home.path) else { return .failure(.unreadable) }
+        return .success(WorkspaceFileRoot(
+            connectionID: connection.id,
+            workspaceID: "files-home",
+            rootURL: home,
+            gitTopLevel: Self.findGitTopLevel(from: home),
+            resolution: .herdrCwd,
+            remote: nil
+        ))
+    }
+
     public static func resolveRoot(
         connection: BessieConnectionDefinition,
         projection: HerdrSessionProjection?,
@@ -87,7 +132,13 @@ public enum WorkspaceFS {
         remoteAccess: SSHRemoteFileAccess? = nil
     ) -> Result<WorkspaceFileRoot, WorkspacePathError> {
         if connection.kind == .ssh, remoteAccess == nil { return .failure(.remoteUnsupported) }
-        guard let projection else { return .failure(.missingRoot) }
+        // Files sidebar has no pane/workspace requirement — open home.
+        if paneID == nil, workspaceID == nil {
+            return resolveDefaultFilesRoot(connection: connection, remoteAccess: remoteAccess)
+        }
+        guard let projection else {
+            return resolveDefaultFilesRoot(connection: connection, remoteAccess: remoteAccess)
+        }
 
         let selectedPane = paneID.flatMap { id in projection.panes.first { $0.id == id } }
         if paneID != nil, selectedPane == nil { return .failure(.missingRoot) }

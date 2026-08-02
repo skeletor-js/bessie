@@ -122,12 +122,6 @@ struct BessieProductShell: View {
                 }
                 .padding(.horizontal, density.cardGap)
                 .padding(.bottom, max(2, density.cardGap - 2))
-
-                BessieStatusLine(
-                    workspaceCount: projection.workspaces.count,
-                    attentionCount: attentionItems.count,
-                    connectionCount: fleet.connectedCount
-                )
             }
         }
         .background(BessieDesign.window)

@@ -149,15 +149,10 @@ struct WorkspaceFilesSurface: View {
     var remoteFileAccess: SSHRemoteFileAccess? = nil
 
     var body: some View {
-        let paneID = selectedPaneID
-            ?? projection.panes.first(where: { $0.workspaceID == selectedWorkspaceID && $0.focused })?.id
-            ?? projection.focusedPane?.id
-            ?? projection.panes.first(where: { selectedWorkspaceID == nil || $0.workspaceID == selectedWorkspaceID })?.id
-        switch WorkspaceFS.resolveRoot(
+        // Sidebar Files opens the home folder for the active connection.
+        // Not tied to a Herdr workspace/pane.
+        switch WorkspaceFS.resolveDefaultFilesRoot(
             connection: connection,
-            projection: projection,
-            paneID: paneID,
-            workspaceID: selectedWorkspaceID ?? projection.panes.first(where: { $0.id == paneID })?.workspaceID,
             remoteAccess: remoteFileAccess
         ) {
         case .failure(.remoteUnsupported):
@@ -168,9 +163,9 @@ struct WorkspaceFilesSurface: View {
             )
         case .failure(let error):
             ContentUnavailableView(
-                "No workspace folder",
+                "Can't open Files",
                 systemImage: "folder.badge.questionmark",
-                description: Text(Self.describe(error, connection: connection, remoteFileAccess: remoteFileAccess, paneID: paneID))
+                description: Text(Self.describe(error, connection: connection, remoteFileAccess: remoteFileAccess))
             )
         case .success(let root):
             WorkspaceFilesBrowser(root: root)
@@ -181,28 +176,25 @@ struct WorkspaceFilesSurface: View {
     private static func describe(
         _ error: WorkspacePathError,
         connection: BessieConnectionDefinition,
-        remoteFileAccess: SSHRemoteFileAccess?,
-        paneID: String?
+        remoteFileAccess: SSHRemoteFileAccess?
     ) -> String {
         switch error {
         case .remoteUnsupported:
             return "Reconnect this SSH Herdr session, then open Files again."
         case .missingRoot:
-            if connection.kind == .ssh, remoteFileAccess == nil {
-                return "SSH tunnel is not ready yet. Wait for Connected, then reopen Files."
-            }
-            if paneID == nil {
-                return "Select a workspace pane first so Bessie knows which folder to open."
-            }
-            return "Herdr did not report a working directory for this pane yet. Focus a terminal, run a command, then try again."
+            return connection.kind == .ssh
+                ? "SSH tunnel is not ready yet. Wait until Connected, then open Files again."
+                : "Couldn't find your home folder."
         case .notDirectory:
-            return "The reported working directory is missing or not a folder on the \(connection.kind == .ssh ? "remote host" : "Mac")."
+            return connection.kind == .ssh
+                ? "Remote home folder is missing or not a directory."
+                : "Home folder is missing or not a directory."
         case .unreadable:
             return connection.kind == .ssh
-                ? "Could not read the remote folder over SSH (check python3 on the remote host and folder permissions)."
-                : "Bessie cannot read that folder on this Mac."
+                ? "Couldn't read the remote home folder over SSH. Check the tunnel and folder permissions."
+                : "Bessie cannot read your home folder on this Mac."
         case .pathEscape:
-            return "That path is outside the workspace root."
+            return "That path is outside the open folder."
         case .notFound:
             return "That file or folder was not found."
         case .tooLarge:

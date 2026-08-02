@@ -438,7 +438,7 @@ struct BessieSettingsView: View {
                         .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(BessieDesign.subtle)
                 }
-                Text("\(connection.detail) · \(connection.kind == .local ? "Workspace files available" : "Remote workspace files over SSH when connected")")
+                Text("\(connection.detail) · \(connection.kind == .local ? "Local files" : "Remote files over SSH")")
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(BessieDesign.subtle)
                     .lineLimit(1)

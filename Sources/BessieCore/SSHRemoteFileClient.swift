@@ -1,6 +1,7 @@
 import Foundation
 
-/// Multiplexed OpenSSH access to a remote host, reusing Bessie's ControlMaster tunnel.
+/// Multiplexed OpenSSH access reusing Bessie ControlMaster tunnel.
+/// Shell-only remote helper (no Python requirement).
 public struct SSHRemoteFileAccess: Equatable, Sendable, Hashable {
     public let host: String
     public let controlPath: String
@@ -17,7 +18,7 @@ public struct SSHRemoteFileClient: Sendable {
     public let access: SSHRemoteFileAccess
     private let timeout: TimeInterval
 
-    public init(access: SSHRemoteFileAccess, timeout: TimeInterval = 20) {
+    public init(access: SSHRemoteFileAccess, timeout: TimeInterval = 25) {
         self.access = access
         self.timeout = timeout
     }
@@ -37,105 +38,154 @@ public struct SSHRemoteFileClient: Sendable {
         public let modificationDate: Date?
     }
 
+    public func homeDirectory() throws -> String {
+        let out = try runRemote("printf '%s\\n' \"$HOME\"").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard out.hasPrefix("/") else { throw WorkspacePathError.unreadable }
+        return out
+    }
+
     public func listDirectory(_ absolutePath: String, limit: Int) throws -> [Entry] {
-        let payload = try request([
-            "op": "list",
-            "path": absolutePath,
-            "limit": limit,
-        ])
-        guard let items = payload["items"] as? [[String: Any]] else { throw WorkspacePathError.unreadable }
-        return items.compactMap { item in
-            guard let name = item["name"] as? String else { return nil }
-            return Entry(
-                name: name,
-                isDirectory: item["is_dir"] as? Bool ?? false,
-                isSymbolicLink: item["is_link"] as? Bool ?? false
-            )
+        let q = shQuote(absolutePath)
+        let script =
+            "p=" + q + "; " +
+            "if [ ! -d \"$p\" ]; then echo __ERR_NOT_DIR; exit 0; fi; " +
+            "ls -1A \"$p\" 2>/dev/null | while IFS= read -r name; do " +
+            "case \"$name\" in .*|'') continue ;; esac; " +
+            "full=\"$p/$name\"; " +
+            "if [ -L \"$full\" ]; then k=L; elif [ -d \"$full\" ]; then k=D; else k=F; fi; " +
+            "printf '%s\\t%s\\n' \"$k\" \"$name\"; done | head -n " + String(max(0, limit))
+        let out = try runRemote(script)
+        if out.contains("__ERR_NOT_DIR") { throw WorkspacePathError.notDirectory }
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return nil }
+            return Entry(name: parts[1], isDirectory: parts[0] == "D", isSymbolicLink: parts[0] == "L")
         }
     }
 
     public func stat(_ absolutePath: String) throws -> Stat {
-        let payload = try request([
-            "op": "stat",
-            "path": absolutePath,
-        ])
+        let q = shQuote(absolutePath)
+        let script =
+            "p=" + q + "; " +
+            "if [ ! -e \"$p\" ] && [ ! -L \"$p\" ]; then echo MISSING; exit 0; fi; " +
+            "if [ -L \"$p\" ]; then k=L; elif [ -d \"$p\" ]; then k=D; elif [ -f \"$p\" ]; then k=F; else k=O; fi; " +
+            "if stat -f%z / >/dev/null 2>&1; then " +
+            "sz=$(stat -f%z \"$p\" 2>/dev/null || echo 0); mt=$(stat -f%m \"$p\" 2>/dev/null || echo 0); " +
+            "else sz=$(stat -c%s \"$p\" 2>/dev/null || echo 0); mt=$(stat -c%Y \"$p\" 2>/dev/null || echo 0); fi; " +
+            "printf '%s %s %s\\n' \"$k\" \"$sz\" \"$mt\""
+        let out = try runRemote(script).trimmingCharacters(in: .whitespacesAndNewlines)
+        if out == "MISSING" {
+            return Stat(exists: false, isDirectory: false, isSymbolicLink: false, isRegularFile: false, byteSize: 0, modificationDate: nil)
+        }
+        let parts = out.split(separator: " ")
+        guard parts.count >= 3 else { throw WorkspacePathError.unreadable }
+        let kind = String(parts[0])
+        let size = Int(parts[1]) ?? 0
+        let mtime = TimeInterval(parts[2]) ?? 0
         return Stat(
-            exists: payload["exists"] as? Bool ?? false,
-            isDirectory: payload["is_dir"] as? Bool ?? false,
-            isSymbolicLink: payload["is_link"] as? Bool ?? false,
-            isRegularFile: payload["is_file"] as? Bool ?? false,
-            byteSize: payload["size"] as? Int ?? 0,
-            modificationDate: (payload["mtime"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            exists: true,
+            isDirectory: kind == "D",
+            isSymbolicLink: kind == "L",
+            isRegularFile: kind == "F",
+            byteSize: size,
+            modificationDate: mtime > 0 ? Date(timeIntervalSince1970: mtime) : nil
         )
     }
 
     public func readFile(_ absolutePath: String, maximumByteSize: Int) throws -> Data {
-        let payload = try request([
-            "op": "read",
-            "path": absolutePath,
-            "max_bytes": maximumByteSize,
-        ])
-        if payload["too_large"] as? Bool == true { throw WorkspacePathError.tooLarge }
-        guard let b64 = payload["data_b64"] as? String,
-              let data = Data(base64Encoded: b64) else { throw WorkspacePathError.unreadable }
+        let st = try stat(absolutePath)
+        guard st.exists else { throw WorkspacePathError.notFound }
+        guard st.isRegularFile else { throw WorkspacePathError.notFound }
+        guard st.byteSize <= maximumByteSize else { throw WorkspacePathError.tooLarge }
+        let q = shQuote(absolutePath)
+        let script = "p=" + q + "; (base64 < \"$p\" 2>/dev/null || base64 < \"$p\")"
+        let b64 = try runRemote(script).filter { !$0.isWhitespace }
+        guard let data = Data(base64Encoded: b64) else { throw WorkspacePathError.unreadable }
         return data
     }
 
     public func writeFile(_ absolutePath: String, data: Data) throws {
-        _ = try request([
-            "op": "write",
-            "path": absolutePath,
-            "data_b64": data.base64EncodedString(),
-        ])
+        let q = shQuote(absolutePath)
+        let b64q = shQuote(data.base64EncodedString())
+        let script =
+            "p=" + q + "; parent=$(dirname \"$p\"); " +
+            "if [ ! -d \"$parent\" ]; then echo __ERR_NOT_FOUND; exit 0; fi; " +
+            "tmp=\"$p.bessie-tmp-$$\"; " +
+            "printf %s " + b64q + " | (base64 -d 2>/dev/null || base64 -D) > \"$tmp\" || { echo __ERR_UNREADABLE; exit 0; }; " +
+            "mv -f \"$tmp\" \"$p\"; echo OK"
+        let out = try runRemote(script)
+        if out.contains("__ERR_NOT_FOUND") { throw WorkspacePathError.notFound }
+        if out.contains("__ERR_UNREADABLE") { throw WorkspacePathError.unreadable }
     }
 
     public func move(from source: String, to destination: String) throws {
-        _ = try request([
-            "op": "move",
-            "from": source,
-            "to": destination,
-        ])
+        let script =
+            "s=" + shQuote(source) + "; d=" + shQuote(destination) + "; " +
+            "if [ -L \"$s\" ]; then echo __ERR_SYMLINK; exit 0; fi; " +
+            "if [ -e \"$d\" ] || [ -L \"$d\" ]; then echo __ERR_EXISTS; exit 0; fi; " +
+            "mkdir -p \"$(dirname \"$d\")\" 2>/dev/null || true; " +
+            "mv -f \"$s\" \"$d\" && echo OK || echo __ERR_UNREADABLE"
+        let out = try runRemote(script)
+        if out.contains("__ERR_SYMLINK") { throw WorkspaceFileOperationError.symbolicLinkUnsupported }
+        if out.contains("__ERR_EXISTS") { throw WorkspaceFileOperationError.destinationExists }
+        if out.contains("__ERR_") { throw WorkspacePathError.unreadable }
     }
 
     public func delete(_ absolutePath: String) throws {
-        _ = try request([
-            "op": "delete",
-            "path": absolutePath,
-        ])
+        let script =
+            "p=" + shQuote(absolutePath) + "; " +
+            "if [ -L \"$p\" ]; then echo __ERR_SYMLINK; exit 0; fi; " +
+            "if [ ! -e \"$p\" ]; then echo __ERR_NOT_FOUND; exit 0; fi; " +
+            "rm -rf \"$p\" && echo OK || echo __ERR_UNREADABLE"
+        let out = try runRemote(script)
+        if out.contains("__ERR_SYMLINK") { throw WorkspaceFileOperationError.symbolicLinkUnsupported }
+        if out.contains("__ERR_NOT_FOUND") { throw WorkspacePathError.notFound }
+        if out.contains("__ERR_") { throw WorkspacePathError.unreadable }
     }
 
     public func findGitTopLevel(from absolutePath: String) throws -> String? {
-        let payload = try request([
-            "op": "git_toplevel",
-            "path": absolutePath,
-        ])
-        return payload["path"] as? String
+        let script =
+            "cur=" + shQuote(absolutePath) + "; " +
+            "while [ -n \"$cur\" ] && [ \"$cur\" != / ]; do " +
+            "if [ -e \"$cur/.git\" ]; then printf '%s\\n' \"$cur\"; exit 0; fi; " +
+            "cur=$(dirname \"$cur\"); done; printf '\\n'"
+        let out = try runRemote(script).trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.isEmpty ? nil : out
     }
 
-    public func snapshotSignatures(root absolutePath: String, ignoreNames: [String]) throws -> [String: (mtime: Double?, size: Int?)] {
-        let payload = try request([
-            "op": "snapshot",
-            "path": absolutePath,
-            "ignore": ignoreNames,
-        ])
-        guard let files = payload["files"] as? [String: [String: Any]] else { return [:] }
-        var result: [String: (mtime: Double?, size: Int?)] = [:]
-        for (path, meta) in files {
-            result[path] = (meta["mtime"] as? Double, meta["size"] as? Int)
+    public func snapshotFiles(root absolutePath: String, ignore: Set<String>, limit: Int = 5000) throws -> [String: (mtime: Date?, size: Int)] {
+        let q = shQuote(absolutePath)
+        let script =
+            "p=" + q + "; if [ ! -d \"$p\" ]; then echo __ERR_NOT_DIR; exit 0; fi; " +
+            "find \"$p\" -type f 2>/dev/null | head -n " + String(limit) + " | while IFS= read -r f; do " +
+            "rel=${f#\"$p\"/}; case \"$rel\" in .git/*|*/.git/*|node_modules/*|*/node_modules/*|.build/*|*/.build/*) continue ;; esac; " +
+            "if stat -f%z / >/dev/null 2>&1; then sz=$(stat -f%z \"$f\" 2>/dev/null||echo 0); mt=$(stat -f%m \"$f\" 2>/dev/null||echo 0); " +
+            "else sz=$(stat -c%s \"$f\" 2>/dev/null||echo 0); mt=$(stat -c%Y \"$f\" 2>/dev/null||echo 0); fi; " +
+            "printf '%s\\t%s\\t%s\\n' \"$rel\" \"$sz\" \"$mt\"; done"
+        let out = try runRemote(script)
+        if out.contains("__ERR_NOT_DIR") { throw WorkspacePathError.notDirectory }
+        var result: [String: (Date?, Int)] = [:]
+        for line in out.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
+            guard parts.count == 3 else { continue }
+            let mt = TimeInterval(parts[2]).flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+            result[parts[0]] = (mt, Int(parts[1]) ?? 0)
         }
         return result
     }
 
-    public func runGit(arguments: [String], maximumBytes: Int = 1_500_000) throws -> (status: Int32, data: Data) {
-        let payload = try request([
-            "op": "git",
-            "args": arguments,
-            "max_bytes": maximumBytes,
-        ])
-        let status = payload["status"] as? Int ?? 1
-        let b64 = payload["data_b64"] as? String ?? ""
-        let data = Data(base64Encoded: b64) ?? Data()
-        return (Int32(status), data)
+    public func runGit(arguments: [String], maximumBytes: Int) throws -> (status: Int32, data: Data) {
+        let joined = arguments.map(shQuote).joined(separator: " ")
+        let script =
+            "if ! command -v git >/dev/null 2>&1; then echo STATUS:127; echo; exit 0; fi; " +
+            "tmp=$(mktemp 2>/dev/null || echo /tmp/bessie-git-$$); set +e; git " + joined + " >\"$tmp\" 2>&1; st=$?; set -e; " +
+            "echo STATUS:$st; head -c " + String(maximumBytes) + " \"$tmp\" | (base64 2>/dev/null || base64); rm -f \"$tmp\""
+        let out = try runRemote(script)
+        let parts = out.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        guard let statusLine = parts.first, statusLine.hasPrefix("STATUS:") else { throw WorkspacePathError.unreadable }
+        let status = Int32(statusLine.dropFirst(7)) ?? 1
+        let b64 = parts.count > 1 ? parts[1].filter { !$0.isWhitespace } : ""
+        return (status, Data(base64Encoded: b64) ?? Data())
     }
 
     public func downloadToTemporaryFile(_ absolutePath: String, maximumByteSize: Int = 40 * 1_024 * 1_024) throws -> URL {
@@ -148,8 +198,7 @@ public struct SSHRemoteFileClient: Sendable {
         return url
     }
 
-    private func request(_ object: [String: Any]) throws -> [String: Any] {
-        let body = try JSONSerialization.data(withJSONObject: object, options: [])
+    private func runRemote(_ script: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: access.sshExecutablePath)
         process.arguments = [
@@ -157,7 +206,7 @@ public struct SSHRemoteFileClient: Sendable {
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=8",
             access.host,
-            "python3", "-c", Self.remotePython,
+            "/bin/sh", "-s",
         ]
         let stdin = Pipe()
         let stdout = Pipe()
@@ -167,13 +216,11 @@ public struct SSHRemoteFileClient: Sendable {
         process.standardError = stderr
         do { try process.run() }
         catch { throw BessieConnectionError.sshFailed(error.localizedDescription) }
-        stdin.fileHandleForWriting.write(body)
+        let body = script.hasSuffix("\n") ? script : script + "\n"
+        if let data = body.data(using: .utf8) { stdin.fileHandleForWriting.write(data) }
         try? stdin.fileHandleForWriting.close()
-
         let deadline = Date(timeIntervalSinceNow: timeout)
-        while process.isRunning, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         if process.isRunning {
             process.terminate()
             process.waitUntilExit()
@@ -185,130 +232,10 @@ public struct SSHRemoteFileClient: Sendable {
             let reason = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BessieConnectionError.sshFailed(reason?.isEmpty == false ? reason! : "Remote file command failed (\(process.terminationStatus)).")
         }
-        guard
-            let json = try JSONSerialization.jsonObject(with: out) as? [String: Any]
-        else { throw WorkspacePathError.unreadable }
-        if let error = json["error"] as? String {
-            switch error {
-            case "not_found": throw WorkspacePathError.notFound
-            case "not_directory": throw WorkspacePathError.notDirectory
-            case "unreadable": throw WorkspacePathError.unreadable
-            case "path_escape": throw WorkspacePathError.pathEscape
-            case "too_large": throw WorkspacePathError.tooLarge
-            case "destination_exists": throw WorkspaceFileOperationError.destinationExists
-            case "symlink": throw WorkspaceFileOperationError.symbolicLinkUnsupported
-            default: throw WorkspacePathError.unreadable
-            }
-        }
-        return json
+        return String(data: out, encoding: .utf8) ?? ""
     }
 
-    /// Compact remote helper. Runs on the remote host under the multiplexed SSH session.
-    private static let remotePython = #"""
-import base64, json, os, shutil, stat, subprocess, sys, time
-req=json.load(sys.stdin)
-op=req.get("op")
-def ok(**kw):
-    print(json.dumps(kw)); sys.exit(0)
-def err(code):
-    print(json.dumps({"error": code})); sys.exit(0)
-def is_abs(p): return isinstance(p,str) and p.startswith("/")
-path=req.get("path")
-if op=="list":
-    if not is_abs(path): err("path_escape")
-    if not os.path.isdir(path): err("not_directory")
-    limit=int(req.get("limit") or 2000)
-    items=[]
-    try: names=sorted(os.listdir(path))
-    except Exception: err("unreadable")
-    for name in names:
-        if name.startswith('.'): continue
-        full=os.path.join(path,name)
-        try:
-            st=os.lstat(full)
-            is_link=stat.S_ISLNK(st.st_mode)
-            is_dir=stat.S_ISDIR(st.st_mode) and not is_link
-        except Exception:
-            continue
-        items.append({"name":name,"is_dir":bool(is_dir),"is_link":bool(is_link)})
-        if len(items)>=limit: break
-    ok(items=items)
-elif op=="stat":
-    if not is_abs(path): err("path_escape")
-    if not os.path.lexists(path): ok(exists=False,is_dir=False,is_link=False,is_file=False,size=0,mtime=None)
-    st=os.lstat(path)
-    ok(exists=True,is_dir=stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode),is_link=stat.S_ISLNK(st.st_mode),is_file=stat.S_ISREG(st.st_mode),size=int(st.st_size),mtime=float(st.st_mtime))
-elif op=="read":
-    if not is_abs(path): err("path_escape")
-    maxb=int(req.get("max_bytes") or 2097152)
-    if not os.path.isfile(path): err("not_found")
-    size=os.path.getsize(path)
-    if size>maxb: ok(too_large=True)
-    with open(path,"rb") as f: data=f.read()
-    ok(data_b64=base64.b64encode(data).decode("ascii"), size=size)
-elif op=="write":
-    if not is_abs(path): err("path_escape")
-    raw=base64.b64decode(req.get("data_b64") or "")
-    parent=os.path.dirname(path)
-    if not os.path.isdir(parent): err("not_found")
-    tmp=path+".bessie-tmp-"+str(os.getpid())
-    with open(tmp,"wb") as f: f.write(raw)
-    os.replace(tmp,path)
-    ok(ok=True)
-elif op=="move":
-    src=req.get("from"); dst=req.get("to")
-    if not is_abs(src) or not is_abs(dst): err("path_escape")
-    if os.path.lexists(dst): err("destination_exists")
-    if os.path.islink(src): err("symlink")
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.move(src,dst)
-    ok(ok=True)
-elif op=="delete":
-    if not is_abs(path): err("path_escape")
-    if os.path.islink(path): err("symlink")
-    if not os.path.lexists(path): err("not_found")
-    if os.path.isdir(path) and not os.path.islink(path): shutil.rmtree(path)
-    else: os.remove(path)
-    ok(ok=True)
-elif op=="git_toplevel":
-    if not is_abs(path): err("path_escape")
-    cur=path
-    while True:
-        if os.path.exists(os.path.join(cur,".git")): ok(path=cur)
-        parent=os.path.dirname(cur)
-        if parent==cur: ok(path=None)
-        cur=parent
-elif op=="snapshot":
-    if not is_abs(path): err("path_escape")
-    ignore=set(req.get("ignore") or [])
-    files={}
-    for root, dirs, names in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in ignore and not d.startswith('.')]
-        rel_root=os.path.relpath(root, path)
-        if rel_root==".": rel_root=""
-        for name in names:
-            if name.startswith('.'): continue
-            full=os.path.join(root,name)
-            try:
-                st=os.lstat(full)
-                if not stat.S_ISREG(st.st_mode): continue
-            except Exception:
-                continue
-            rel=name if not rel_root else rel_root.replace("\\","/")+"/"+name
-            files[rel]={"mtime":float(st.st_mtime),"size":int(st.st_size)}
-            if len(files)>=5000: break
-        if len(files)>=5000: break
-    ok(files=files)
-elif op=="git":
-    args=req.get("args") or []
-    maxb=int(req.get("max_bytes") or 1500000)
-    try:
-        p=subprocess.run(["git"]+list(args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-        data=p.stdout[:maxb]
-        ok(status=int(p.returncode), data_b64=base64.b64encode(data).decode("ascii"))
-    except Exception:
-        err("unreadable")
-else:
-    err("unreadable")
-"""#
+    private func shQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }

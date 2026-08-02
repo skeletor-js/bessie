@@ -903,18 +903,6 @@ struct ConnectView: View {
                 }
                 .padding(.horizontal, density.cardGap)
                 .padding(.bottom, max(2, density.cardGap - 2))
-
-                HStack(spacing: 16) {
-                    Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)
-                    Text(activeConnection.kind == .local ? "LOCAL HERDR" : "SSH · \(connectionLabel.short.uppercased())")
-                    Spacer()
-                    Text(statusText.uppercased())
-                }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(BessieDesign.subtle)
-                .padding(.horizontal, 13)
-                .frame(height: 26)
-                .overlay(alignment: .top) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
             }
         }
         .tint(BessieDesign.strong)
