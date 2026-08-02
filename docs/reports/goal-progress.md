@@ -1023,3 +1023,27 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 - Final `./scripts/check.sh && ./scripts/mac-verify.sh`: exit 0. The native suite executed **224 XCTest tests and 21 Swift Testing tests with 0 failures**; both CLI products built; packaging, isolated live Herdr checks, app-hosted bus checks, screenshots, installation to `/Applications/Bessie.app`, relaunch, and executable identity verification passed.
 - Packaged and installed executable SHA-256 values both equal `0175768a4b0f5ba453ebea0ae200479ad232fa4e92290ad71c5a95ecd3be5335`. The inspected 1180×740 live screenshot showed a usable Bessie window with two rendered terminal panes and no blank, clipped, corrupt, or blocking-error surface; minor glyph overlap in deliberate terminal test output does not affect the intent bus.
 - Final `git diff --check`: exit 0. No push, PR, notarization, network listener, daemon, private Herdr protocol, ordinary Herdr session, or unrelated untracked planning artifact was changed.
+
+## 2026-08-02: V1 Slice D production UI/UX cleanup complete
+
+Status: complete for Slice D. No Herd, Attention, files, menu-bar, theme, remote, Herdr-runtime, or upstream libghostty feature was added.
+
+Milestone evidence:
+
+- M0 analysis pinned the unsafe seam: the local monitor already returned unknown system chords, but terminal `performKeyEquivalent` could still delegate them to libghostty; quit cleanup existed only on SwiftUI disappearance; and hidden custom chrome had no native zoom gesture.
+- M1/M3 added a pure-Core key policy. Unmodified ⌘Q, ⌘H, ⌘M, and ⌘` are explicit passthrough before Bessie product mappings; unknown Command chords also pass through. The coordinator returns the original `NSEvent` for passthrough, while mapped product commands remain consumed. `BessieTerminalView` returns `false` for those system chords. `KeyboardShortcutTests` cover system passthrough and retain existing ⌘B/⌘W behavior.
+- The app supplies a standard **Quit Bessie** command and an app delegate termination path. Shared exit cleanup releases Bessie-owned terminal controllers, connection runners, and SSH bridges idempotently. It does not call any Herdr workspace/pane/server stop API.
+- M2 moved title/crumb content into the non-control drag region. Its AppKit view routes ordinary mouse-down to `performWindowDrag` and double-click to `NSWindow.performZoom`; action buttons remain outside that hit region.
+- M4 audited Herd, Workspace, Attention, Projects, Settings, Onboarding, and Trouble. No visible dead-action or “coming soon” control was safe to remove. Functional actions, honest empty states, and zero-sized verifier probes remain. The final 1180×740 screenshot had no clipping or overlap; repeated workspace/tab/pane labels were authoritative Herdr fixture data.
+
+Exact verification:
+
+- Final VPS `./scripts/check.sh`: exit 0; runtime lock/compatibility/notice/package, UI-copy, and static checks passed.
+- Clean Mac copy `/tmp/bessie-slice-d-verify`: `xcrun swift test` executed **169 tests with 4 socket-gated live tests skipped and 0 failures**; `./scripts/package-app.sh` completed a production build and packaged the app. Focused `KeyboardShortcutTests` repeatedly passed **7/7**.
+- Two earlier full `./scripts/mac-verify.sh` runs passed before the final transient minimize diagnostics, including production/debug builds, all 169 tests, isolated live Herdr checks, packaging/install/relaunch, executable identity, and visual gates. A later shared-mirror attempt was invalid because concurrent Slice E source files arrived without their dependency; final Slice D verification therefore used the clean temp copy rather than changing those concurrent files.
+- The clean package was transactionally installed at `/Applications/Bessie.app`; `cmp` and strict deep code-sign verification passed. Packaged and installed executables matched with SHA-256 `84ea6fecc87465fb94dd6c29b0802b6bda019d7d7891d3c6dc1034f7017c93c7`.
+- With the installed app's terminal area focused, ⌘H made Bessie hidden and ⌘Q exited it in one chord. **Bessie → Quit Bessie** also exited it. Herdr session `bessie` reported 0.7.5 / protocol 17 / `running:true` / `compatible:true` before quit, after terminal-focused ⌘Q, and after menu Quit. Relaunch reattached without restarting Herdr.
+- Window → Zoom changed the Bessie frame through the native `performZoom` path. Remote synthetic point double-clicks did not form a double-click in Bessie or an ordinary TextEdit titlebar; remote minimize actions likewise failed against both Bessie and TextEdit. Those invalid automation results were not greenwashed. The gesture and ⌘M ownership are evidenced by the explicit AppKit path, unchanged enabled standard menu items, and passthrough tests; no app-specific minimize interception remains.
+- Final screenshot: `/tmp/Bessie-slice-d-final.png`, **1180×740**, SHA-256 `c6dcc91ee6dd24829777f94c685f16aaf0da433f488bf24373c41102397f9658`. Direct inspection found no obvious dead prototype chrome, clipping, or overlap.
+
+No check was weakened. Existing unrelated dirty planning/roadmap work and concurrent Mac files were preserved. No Herdr session was stopped, and no push, PR, publication, deployment, notarization, or upstream modification occurred.
