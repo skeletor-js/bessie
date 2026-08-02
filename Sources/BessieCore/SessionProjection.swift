@@ -36,12 +36,13 @@ public struct PaneProjection: Codable, Equatable, Identifiable, Sendable {
     public let tabID: String
     public let focused: Bool
     public let label: String?
+    public let cwd: String?
     public let agent: String?
     public let title: String?
     public let agentStatus: String
     public let revision: UInt64
     enum CodingKeys: String, CodingKey {
-        case id = "pane_id", terminalID = "terminal_id", workspaceID = "workspace_id", tabID = "tab_id", focused, label, agent, title
+        case id = "pane_id", terminalID = "terminal_id", workspaceID = "workspace_id", tabID = "tab_id", focused, label, cwd, agent, title
         case agentStatus = "agent_status", revision
     }
 }
@@ -107,6 +108,7 @@ public struct HerdrSessionProjection: Equatable, Sendable {
     public let workspaces: [WorkspaceProjection]
     public let tabs: [TabProjection]
     public let panes: [PaneProjection]
+    public let agents: [AgentProjection]
     public let layouts: [String: TabLayoutProjection]
 
     public init(snapshot: HerdrSnapshot) throws {
@@ -114,6 +116,11 @@ public struct HerdrSessionProjection: Equatable, Sendable {
         workspaces = try snapshot.workspaces.map(Self.decode).sorted { $0.number < $1.number }
         tabs = try snapshot.tabs.map(Self.decode).sorted { $0.number < $1.number }
         panes = try snapshot.panes.map(Self.decode)
+        let panesByID = Dictionary(panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let authoritativeAgents: [AgentProjection] = try snapshot.agents.map(Self.decode)
+        let authoritativeIDs = Set(authoritativeAgents.map(\.id))
+        let legacyAgents = panes.filter { $0.agent != nil && !authoritativeIDs.contains($0.id) }.map(AgentProjection.init(pane:))
+        agents = authoritativeAgents.map { $0.merging(pane: panesByID[$0.id]) } + legacyAgents
         let decodedLayouts: [WireLayout] = try snapshot.layouts.map(Self.decode)
         layouts = try Dictionary(uniqueKeysWithValues: decodedLayouts.map { layout in
             (layout.tabID, try Self.project(layout))
@@ -198,9 +205,12 @@ public struct HerdrSessionProjection: Equatable, Sendable {
             }
             return .pane(PaneLayoutLeaf(paneID: pane.paneID, focused: pane.focused, rect: pane.rect))
         }
+        let splitCells = split.direction == .right
+            ? (Float(split.rect.width) * Float(split.ratio)).rounded()
+            : (Float(split.rect.height) * Float(split.ratio)).rounded()
         let boundary = split.direction == .right
-            ? Double(split.rect.x) + Double(split.rect.width) * split.ratio
-            : Double(split.rect.y) + Double(split.rect.height) * split.ratio
+            ? Double(split.rect.x) + Double(splitCells)
+            : Double(split.rect.y) + Double(splitCells)
         let firstCandidates = candidates.filter {
             split.direction == .right ? Double($0.rect.x) + Double($0.rect.width) / 2 < boundary : Double($0.rect.y) + Double($0.rect.height) / 2 < boundary
         }

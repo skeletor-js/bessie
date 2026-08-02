@@ -67,9 +67,103 @@ final class TerminalControllerTests: XCTestCase {
         XCTAssertFalse(invocation.arguments.contains("--takeover"))
     }
 
+    func testProcessInvocationMakesObserveAndTakeoverExplicit() {
+        let observe = HerdrTerminalProcessInvocation(
+            executablePath: "/repo/.local/herdr/herdr",
+            paneID: "w1:p2",
+            grid: .init(columns: 80, rows: 24),
+            mode: .observe
+        )
+        let takeover = HerdrTerminalProcessInvocation(
+            executablePath: "/repo/.local/herdr/herdr",
+            paneID: "w1:p2",
+            grid: .init(columns: 80, rows: 24),
+            mode: .takeover
+        )
+
+        XCTAssertEqual(observe.arguments, ["terminal", "session", "observe", "w1:p2", "--cols", "80", "--rows", "24"])
+        XCTAssertEqual(takeover.arguments, ["terminal", "session", "control", "w1:p2", "--takeover", "--cols", "80", "--rows", "24"])
+        XCTAssertEqual(TerminalReconnectPolicy.delays, [0.25, 0.5, 1, 2, 4])
+    }
+
+    func testActiveObserverCanSwitchToExplicitTakeover() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-observe-takeover-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logURL = directory.appendingPathComponent("invocations.log")
+        let scriptURL = directory.appendingPathComponent("fake-herdr")
+        let script = """
+        #!/bin/sh
+        printf 'socket=%s args=%s\\n' "$HERDR_SOCKET_PATH" "$*" >> "$BESSIE_TEST_LOG"
+        printf '%s\\n' '{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}'
+        while IFS= read -r line; do
+            case "$line" in
+                *'"cmd":"release"'*) exit 0 ;;
+            esac
+        done
+        """
+        try Data(script.utf8).write(to: scriptURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let firstReady = expectation(description: "observer ready")
+        let secondReady = expectation(description: "takeover ready")
+        let readyRecorder = TerminalReadyRecorder(first: firstReady, second: secondReady)
+        let controller = HerdrTerminalController(
+            executablePath: scriptURL.path,
+            paneID: "p1",
+            socketPath: "/tmp/test.sock",
+            environment: [
+                "BESSIE_TEST_LOG": logURL.path,
+                "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+            ],
+            onFrame: { _ in },
+            onState: { status in
+                guard case .ready = status else { return }
+                readyRecorder.record()
+            }
+        )
+
+        controller.observe()
+        wait(for: [firstReady], timeout: 2)
+        controller.takeOver()
+        wait(for: [secondReady], timeout: 2)
+        controller.release()
+
+        let invocations = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertEqual(invocations.count, 2)
+        XCTAssertTrue(invocations.allSatisfy { $0.hasPrefix("socket=/tmp/test.sock ") })
+        XCTAssertTrue(invocations[0].contains("terminal session observe p1"))
+        XCTAssertTrue(invocations[1].contains("--takeover"))
+    }
+
     func testProcessFailureSeparatesOwnershipConflictFromReconnectableExit() {
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "terminal x already has an attached client; retry with --takeover", status: 1), .ownershipConflict("terminal x already has an attached client; retry with --takeover"))
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "", status: 9), .processExit("terminal controller exited 9"))
+    }
+}
+
+private final class TerminalReadyRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private let first: XCTestExpectation
+    private let second: XCTestExpectation
+    private var count = 0
+
+    init(first: XCTestExpectation, second: XCTestExpectation) {
+        self.first = first
+        self.second = second
+    }
+
+    func record() {
+        lock.lock()
+        count += 1
+        let current = count
+        lock.unlock()
+        if current == 1 { first.fulfill() }
+        if current == 2 { second.fulfill() }
     }
 }
 

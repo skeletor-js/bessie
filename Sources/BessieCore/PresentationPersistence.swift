@@ -1,11 +1,13 @@
 import Foundation
 
 public enum BessieAppearance: String, Codable, CaseIterable, Equatable, Sendable { case system, dark, light }
+public enum BessieAppIcon: String, Codable, CaseIterable, Equatable, Sendable { case dark, light }
 public enum BessieNotifications: String, Codable, CaseIterable, Equatable, Sendable { case off, blockedOnly, blockedAndDone }
 public enum BessieStartupBehavior: String, Codable, CaseIterable, Equatable, Sendable { case lastWorkspace, workspaceChooser }
 
 public struct BessiePreferences: Codable, Equatable, Sendable {
     public var appearance: BessieAppearance
+    public var appIcon: BessieAppIcon
     public var cowPrintIntensity: Double
     public var cowPrintMotion: Bool
     public var terminalFontSize: Double
@@ -15,6 +17,7 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
 
     public init(
         appearance: BessieAppearance = .system,
+        appIcon: BessieAppIcon = .dark,
         cowPrintIntensity: Double = 0.05,
         cowPrintMotion: Bool = true,
         terminalFontSize: Double = 13,
@@ -23,6 +26,7 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
         startupBehavior: BessieStartupBehavior = .lastWorkspace
     ) {
         self.appearance = appearance
+        self.appIcon = appIcon
         self.cowPrintIntensity = cowPrintIntensity
         self.cowPrintMotion = cowPrintMotion
         self.terminalFontSize = terminalFontSize
@@ -32,12 +36,13 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case appearance, cowPrintIntensity, cowPrintMotion, terminalFontSize, paneGap, notifications, startupBehavior
+        case appearance, appIcon, cowPrintIntensity, cowPrintMotion, terminalFontSize, paneGap, notifications, startupBehavior
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         appearance = try values.decodeIfPresent(BessieAppearance.self, forKey: .appearance) ?? .system
+        appIcon = try values.decodeIfPresent(BessieAppIcon.self, forKey: .appIcon) ?? .dark
         cowPrintIntensity = try values.decodeIfPresent(Double.self, forKey: .cowPrintIntensity) ?? 0.05
         cowPrintMotion = try values.decodeIfPresent(Bool.self, forKey: .cowPrintMotion) ?? true
         terminalFontSize = try values.decodeIfPresent(Double.self, forKey: .terminalFontSize) ?? 13
@@ -48,16 +53,28 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
 }
 
 public struct BessiePresentationState: Codable, Equatable, Sendable {
+    public static let firstRealTerminalCompletionVersion = 1
     public var lastWorkspaceID: String?
+    public var lastWorkspaceIDByConnectionID: [String: String]?
     public var preferences: BessiePreferences
-    public init(lastWorkspaceID: String? = nil, preferences: BessiePreferences = BessiePreferences()) {
+    public var firstRealTerminalCompletionVersion: Int?
+    public init(
+        lastWorkspaceID: String? = nil,
+        lastWorkspaceIDByConnectionID: [String: String]? = nil,
+        preferences: BessiePreferences = BessiePreferences(),
+        firstRealTerminalCompletionVersion: Int? = nil
+    ) {
         self.lastWorkspaceID = lastWorkspaceID
+        self.lastWorkspaceIDByConnectionID = lastWorkspaceIDByConnectionID
         self.preferences = preferences
+        self.firstRealTerminalCompletionVersion = firstRealTerminalCompletionVersion
     }
 
     enum CodingKeys: String, CodingKey {
         case lastWorkspaceID = "last_workspace_id"
+        case lastWorkspaceIDByConnectionID = "last_workspace_id_by_connection_id"
         case preferences
+        case firstRealTerminalCompletionVersion = "first_real_terminal_completion_version"
     }
 }
 

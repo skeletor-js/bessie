@@ -117,9 +117,21 @@ public struct ProcessLaunchResult: Equatable, Sendable {
     public let agentError: String?
 }
 
+public enum AgentStartRetryPolicy {
+    public static let delays: [TimeInterval] = [0.25, 0.5, 1, 2, 4]
+}
+
 public struct HerdrProcessLauncher: Sendable {
     private let api: any HerdrMutationAPI
-    public init(api: any HerdrMutationAPI) { self.api = api }
+    private let wait: @Sendable (TimeInterval) -> Void
+
+    public init(
+        api: any HerdrMutationAPI,
+        wait: @escaping @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) {
+        self.api = api
+        self.wait = wait
+    }
 
     public func launch(placement: NewProcessPlacement, process: NewProcessChoice) throws -> ProcessLaunchResult {
         let before = try HerdrSessionProjection(snapshot: api.snapshot())
@@ -141,20 +153,35 @@ public struct HerdrProcessLauncher: Sendable {
             return ProcessLaunchResult(projection: shellProjection, paneID: paneID, agentStarted: false, agentError: nil)
         }
         let agentAction = HerdrAction.agentStart(paneID: paneID, kind: kind, name: name, args: args, timeoutMilliseconds: timeout)
-        do {
-            return ProcessLaunchResult(
-                projection: try client.perform(agentAction),
-                paneID: paneID,
-                agentStarted: true,
-                agentError: nil
-            )
-        } catch {
-            return ProcessLaunchResult(
-                projection: shellProjection,
-                paneID: paneID,
-                agentStarted: false,
-                agentError: error.localizedDescription
-            )
+        var retryIndex = 0
+        while true {
+            do {
+                return ProcessLaunchResult(
+                    projection: try client.perform(agentAction),
+                    paneID: paneID,
+                    agentStarted: true,
+                    agentError: nil
+                )
+            } catch {
+                if isTransientFreshPaneError(error), retryIndex < AgentStartRetryPolicy.delays.count {
+                    wait(AgentStartRetryPolicy.delays[retryIndex])
+                    retryIndex += 1
+                    continue
+                }
+                return ProcessLaunchResult(
+                    projection: shellProjection,
+                    paneID: paneID,
+                    agentStarted: false,
+                    agentError: error.localizedDescription
+                )
+            }
         }
+    }
+
+    private func isTransientFreshPaneError(_ error: Error) -> Bool {
+        guard let clientError = error as? HerdrClientError,
+              case .server(let code, _) = clientError
+        else { return false }
+        return code == "agent_pane_busy" || code == "agent_pane_unavailable"
     }
 }

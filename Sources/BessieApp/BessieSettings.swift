@@ -4,12 +4,22 @@ import CoreGraphics
 import Darwin
 import Foundation
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class BessieSettingsModel: ObservableObject {
     @Published var preferences: BessiePreferences { didSet { persist() } }
-    @Published private(set) var lastWorkspaceID: String?
+    @Published private(set) var lastWorkspaceIDByConnectionID: [String: String]
+    private let legacyLastWorkspaceID: String?
+    @Published private(set) var connections: [BessieConnectionDefinition]
+    @Published private(set) var selectedConnectionID: String
+    @Published private(set) var connectionError: String?
+    @Published private(set) var runtimeSelection: HerdrRuntimeSelection
+    @Published private(set) var onboarding = OnboardingState()
+    @Published private(set) var runtimePersistenceError: String?
     private let store: BessiePresentationStore
+    private let connectionStore: BessieConnectionStore
+    private let runtimeStore: HerdrRuntimeSelectionStore
 
     init() {
         let environment = ProcessInfo.processInfo.environment
@@ -24,22 +34,154 @@ final class BessieSettingsModel: ObservableObject {
         store = BessiePresentationStore(url: url)
         let state = try? store.load()
         preferences = state?.preferences ?? BessiePreferences()
-        lastWorkspaceID = state?.lastWorkspaceID
+        legacyLastWorkspaceID = state?.lastWorkspaceID
+        lastWorkspaceIDByConnectionID = state?.lastWorkspaceIDByConnectionID ?? [:]
+        let connectionURL = environment["BESSIE_CONNECTIONS_PATH"].map(URL.init(fileURLWithPath:))
+            ?? url.deletingLastPathComponent().appendingPathComponent("connections.json")
+        connectionStore = BessieConnectionStore(url: connectionURL)
+        runtimeStore = HerdrRuntimeSelectionStore(url: url.deletingLastPathComponent().appendingPathComponent("runtime-selection.json"))
+        runtimeSelection = runtimeStore.load()
+        let connectionState: BessieConnectionState
+        do {
+            connectionState = try connectionStore.load()
+        } catch {
+            BessieDiagnosticLog.append("Connections load failed: \(String(reflecting: error))")
+            connectionState = BessieConnectionState()
+        }
+        connections = connectionState.connections
+        selectedConnectionID = connectionState.selectedConnectionID
+        connectionError = nil
+        onboarding.completed = state?.firstRealTerminalCompletionVersion == BessiePresentationState.firstRealTerminalCompletionVersion
+        if onboarding.completed { onboarding.step = .terminal }
+        BessieDiagnosticLog.append("Connections selected=\(selectedConnectionID) count=\(connections.count)")
     }
 
     private func persist() {
-        try? store.save(BessiePresentationState(lastWorkspaceID: lastWorkspaceID, preferences: preferences))
+        try? store.save(BessiePresentationState(
+            lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
+            lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
+            preferences: preferences,
+            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil
+        ))
     }
 
-    func recordLastWorkspace(_ id: String?) { lastWorkspaceID = id; persist() }
+    var lastWorkspaceID: String? {
+        lastWorkspaceID(for: selectedConnectionID)
+    }
+
+    func recordLastWorkspace(_ id: String?) {
+        recordLastWorkspace(id, connectionID: selectedConnectionID)
+    }
+
+    func lastWorkspaceID(for connectionID: String) -> String? {
+        lastWorkspaceIDByConnectionID[connectionID]
+            ?? (connectionID == BessieConnectionDefinition.localBessie.id ? legacyLastWorkspaceID : nil)
+    }
+
+    func recordLastWorkspace(_ id: String?, connectionID: String) {
+        lastWorkspaceIDByConnectionID[connectionID] = id
+        persist()
+    }
+
+    var selectedConnection: BessieConnectionDefinition {
+        connections.first { $0.id == selectedConnectionID } ?? .localBessie
+    }
+
+    func selectConnection(_ id: String) {
+        guard connections.contains(where: { $0.id == id }) else { return }
+        selectedConnectionID = id
+        connectionError = nil
+        persistConnections()
+    }
+
+    @discardableResult
+    func addConnection(name: String, sshHost: String, session: String?) -> Bool {
+        do {
+            let connection = try BessieConnectionDefinition(
+                name: name,
+                kind: .ssh,
+                sshHost: sshHost,
+                session: session
+            ).validated()
+            connections.append(connection)
+            selectedConnectionID = connection.id
+            connectionError = nil
+            persistConnections()
+            return true
+        } catch {
+            connectionError = error.localizedDescription
+            return false
+        }
+    }
+
+    func removeConnection(_ id: String) {
+        guard id != BessieConnectionDefinition.localBessie.id else { return }
+        connections.removeAll { $0.id == id }
+        if selectedConnectionID == id { selectedConnectionID = BessieConnectionDefinition.localBessie.id }
+        connectionError = nil
+        persistConnections()
+    }
+
+    func clearConnectionError() { connectionError = nil }
+
+    func selectRuntime(_ selection: HerdrRuntimeSelection) {
+        do {
+            try runtimeStore.save(selection)
+            runtimePersistenceError = nil
+            runtimeSelection = selection
+        } catch {
+            runtimePersistenceError = error.localizedDescription
+        }
+    }
+
+    func runSetupAgain() { onboarding.runAgain(); persist() }
+
+    func advanceSetup(runtimeReady: Bool, sessionReady: Bool, workspaceReady: Bool, terminalControllerReady: Bool) {
+        onboarding.advance(runtimeReady: runtimeReady, sessionReady: sessionReady, workspaceReady: workspaceReady,
+                           terminalControllerReady: terminalControllerReady)
+        persist()
+    }
+
+    func terminalBecameReady() {
+        onboarding.step = .terminal
+        onboarding.advance(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: true)
+        persist()
+    }
+
+    private func persistConnections() {
+        try? connectionStore.save(BessieConnectionState(
+            selectedConnectionID: selectedConnectionID,
+            connections: connections
+        ))
+    }
+
+}
+
+@MainActor
+enum BessieAppIconController {
+    static func apply(_ icon: BessieAppIcon) {
+        let resource = icon == .dark ? "BessieDark" : "BessieLight"
+        guard let url = BessieResources.url(forResource: resource, withExtension: "icns"),
+              let image = NSImage(contentsOf: url)
+        else { return }
+        NSApplication.shared.applicationIconImage = image
+        BessieDiagnosticLog.append("App icon=\(icon.rawValue)")
+    }
 }
 
 struct BessieSettingsView: View {
     @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
+    @State private var showAddConnection = false
+    @State private var connectionName = ""
+    @State private var sshHost = ""
+    @State private var herdrSession = ""
     let embedded: Bool
+    let runtimeDiagnostic: RuntimeDiagnosticSnapshot?
 
-    init(embedded: Bool = false) {
+    init(embedded: Bool = false, runtimeDiagnostic: RuntimeDiagnosticSnapshot? = nil) {
         self.embedded = embedded
+        self.runtimeDiagnostic = runtimeDiagnostic
     }
 
     var body: some View {
@@ -65,12 +207,65 @@ struct BessieSettingsView: View {
         .preferredColorScheme(.dark)
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
+        .task { notifications.refreshAuthorization() }
+        .sheet(isPresented: $showAddConnection) { addConnectionSheet }
     }
 
     private var settingsScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                BessieSectionLabel("CONNECTIONS")
+                    .padding(.bottom, 7)
+
+                VStack(spacing: 0) {
+                    ForEach(model.connections) { connection in
+                        connectionRow(connection)
+                        if connection.id != model.connections.last?.id {
+                            Divider().overlay(BessieDesign.border)
+                        }
+                    }
+                }
+                .background(BessieDesign.panel)
+                .overlay {
+                    RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
+                        .stroke(BessieDesign.border, lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
+
+                HStack {
+                    if let error = model.connectionError {
+                        Text(error)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(BessieDesign.subtle)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Button("Add SSH connection") {
+                        connectionName = ""
+                        sshHost = ""
+                        herdrSession = ""
+                        model.clearConnectionError()
+                        showAddConnection = true
+                    }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                }
+                .padding(.top, 10)
+
+                BessieSectionLabel("APPEARANCE")
+                    .padding(.top, 28)
+                    .padding(.bottom, 7)
+
+                BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
+                    Picker("App icon", selection: $model.preferences.appIcon) {
+                        ForEach(BessieAppIcon.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
+
                 BessieSectionLabel("COWPRINT")
+                    .padding(.top, 28)
                     .padding(.bottom, 7)
 
                 BessieSettingRow(label: "Contrast") {
@@ -104,6 +299,25 @@ struct BessieSettingsView: View {
                         .accessibilityValue("\(Int(model.preferences.paneGap)) points")
                 }
 
+                BessieSectionLabel("NOTIFICATIONS")
+                    .padding(.top, 28)
+                    .padding(.bottom, 7)
+
+                BessieSettingRow(label: "Notify me", hint: "Only when the pane isn't active.") {
+                    Picker("Notify me", selection: $model.preferences.notifications) {
+                        ForEach(BessieNotifications.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 190)
+                }
+
+                if model.preferences.notifications != .off {
+                    BessieSettingRow(label: "Permission") {
+                        notificationPermissionControl
+                    }
+                }
+
                 BessieSectionLabel("STARTUP")
                     .padding(.top, 28)
                     .padding(.bottom, 7)
@@ -122,7 +336,12 @@ struct BessieSettingsView: View {
                     .padding(.bottom, 7)
 
                 VStack(spacing: 0) {
-                    BessieDiagnosticRow(label: "Herdr", value: "0.7.5 · protocol 17")
+                    BessieDiagnosticRow(
+                        label: runtimeDiagnostic == nil ? "Required Herdr" : "Active Herdr",
+                        value: runtimeDiagnostic.map {
+                            "\($0.observedVersion ?? "Unknown") · protocol \($0.observedProtocol.map(String.init) ?? "Unknown") · \($0.runtime?.source.rawValue ?? "unresolved")"
+                        } ?? "\(BessieCompatibility.herdrVersion) · protocol \(BessieCompatibility.protocolVersion)"
+                    )
                     Divider().overlay(BessieDesign.border)
                     BessieDiagnosticRow(label: "Terminal", value: "libghostty 1.3.2")
                 }
@@ -133,6 +352,9 @@ struct BessieSettingsView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
 
+                RuntimeSettingsView()
+                    .padding(.top, 28)
+
 
             }
             .frame(maxWidth: 720, alignment: .leading)
@@ -141,6 +363,111 @@ struct BessieSettingsView: View {
             .padding(.bottom, 60)
         }
         .background(Color.clear)
+    }
+
+    private func connectionRow(_ connection: BessieConnectionDefinition) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: connection.kind == .local ? "laptopcomputer" : "network")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(BessieDesign.strong)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connection.name)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(BessieDesign.strong)
+                Text(connection.detail)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(BessieDesign.subtle)
+            }
+            Spacer()
+            Text("INCLUDED")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(BessieDesign.strong)
+            if connection.kind == .ssh {
+                Button { model.removeConnection(connection.id) } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(BessieDesign.subtle)
+                .accessibilityLabel("Remove \(connection.name)")
+            }
+        }
+        .padding(.horizontal, 13)
+        .frame(minHeight: 54)
+    }
+
+    private var addConnectionSheet: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            BessieSectionLabel("NEW SSH CONNECTION")
+                .padding(.bottom, 18)
+            connectionField("Name", placeholder: "Hermes VPS", text: $connectionName)
+            connectionField("SSH host", placeholder: "hermes", text: $sshHost)
+                .padding(.top, 14)
+            connectionField("Herdr session", placeholder: "default", text: $herdrSession)
+                .padding(.top, 14)
+            Text("Uses your OpenSSH config and key agent. Bessie never stores a password. Leave the session blank for Herdr's default session.")
+                .font(.system(size: 10.5))
+                .lineSpacing(2)
+                .foregroundStyle(BessieDesign.subtle)
+                .padding(.top, 12)
+            if let error = model.connectionError {
+                Text(error)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(BessieDesign.strong)
+                    .padding(.top, 10)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { showAddConnection = false }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                Button("Add and connect") {
+                    if model.addConnection(name: connectionName, sshHost: sshHost, session: herdrSession) {
+                        showAddConnection = false
+                    }
+                }
+                .buttonStyle(BessiePrimaryButtonStyle())
+            }
+            .padding(.top, 22)
+        }
+        .padding(28)
+        .frame(width: 460)
+        .background(BessieDesign.background)
+        .preferredColorScheme(.dark)
+    }
+
+    private func connectionField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(BessieDesign.subtle)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .background(BessieDesign.inset)
+                .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
+        }
+    }
+
+    @ViewBuilder private var notificationPermissionControl: some View {
+        switch notifications.authorizationStatus {
+        case .notDetermined:
+            Button("Allow notifications") { notifications.requestAuthorization() }
+                .buttonStyle(BessieSecondaryButtonStyle())
+        case .denied:
+            Button("Open System Settings") { notifications.openSystemSettings() }
+                .buttonStyle(BessieSecondaryButtonStyle())
+        case .authorized, .provisional, .ephemeral:
+            Text("Allowed")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(BessieDesign.strong)
+        @unknown default:
+            Text("Unavailable")
+                .font(.system(size: 11))
+                .foregroundStyle(BessieDesign.subtle)
+        }
     }
 }
 
@@ -200,6 +527,20 @@ private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
 }
 
+private extension BessieAppIcon {
+    var title: String { switch self { case .dark: "Dark"; case .light: "Light" } }
+}
+
+private extension BessieNotifications {
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .blockedOnly: "When work needs me"
+        case .blockedAndDone: "Needs me and done"
+        }
+    }
+}
+
 struct BessieWindowSnapshotProbe: NSViewRepresentable {
     final class Coordinator { var captured = false }
     let role: String
@@ -212,9 +553,13 @@ struct BessieWindowSnapshotProbe: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         let preview = ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased()
+        let capturesSheet = preview == "new-process"
+            || preview == "command-palette"
+            || preview == "project-capture"
+            || preview == "project-launch-review"
         guard ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_PATH"] != nil,
               ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_TRIGGER"] == nil,
-              (preview == "new-process" ? role == "sheet" : role == "main")
+              (capturesSheet ? role == "sheet" : role == "main")
         else { return view }
         let delay = Double(ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_DELAY"] ?? "3") ?? 3
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
@@ -265,7 +610,9 @@ enum BessieWindowSnapshot {
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
         let bitmap: NSBitmapImageRep?
-        if let image = captureWindowImage(windowNumber: window.windowNumber) {
+        if let image = captureWindowImage(windowNumber: window.windowNumber),
+           image.width >= Int(content.bounds.width.rounded(.down)),
+           image.height >= Int(content.bounds.height.rounded(.down)) {
             bitmap = NSBitmapImageRep(cgImage: image)
         } else if let cached = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
             content.displayIfNeeded()

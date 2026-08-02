@@ -62,6 +62,9 @@ required_copy=(
     'No agent selected'
     'Pane actions'
     'Action failed'
+    'Allow notifications'
+    'App icon'
+    'Resize split'
 )
 
 for phrase in "${required_copy[@]}"; do

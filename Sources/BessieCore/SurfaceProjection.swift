@@ -17,6 +17,83 @@ public struct PaneOpenTarget: Equatable, Sendable {
     public let workspaceID: String
     public let tabID: String
     public let paneID: String
+
+    public init(workspaceID: String, tabID: String, paneID: String) {
+        self.workspaceID = workspaceID
+        self.tabID = tabID
+        self.paneID = paneID
+    }
+}
+
+public enum BessiePaneActionTarget {
+    public static func resolve(
+        selectedPaneID: String?,
+        visiblePaneIDs: Set<String>,
+        projection: HerdrSessionProjection
+    ) -> String? {
+        if let selectedPaneID,
+           visiblePaneIDs.contains(selectedPaneID),
+           projection.panes.contains(where: { $0.id == selectedPaneID }) {
+            return selectedPaneID
+        }
+        return projection.panes.first { visiblePaneIDs.contains($0.id) && $0.focused }?.id
+            ?? projection.panes.first { visiblePaneIDs.contains($0.id) }?.id
+    }
+}
+
+public struct PaneMoveChoice: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let destination: PaneMoveDestination
+
+    public init(id: String, title: String, destination: PaneMoveDestination) {
+        self.id = id
+        self.title = title
+        self.destination = destination
+    }
+}
+
+public struct PaneMoveChoices: Equatable, Sendable {
+    public let tabs: [PaneMoveChoice]
+    public let workspaces: [PaneMoveChoice]
+    public let newTab: PaneMoveDestination
+    public let newWorkspace: PaneMoveDestination
+
+    public init?(projection: HerdrSessionProjection, paneID: String) {
+        guard let pane = projection.panes.first(where: { $0.id == paneID }) else { return nil }
+
+        tabs = projection.tabs
+            .filter { $0.workspaceID == pane.workspaceID && $0.id != pane.tabID }
+            .sorted { $0.number < $1.number }
+            .map { tab in
+                let targetPane = projection.panes.first { $0.tabID == tab.id && $0.focused }
+                    ?? projection.panes.first { $0.tabID == tab.id }
+                return PaneMoveChoice(
+                    id: tab.id,
+                    title: tab.label,
+                    destination: .tab(
+                        tabID: tab.id,
+                        targetPaneID: targetPane?.id,
+                        split: .right,
+                        ratio: 0.5
+                    )
+                )
+            }
+
+        workspaces = projection.workspaces
+            .filter { $0.id != pane.workspaceID }
+            .sorted { $0.number < $1.number }
+            .map {
+                PaneMoveChoice(
+                    id: $0.id,
+                    title: $0.label,
+                    destination: .newTab(workspaceID: $0.id, label: nil)
+                )
+            }
+
+        newTab = .newTab(workspaceID: pane.workspaceID, label: nil)
+        newWorkspace = .newWorkspace(label: nil, tabLabel: nil)
+    }
 }
 
 public struct WorkspaceSurfaceSummary: Identifiable, Equatable, Sendable {
@@ -43,6 +120,7 @@ public struct AttentionSurfaceItem: Identifiable, Equatable, Sendable {
 public struct BessieSurfaceProjection: Equatable, Sendable {
     public let workspaces: [WorkspaceSurfaceSummary]
     public let attention: [AttentionSurfaceItem]
+    public let notificationPanes: [BessieNotificationPane]
     private let targets: [String: PaneOpenTarget]
 
     public init(projection: HerdrSessionProjection) {
@@ -62,6 +140,21 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
                 rolledState: Self.highest(states, fallback: AgentSemanticState(herdrValue: workspace.agentStatus)),
                 attentionCount: states.filter(\.needsAttention).count,
                 focused: workspace.focused
+            )
+        }
+
+        notificationPanes = projection.panes.compactMap { pane in
+            guard let workspace = workspacesByID[pane.workspaceID],
+                  let tab = tabsByID[pane.tabID]
+            else { return nil }
+            let paneLabel = pane.label ?? pane.title ?? pane.agent ?? "Untitled pane"
+            return BessieNotificationPane(
+                paneID: pane.id,
+                state: AgentSemanticState(herdrValue: pane.agentStatus),
+                revision: pane.revision,
+                identity: pane.agent ?? pane.label ?? pane.title ?? "Untitled pane",
+                location: "\(workspace.label) / \(tab.label) / \(paneLabel)",
+                target: PaneOpenTarget(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.id)
             )
         }
 

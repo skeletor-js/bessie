@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+enum BessieResources {
+    static func url(forResource name: String, withExtension extensionName: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: extensionName)
+            ?? Bundle.module.url(forResource: name, withExtension: extensionName)
+    }
+}
+
 /// Native rendering of the retained Bessie design system. Values mirror the
 /// shipped cowprint/dark/sharp/flat token set rather than macOS adaptive defaults.
 enum BessieDesign {
@@ -65,7 +72,7 @@ struct BessieCowprintTexture: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let tileImage: Image? = {
-        guard let url = Bundle.module.url(forResource: "CowprintTile", withExtension: "png"),
+        guard let url = BessieResources.url(forResource: "CowprintTile", withExtension: "png"),
               let image = NSImage(contentsOf: url)
         else { return nil }
         return Image(nsImage: image)
@@ -117,7 +124,7 @@ struct BessieLogoMark: View {
     var width: CGFloat = 20
 
     private static let image: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "BessieLogo", withExtension: "svg") else { return nil }
+        guard let url = BessieResources.url(forResource: "BessieLogo", withExtension: "svg") else { return nil }
         return NSImage(contentsOf: url)
     }()
 
@@ -225,11 +232,12 @@ struct BessieQuietButtonStyle: ButtonStyle {
 struct BessieStatusLine: View {
     let workspaceCount: Int
     let attentionCount: Int
+    let connectionCount: Int
 
     var body: some View {
         HStack(spacing: 16) {
             Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)
-            Text("LOCAL · HERDR 0.7.5")
+            Text("\(connectionCount) CONNECTION\(connectionCount == 1 ? "" : "S") · HERDR 0.7.5")
             Text("\(workspaceCount) WORKSPACE\(workspaceCount == 1 ? "" : "S")")
             Spacer(minLength: 8)
             if attentionCount > 0 {

@@ -22,7 +22,7 @@ public struct ConnectPresentation: Equatable, Sendable {
 
     public static let initial = ConnectPresentation(
         title: "Connecting to Herdr",
-        detail: "Looking for a local session…",
+        detail: "Opening your Bessie session…",
         status: .notChecked
     )
 
@@ -34,16 +34,34 @@ public struct ConnectPresentation: Equatable, Sendable {
                 detail: "Install Herdr to use Bessie.",
                 status: .notFound
             )
+        case .resolutionFailed(let failure):
+            self.init(title: "Runtime needs attention", detail: failure.localizedDescription, status: .notFound)
+        case .validationFailed(_, let failure):
+            self.init(title: "Runtime needs attention", detail: String(describing: failure), status: .incompatible)
         case .stopped:
             self.init(
                 title: "Herdr is not running",
-                detail: "Start your local Herdr server, then try again.",
+                detail: "Automatic startup is off. Start Herdr, then try again.",
+                status: .stopped
+            )
+        case .starting:
+            self.init(
+                title: "Starting Herdr",
+                detail: "Opening your Bessie session…",
+                status: .connecting
+            )
+        case .startFailed(_, let reason):
+            self.init(
+                title: "Herdr couldn't start",
+                detail: reason,
                 status: .stopped
             )
         case .incompatible(_, _, let reason):
             self.init(title: "Herdr is incompatible", detail: reason, status: .incompatible)
         case .connecting:
-            self.init(title: "Connecting to Herdr", detail: "Opening your local session…", status: .connecting)
+            self.init(title: "Connecting to Herdr", detail: "Opening your Bessie session…", status: .connecting)
+        case .apiUnavailable(_, let reason):
+            self.init(title: "Herdr API unavailable", detail: reason, status: .lost)
         case .connected(_, _, let snapshot):
             self.init(
                 title: "Connected to Herdr",

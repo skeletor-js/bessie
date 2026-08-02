@@ -40,4 +40,18 @@ final class RuntimeDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(result, HerdrRuntime(url: executable, source: .repositoryLocal))
     }
+
+    func testUserLocalInstallIsFoundWithoutShellPath() {
+        let executable = URL(fileURLWithPath: "/Users/jordan/.local/bin/herdr")
+        let locator = HerdrRuntimeLocator(isExecutable: { $0 == executable })
+
+        let result = locator.locate(
+            explicitPath: nil,
+            path: "/usr/bin:/bin",
+            repositoryRoot: URL(fileURLWithPath: "/Applications"),
+            homeDirectory: URL(fileURLWithPath: "/Users/jordan")
+        )
+
+        XCTAssertEqual(result, HerdrRuntime(url: executable, source: .path))
+    }
 }
