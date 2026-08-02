@@ -122,16 +122,36 @@ public enum WorkspaceFS {
         root: WorkspaceFileRoot,
         relativePath: String
     ) -> Result<URL, WorkspacePathError> {
-        guard !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
+        let candidate: URL
+        if relativePath.isEmpty {
+            candidate = root.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        } else {
+            switch resolvePath(root: root, relativePath: relativePath) {
+            case let .success(url): candidate = url
+            case let .failure(error): return .failure(error)
+            }
+        }
+        guard FileManager.default.fileExists(atPath: candidate.path) else { return .failure(.notFound) }
+        guard FileManager.default.isReadableFile(atPath: candidate.path) else { return .failure(.unreadable) }
+        return .success(candidate)
+    }
+
+    /// Resolves a contained path without requiring it to exist, so deleted watcher paths can
+    /// be validated before presentation or use as a process argument.
+    public static func resolvePath(
+        root: WorkspaceFileRoot,
+        relativePath: String
+    ) -> Result<URL, WorkspacePathError> {
+        guard !relativePath.isEmpty, !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
 
         let canonicalRoot = root.rootURL.standardizedFileURL.resolvingSymlinksInPath()
         let candidate = canonicalRoot
             .appendingPathComponent(relativePath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        guard Self.contains(candidate, in: canonicalRoot) else { return .failure(.pathEscape) }
-        guard FileManager.default.fileExists(atPath: candidate.path) else { return .failure(.notFound) }
-        guard FileManager.default.isReadableFile(atPath: candidate.path) else { return .failure(.unreadable) }
+        guard candidate != canonicalRoot, Self.contains(candidate, in: canonicalRoot) else {
+            return .failure(.pathEscape)
+        }
         return .success(candidate)
     }
 
