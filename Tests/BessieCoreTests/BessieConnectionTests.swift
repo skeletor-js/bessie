@@ -51,6 +51,11 @@ final class BessieConnectionTests: XCTestCase {
             sshHost: "hermes",
             session: "default && nope"
         ).validated())
+        XCTAssertThrowsError(try BessieConnectionDefinition(
+            name: "Bad",
+            kind: .ssh,
+            sshHost: "-V"
+        ).validated())
     }
 
     func testConnectionStorePersistsSelectionWithoutCredentials() throws {
@@ -109,8 +114,10 @@ final class BessieConnectionTests: XCTestCase {
 
         XCTAssertEqual(reconnecting.phase, "Reconnecting to Herdr")
         XCTAssertFalse(reconnecting.isUsable)
+        XCTAssertFalse(reconnecting.canRetry)
         XCTAssertEqual(failed.phase, "Couldn't reconnect")
         XCTAssertFalse(failed.isUsable)
+        XCTAssertTrue(failed.canRetry)
     }
 
     func testConnectionHealthLimitsWorkspaceFilesystemToLocalV1() {

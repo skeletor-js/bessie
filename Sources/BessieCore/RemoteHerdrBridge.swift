@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct RemoteHerdrBridgePlan: Equatable, Sendable {
@@ -141,7 +142,7 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         if let process = state.0, process.isRunning {
             process.terminate()
             for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
-            if process.isRunning { process.interrupt() }
+            if process.isRunning { Self.killAndReap(process) }
         }
         if let directory = state.1 { try? fileManager.removeItem(at: directory) }
     }
@@ -161,7 +162,8 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
-        process.waitUntilExit()
+        for _ in 0..<40 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { Self.killAndReap(process) }
     }
 
     private func remoteStatus() throws -> RemoteStatus {
@@ -184,7 +186,12 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         catch { throw BessieConnectionError.sshFailed(error.localizedDescription) }
         let deadline = Date(timeIntervalSinceNow: timeout)
         while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { Self.killAndReap(process) }
+            throw BessieConnectionError.sshFailed("Timed out waiting for SSH.")
+        }
         let stdout = output.fileHandleForReading.readDataToEndOfFile()
         let stderr = errors.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0 else {
@@ -192,6 +199,12 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
             throw BessieConnectionError.sshFailed(reason?.isEmpty == false ? reason! : "SSH exited \(process.terminationStatus).")
         }
         return stdout
+    }
+
+    private static func killAndReap(_ process: Process) {
+        guard process.isRunning else { return }
+        kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
     }
 }
 

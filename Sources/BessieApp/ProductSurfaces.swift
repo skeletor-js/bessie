@@ -177,6 +177,19 @@ struct BessieProductShell: View {
             routePendingNotification()
         }
         .onDisappear { shortcuts.stop() }
+        .onChange(of: model.activeConnection.id) { _, _ in
+            selectedPaneID = nil
+            if settings.preferences.startupBehavior == .lastWorkspace,
+               let last = settings.lastWorkspaceID(for: model.activeConnection.id),
+               projection.workspaces.contains(where: { $0.id == last }) {
+                selectedWorkspaceID = last
+                destination = .workspace
+            } else {
+                selectedWorkspaceID = projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
+                destination = .workspaces
+            }
+            routePendingNotification()
+        }
         .onChange(of: projection.workspaces.count) { _, count in
             if count > 0,
                ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_TRIGGER"] == "live-two-pane" {

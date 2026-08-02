@@ -58,7 +58,9 @@ public struct BessieConnectionDefinition: Codable, Equatable, Identifiable, Send
     }
 
     public static func isSafeSSHHost(_ value: String) -> Bool {
-        !value.isEmpty && value.range(of: #"^[A-Za-z0-9._@%+:-]+$"#, options: .regularExpression) != nil
+        !value.isEmpty
+            && !value.hasPrefix("-")
+            && value.range(of: #"^[A-Za-z0-9._@%+:-]+$"#, options: .regularExpression) != nil
     }
 
     public static func isSafeSession(_ value: String) -> Bool {

@@ -425,7 +425,7 @@ struct BessieSettingsView: View {
             Button(selected ? "ACTIVE" : "SELECT") { model.selectConnection(connection.id) }
                 .buttonStyle(BessieQuietButtonStyle())
                 .disabled(selected)
-            if health?.isUsable == false {
+            if health?.canRetry == true {
                 Button("Retry") { fleet.retry(connectionID: connection.id) }
                     .buttonStyle(BessieQuietButtonStyle())
             }
