@@ -81,10 +81,9 @@ final class WorkspaceFSTests: XCTestCase {
             WorkspaceFS.resolveRoot(connection: .localBessie, projection: relative, workspaceID: "workspace"),
             .failure(.missingRoot)
         )
-        XCTAssertEqual(
-            WorkspaceFS.resolveRoot(connection: .localBessie, projection: nil),
-            .failure(.missingRoot)
-        )
+        let filesHome = try WorkspaceFS.resolveRoot(connection: .localBessie, projection: nil).get()
+        XCTAssertEqual(filesHome.rootURL, FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath())
+        XCTAssertEqual(filesHome.workspaceID, "files-home")
     }
 
     func testResolveRootRejectsFilesAndMissingDirectories() throws {

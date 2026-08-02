@@ -974,3 +974,52 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 - `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package anchors, UI copy, and F1 structural anchors passed. Swift is unavailable on this VPS, and the goal contract explicitly prohibited fake or remote Mac verification, so native compilation, Swift test execution, packaging, installation, app relaunch, and screenshot inspection were not run or claimed.
 - Simplification review consolidated relative-path containment, batched touch updates, reduced redundant preview reloads, and rejected oversized files before reading them. Focused code review found one P1 stale-root lifecycle defect; the configuration identity now includes workspace and cwd, with regression coverage. A final independent Swift/concurrency review found no high-confidence blockers.
 - Existing planning and roadmap dirt remained untouched. No push, PR, publication, deployment, Mac sync, app installation, or Herdr/file mutation occurred.
+
+## 2026-08-02: Agent Intent Bus U1 registry complete
+
+- Added the versioned `BessieCore` intent registry, typed owner/risk metadata, JSON Schema parameter descriptions, and all nine pilot definitions. Herdr-scoped routes require `connection_id`; Bessie Project reads are explicitly `offline_ok`; `workspace.close` is marked destructive.
+- Failure-first Mac run `xcrun swift test --filter AgentIntentRegistryTests` failed because the registry and catalog types did not exist. After implementation, the focused suite passed **4 tests with 0 failures**, covering Codable round-trip, exact pilot membership, unique MCP-safe names, required metadata, and exported JSON Schema field names.
+- `./scripts/check.sh`: exit 0. Swift is unavailable on the VPS; focused Swift compilation and tests ran on `jordan-macbook`. No app lifecycle, socket, CLI, MCP, skill, Herdr session, push, PR, publication, deployment, or notarization work occurred in U1.
+
+## 2026-08-02: Agent Intent Bus U2 executor complete
+
+- Added the versioned request/result wire model and one Core executor for all pilot intents. It performs strict schema validation, returns structured error codes, requires explicit connection IDs for Herdr-scoped routes, exposes connection-scoped projection/focus/layout facts, and maps focus/close through injectable `HerdrAction` paths. Effective intent discovery omits live-only intents while disconnected.
+- Added in-memory lock-protected one-shot confirmation tokens bound to the destructive intent plus canonical sorted params. `workspace.close` uses the exact authoritative projection cascade text; changed arguments and token reuse fail with `confirm_token_invalid`.
+- Failure-first Mac compilation proved the executor/request/result/port types were absent. A second proof-first run failed on missing connection-scoped focus/layout output. Final `xcrun swift test --filter AgentIntentExecutorTests`: **7 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U3 UI dispatch complete
+
+- Added a persistent app-side dispatcher around the Core executor and routed all current pilot workspace/pane focus and workspace-close paths through it, including routed pane opening and Project handoff sequences. Non-pilot actions retain the existing action client path. Disconnected UI actions now surface an error instead of silently returning.
+- Workspace-close UI confirmations explicitly grant the destructive follow-up; an unconfirmed programmatic close receives the executor's `needs_confirmation` result and cannot auto-confirm. MainActor projection updates and connection/request generation guards remain intact.
+- Failure-first Mac compilation proved the pilot mapping seam was absent. Final `xcrun swift test --filter IntentActionDispatcherTests`: **2 tests, 0 failures**. The command compiled both `BessieApp` and `BessieAppModelTests`. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U4 local socket complete
+
+- Added the Core NDJSON Unix-socket client/server, a 0600 Application Support endpoint with isolated-path override, stale-endpoint and competing-owner protection, structured malformed-request handling, and honest `bessie_not_running` client failures. No TCP listener exists.
+- BessieApp now hosts one persistent executor/socket for the fleet, backed by the real Project store and explicit multi-connection live routing. It starts with the app and releases only the local bus endpoint on termination; Herdr and pane processes are untouched.
+- Failure-first Mac compilation proved the socket server/client contract was absent. Final `xcrun swift test --filter AgentIntent`: **15 tests, 0 failures** across XCTest and Swift Testing; `xcrun swift test --filter IntentActionDispatcherTests`: **3 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U5 CLI complete
+
+- Added the thin `bessie` executable with only `intents`, `status`, and generic `call` forms. It translates arguments to the shared request/client, emits one structured JSON result on stdout, keeps usage diagnostics on stderr, preserves confirmation tokens, and exits nonzero on failed results or invalid input. Offline `intents` falls back to the static Core catalog; live calls fail honestly when the app is absent.
+- Failure-first Mac build proved the executable target had no source. Final `xcrun swift test --filter BessieCLIArgumentsTests`: **8 tests, 0 failures**; `swift build --product bessie`: exit 0. Offline smoke exits were intents=0, status=1, invalid-args=2 with valid JSON results. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U6 MCP complete
+
+- Added the stdio-only `bessie-mcp` executable with MCP initialization, notifications, `tools/list`, and `tools/call`. Tools are projected directly from the effective registry with exact dotted names and schemas; destructive tool schemas expose the protocol-level `confirm_token`. Calls return one structured result JSON text item with correct `isError`; stdout remains protocol-only.
+- Failure-first Mac build proved the MCP target was absent. Additional proof-first tests caught missing confirm-token schema advertisement and omitted-arguments handling before repair. Final `xcrun swift test --filter BessieMCPTests`: **7 tests, 0 failures**; `swift build --product bessie-mcp`: exit 0. Scripted smoke returned three protocol lines, nine exact tools, an honest offline error, and empty stderr. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U7 skill and parity complete
+
+- Added the repo-local `operating-bessie` skill and linked it from `AGENTS.md`. It teaches discovery-first CLI/MCP operation, Herdr ownership and quit survival, explicit connection scoping, one-shot confirmation, honest offline errors, human-only boundaries, and the prohibition on GUI puppeting, terminal injection, private protocols, or a shadow `bessie server`.
+- Added destructive confirmation metadata to the registry and a static parity checker wired into `check.sh`. It enforces unique MCP-safe names, generic CLI/MCP projections without copied domain catalogs, destructive metadata, Package products/targets, Swift parity anchors, and discovery-first skill guidance.
+- Final focused Mac suites: CLI **9 tests**, MCP **8 tests**, registry **4 tests**, all with 0 failures. `./scripts/check.sh`, `git diff --check`, parity-checker syntax, skill frontmatter validation, and workspace skill reload all passed.
+
+## 2026-08-02: Agent Intent Bus U8 live verification complete
+
+- Extended `mac-verify.sh` with a verifier-owned 0600 app socket and live CLI coverage for exact nine-intent discovery, app/connection status, session projection, Project list, workspace focus, and pane focus. Ordinary Herdr snapshots prove the agent mutations reached Herdr's authoritative state.
+- Added stdio MCP initialize/list/call coverage with exact CLI tool-name parity and empty stderr, an honest `bessie_not_running` assertion after app shutdown while Herdr remains alive, and an isolated destructive workspace-close flow that verifies exact cascade text, one-shot confirmation success, Herdr-observed closure, and replay rejection.
+- The first full run exposed a pre-existing unbounded Git-root traversal on the current Mac/Foundation version. `WorkspaceFS` now stops before deleting the filesystem root path; its stale nil-projection assertion now matches the documented Files-home behavior. The focused regression test passed before the full verifier was repeated.
+- Final `./scripts/check.sh && ./scripts/mac-verify.sh`: exit 0. The native suite executed **224 XCTest tests and 21 Swift Testing tests with 0 failures**; both CLI products built; packaging, isolated live Herdr checks, app-hosted bus checks, screenshots, installation to `/Applications/Bessie.app`, relaunch, and executable identity verification passed.
+- Packaged and installed executable SHA-256 values both equal `0175768a4b0f5ba453ebea0ae200479ad232fa4e92290ad71c5a95ecd3be5335`. The inspected 1180×740 live screenshot showed a usable Bessie window with two rendered terminal panes and no blank, clipped, corrupt, or blocking-error surface; minor glyph overlap in deliberate terminal test output does not affect the intent bus.
+- Final `git diff --check`: exit 0. No push, PR, notarization, network listener, daemon, private Herdr protocol, ordinary Herdr session, or unrelated untracked planning artifact was changed.
