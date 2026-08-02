@@ -1003,3 +1003,8 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 
 - Added the thin `bessie` executable with only `intents`, `status`, and generic `call` forms. It translates arguments to the shared request/client, emits one structured JSON result on stdout, keeps usage diagnostics on stderr, preserves confirmation tokens, and exits nonzero on failed results or invalid input. Offline `intents` falls back to the static Core catalog; live calls fail honestly when the app is absent.
 - Failure-first Mac build proved the executable target had no source. Final `xcrun swift test --filter BessieCLIArgumentsTests`: **8 tests, 0 failures**; `swift build --product bessie`: exit 0. Offline smoke exits were intents=0, status=1, invalid-args=2 with valid JSON results. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U6 MCP complete
+
+- Added the stdio-only `bessie-mcp` executable with MCP initialization, notifications, `tools/list`, and `tools/call`. Tools are projected directly from the effective registry with exact dotted names and schemas; destructive tool schemas expose the protocol-level `confirm_token`. Calls return one structured result JSON text item with correct `isError`; stdout remains protocol-only.
+- Failure-first Mac build proved the MCP target was absent. Additional proof-first tests caught missing confirm-token schema advertisement and omitted-arguments handling before repair. Final `xcrun swift test --filter BessieMCPTests`: **7 tests, 0 failures**; `swift build --product bessie-mcp`: exit 0. Scripted smoke returned three protocol lines, nine exact tools, an honest offline error, and empty stderr. `./scripts/check.sh` and `git diff --check`: exit 0.

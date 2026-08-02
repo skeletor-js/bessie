@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "BessieCore", targets: ["BessieCore"]),
         .executable(name: "BessieApp", targets: ["BessieApp"]),
         .executable(name: "bessie", targets: ["BessieCLI"]),
+        .executable(name: "bessie-mcp", targets: ["BessieMCP"]),
     ],
     dependencies: [
         .package(
@@ -32,6 +33,10 @@ let package = Package(
             name: "BessieCLI",
             dependencies: ["BessieCore"]
         ),
+        .executableTarget(
+            name: "BessieMCP",
+            dependencies: ["BessieCore"]
+        ),
         .testTarget(
             name: "BessieCoreTests",
             dependencies: ["BessieCore"]
@@ -43,6 +48,10 @@ let package = Package(
         .testTarget(
             name: "BessieCLITests",
             dependencies: ["BessieCore", "BessieCLI"]
+        ),
+        .testTarget(
+            name: "BessieMCPTests",
+            dependencies: ["BessieCore", "BessieMCP"]
         ),
     ]
 )
