@@ -303,37 +303,84 @@ struct BessieTopBar<Actions: View>: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
             }
-            .contentShape(Rectangle())
-            .overlay { BessieWindowDragRegion() }
-            .accessibilityHint("Double-click to zoom the window")
+            .allowsHitTesting(false)
 
             HStack(spacing: 5) { actions }
         }
         .font(.system(size: 13))
-        .padding(.leading, 16)
+        // Leave room for traffic lights; whole bar is still a drag/fullscreen target.
+        .padding(.leading, 72)
         .padding(.trailing, 12)
-        .frame(height: density.topbarHeight)
+        .frame(maxWidth: .infinity)
+        .frame(height: max(density.topbarHeight, BessieDesign.titlebarHeight + 8))
         .background(BessieDesign.background)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
+        .background(BessieWindowChromeRegion(action: .toggleFullScreen))
+        .accessibilityHint("Double-click to enter or exit full screen")
     }
 }
 
-private struct BessieWindowDragRegion: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { DragRegionView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+/// Transparent AppKit region for window drag + double-click full screen.
+/// Covers the stoplight title strip even with `.hiddenTitleBar`.
+struct BessieWindowChromeRegion: NSViewRepresentable {
+    enum Action {
+        case toggleFullScreen
+        case zoom
+    }
 
-    private final class DragRegionView: NSView {
+    var action: Action = .toggleFullScreen
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ChromeRegionView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? ChromeRegionView)?.action = action
+    }
+
+    private final class ChromeRegionView: NSView {
+        var action: Action = .toggleFullScreen
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
         override var mouseDownCanMoveWindow: Bool { false }
 
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            bounds.contains(point) ? self : nil
+        }
+
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 {
-                window?.performZoom(nil)
-            } else {
-                window?.performDrag(with: event)
+            guard let window else { return }
+            if event.clickCount >= 2 {
+                switch action {
+                case .toggleFullScreen:
+                    window.toggleFullScreen(nil)
+                case .zoom:
+                    window.performZoom(nil)
+                }
+                return
             }
+            window.performDrag(with: event)
         }
     }
 }
+
+// Keep old name as alias used elsewhere if any
+private typealias BessieWindowDragRegion = BessieWindowChromeRegion
 
 struct BessiePrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

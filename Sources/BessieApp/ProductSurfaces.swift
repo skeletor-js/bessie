@@ -60,6 +60,7 @@ struct BessieProductShell: View {
     @State private var shortcutClose: PendingClose?
     @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
+    @State private var railWidth: CGFloat = BessieDesign.railWidth
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
     private var attentionItems: [AttentionItemModel] {
@@ -110,9 +111,20 @@ struct BessieProductShell: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // Full-width title chrome in line with traffic lights (hidden titlebar).
+                BessieWindowChromeRegion(action: .toggleFullScreen)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background(BessieDesign.window)
+                    .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
+                    .accessibilityLabel("Window title bar")
+                    .accessibilityHint("Double-click to enter or exit full screen")
+
                 HStack(spacing: density.cardGap) {
                     if !sidebarCollapsed {
                         productRail
+                            .frame(minWidth: 180, idealWidth: railWidth, maxWidth: 420)
+                            .frame(width: railWidth)
                             .bessieSurface(base: BessieDesign.rail, crop: railCrop)
                     }
 
@@ -430,8 +442,11 @@ struct BessieProductShell: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
         }
-        .frame(width: density.railWidth)
+        .frame(width: railWidth)
         .clipped()
+        .overlay(alignment: .trailing) {
+            RailResizeHandle(width: $railWidth)
+        }
     }
 
     private var selectedAgentPane: PaneProjection? {
@@ -2279,6 +2294,38 @@ private extension AgentAvailability {
         case .available: "Available"
         case .unavailable(let reason): reason
         }
+    }
+}
+
+private struct RailResizeHandle: View {
+    @Binding var width: CGFloat
+    @State private var dragStart: CGFloat?
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 10)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        if dragStart == nil { dragStart = width }
+                        let next = (dragStart ?? width) + value.translation.width
+                        width = min(420, max(180, next))
+                    }
+                    .onEnded { _ in dragStart = nil }
+            )
+            .accessibilityLabel("Resize sidebar")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: width = min(420, width + 12)
+                case .decrement: width = max(180, width - 12)
+                @unknown default: break
+                }
+            }
     }
 }
 

@@ -129,11 +129,17 @@ struct FollowFilesSurface: View {
 
                 if preview.kind == .text, let text = preview.text {
                     ScrollView([.horizontal, .vertical]) {
-                        Text(text.isEmpty ? "No changes from the locked baseline." : text)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
+                        if text.isEmpty {
+                            Text("No changes from the locked baseline.")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(BessieDesign.subtle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                        } else {
+                            DiffTextView(text: text)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                        }
                     }
                     .background(BessieDesign.code)
                 } else {
@@ -169,5 +175,44 @@ struct FollowFilesSurface: View {
         case .deleted: "minus"
         case .unknown: "questionmark"
         }
+    }
+}
+
+/// Unified-diff renderer with addition/removal/hunk coloring.
+struct DiffTextView: View {
+    let text: String
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
+                Text(String(line.isEmpty ? " " : line))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(color(for: String(line)))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(background(for: String(line)))
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func color(for line: String) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return BessieDesign.subtle }
+        if line.hasPrefix("@@") { return Color(red: 0.45, green: 0.72, blue: 0.95) }
+        if line.hasPrefix("+") { return Color(red: 0.45, green: 0.82, blue: 0.52) }
+        if line.hasPrefix("-") { return Color(red: 0.95, green: 0.48, blue: 0.48) }
+        return BessieDesign.text
+    }
+
+    private func background(for line: String) -> Color {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") {
+            return Color(red: 0.18, green: 0.42, blue: 0.22).opacity(0.28)
+        }
+        if line.hasPrefix("-") && !line.hasPrefix("---") {
+            return Color(red: 0.45, green: 0.16, blue: 0.16).opacity(0.28)
+        }
+        if line.hasPrefix("@@") {
+            return Color(red: 0.15, green: 0.28, blue: 0.42).opacity(0.35)
+        }
+        return Color.clear
     }
 }
