@@ -7,6 +7,7 @@ enum ProductDestination: String, CaseIterable, Identifiable {
     case workspaces = "Workspaces"
     case projects = "Projects"
     case workspace = "Workspace"
+    case files = "Files"
     case attention = "Attention"
     case agent = "Agent"
     case settings = "Settings"
@@ -17,6 +18,7 @@ enum ProductDestination: String, CaseIterable, Identifiable {
         case .workspaces: "square.grid.2x2"
         case .projects: "folder.badge.gearshape"
         case .workspace: "rectangle.split.3x1"
+        case .files: "folder"
         case .attention: "bell"
         case .agent: "terminal"
         case .settings: "gearshape"
@@ -276,6 +278,13 @@ struct BessieProductShell: View {
                 paneGap: settings.preferences.paneGap,
                 terminalFontSize: settings.preferences.terminalFontSize
             )
+        case .files:
+            WorkspaceFilesSurface(
+                connection: model.activeConnection,
+                projection: projection,
+                selectedWorkspaceID: selectedWorkspaceID,
+                selectedPaneID: selectedPaneID
+            )
         case .attention:
             AttentionSurface(items: attentionItems, connectionIssues: fleet.connectionIssues, open: openRoutedPane)
         case .agent:
@@ -332,6 +341,7 @@ struct BessieProductShell: View {
                     railDestination(.attention)
                     railDestination(.workspaces)
                     railDestination(.projects)
+                    railDestination(.files)
 
                     railGroupLabel("OPEN")
                         .padding(.top, 17)
@@ -444,7 +454,7 @@ struct BessieProductShell: View {
         case .herd: .herd
         case .workspaces: .workspaces
         case .projects: .workspaces
-        case .workspace: .workspace
+        case .workspace, .files: .workspace
         case .attention: .attention
         case .agent: .agent
         case .settings: .settings

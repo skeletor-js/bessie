@@ -12,6 +12,9 @@ grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.
 grep -Fq 'case notChecked' Sources/BessieCore/ConnectPresentation.swift
 grep -Fq 'public struct HerdrSessionProjection' Sources/BessieCore/SessionProjection.swift
 grep -Fq 'public enum WorkspaceFS' Sources/BessieCore/WorkspaceFS.swift
+grep -Fq 'public enum WorkspaceFileOps' Sources/BessieCore/WorkspaceFileOps.swift
+grep -Fq 'struct WorkspaceFilesSurface' Sources/BessieApp/WorkspaceFilesSurface.swift
+grep -Fq 'struct MarkdownFileEditor' Sources/BessieApp/MarkdownFileEditor.swift
 grep -Fq 'testResolveFileRejectsSymlinkEscapeButAllowsContainedSymlink' Tests/BessieCoreTests/WorkspaceFSTests.swift
 grep -Fq 'public actor WorkspaceFileWatcher' Sources/BessieCore/FollowWatch.swift
 grep -Fq 'public struct GitDiffService' Sources/BessieCore/GitDiffService.swift

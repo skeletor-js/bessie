@@ -1,5 +1,31 @@
 # Goal progress
 
+## 2026-08-02 — V1 Slice F2: workspace media and markdown viewer
+
+Status: implementation complete; shared-mirror integration verification blocked by unrelated Slice J source drift.
+
+Changed behavior:
+
+- Files is a local-workspace surface backed by `WorkspaceFS`, with capped directory browsing, directories-first sorting, image preview, AVKit video preview, read-only plain text, and honest remote/missing-root states.
+- Markdown has native preview and edit modes, explicit atomic Save, content-backed revision checks, and explicit Reload/Overwrite handling for stale files. Saves remain bound to the loaded file even if selection changes, and edits made during an in-flight save remain visibly dirty.
+- Rename/move destinations are workspace-relative and containment-checked. Delete requires confirmation and moves the selected item to macOS Trash. Mutations reject symbolic links rather than acting on their referents.
+- Directory and file loads cancel stale work so rapid navigation cannot publish older results over the current selection.
+
+Evidence:
+
+- VPS `./scripts/check.sh`: passed.
+- Clean disposable Mac checkout `xcrun swift test`: 183 tests executed, 4 live-Herdr tests skipped because the isolated live socket was not supplied, 0 failures.
+- Focused Mac F2 suite: 6 tests, 0 failures, covering list sorting/capping, atomic save and stale conflict, escape rejection, Trash injection, symbolic-link mutation rejection, read-only text selection, and Files navigation registration.
+- macOS 14 compilation passed after replacing the unsupported `ContentUnavailableView(actions:)` overload.
+- `./scripts/mac-verify.sh` was attempted after syncing F2. It stopped during production compilation in unrelated shared-mirror files `AttentionList.swift` and `HerdList.swift`, which reference missing Slice J types (`RoutedPaneTarget` and `AgentSemanticState.sortRank`). Packaging, the new Files screenshot, `/Applications/Bessie.app` replacement, and installed-executable matching did not run in that attempt.
+- `git diff --check` passed for the F2 implementation and verification files.
+
+Review and hardening:
+
+- Reuse, quality, and efficiency passes removed duplicate Trash handling and repeated text reads, moved blocking file work off the main actor, canceled stale navigation tasks, and clarified markdown-only errors.
+- Independent review found file-identity, in-flight-save, and symbolic-link referent risks; those were repaired and covered by focused tests.
+- Descriptor-scoped protection against an adversarial process replacing a validated path between check and mutation remains a limitation of the existing URL-based F0 `WorkspaceFS` contract, not a new F2 guarantee.
+
 ## 2026-07-31 — Complete herd roster
 
 Status: complete.
