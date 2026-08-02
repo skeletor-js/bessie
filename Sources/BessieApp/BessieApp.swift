@@ -664,9 +664,14 @@ struct ConnectView: View {
     @StateObject private var projects = ProjectsViewModel()
     @EnvironmentObject private var settings: BessieSettingsModel
     @Environment(\.bessieDensity) private var density
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @State private var setupAutomationStarted = false
 
     private var presentation: ConnectPresentation { fleet.presentation }
+    private var notificationActivationSignature: String {
+        let pendingConnectionID = notifications.pendingTarget?.connectionID ?? "-"
+        return "\(pendingConnectionID)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+    }
 
     var body: some View {
         Group {
@@ -724,6 +729,10 @@ struct ConnectView: View {
         }
         .onChange(of: fleet.activeConnectionID) { _, _ in
             terminalRegistry.releaseAll()
+        }
+        .task(id: notificationActivationSignature) {
+            guard let target = notifications.pendingTarget else { return }
+            _ = fleet.activate(connectionID: target.connectionID)
         }
         .onChange(of: terminalRegistry.diagnosticRevision) { _, _ in
             guard let model = fleet.activeModel else { return }

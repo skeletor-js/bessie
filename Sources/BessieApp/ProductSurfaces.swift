@@ -81,7 +81,9 @@ struct BessieProductShell: View {
         return "\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
     private var notificationRouteSignature: String {
-        let pending = notifications.pendingTarget?.paneID ?? "-"
+        let pending = notifications.pendingTarget.map {
+            "\($0.connectionID):\($0.workspaceID):\($0.tabID):\($0.paneID)"
+        } ?? "-"
         let panes = projection.panes
             .map { "\($0.id):\($0.workspaceID):\($0.tabID)" }
             .sorted()
@@ -203,7 +205,7 @@ struct BessieProductShell: View {
         .task(id: "\(projection.panes.count)-\(model.agentCatalog.items.count)") { runProcessAutomationIfRequested() }
         .task(id: notificationSignature) {
             notifications.reconcile(
-                connectionID: model.activeConnection.id,
+                connection: model.activeConnection,
                 panes: surfaces.notificationPanes,
                 policy: settings.preferences.notifications,
                 activePaneID: activeNotificationPaneID
@@ -651,17 +653,25 @@ struct BessieProductShell: View {
 
     private func routePendingNotification() {
         guard let pending = notifications.pendingTarget else { return }
-        if let connectionID = notifications.pendingConnectionID,
-           connectionID != model.activeConnection.id {
-            _ = fleet.activate(connectionID: connectionID)
+        if pending.connectionID != model.activeConnection.id {
+            guard fleet.activate(connectionID: pending.connectionID) != nil else {
+                notifications.consumePendingTarget(pending)
+                destination = .attention
+                return
+            }
             return
         }
-        guard let target = BessieNotificationRoute.resolve(pending: pending, projection: projection) else {
+        guard let target = BessieNotificationRoute.resolve(
+            pending: pending,
+            connectionID: model.activeConnection.id,
+            projection: projection
+        ) else {
+            notifications.consumePendingTarget(pending)
             destination = .attention
             return
         }
         model.openPane(target) { _ in
-            notifications.consumePendingTarget(connectionID: model.activeConnection.id, paneID: pending.paneID)
+            notifications.consumePendingTarget(pending)
             selectedWorkspaceID = target.workspaceID
             selectedPaneID = target.paneID
             destination = .workspace
