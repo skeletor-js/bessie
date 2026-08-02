@@ -373,6 +373,17 @@ struct BessieSettingsView: View {
                             .padding(.top, 8)
                     }
                 }
+                if let error = notifications.operationError {
+                    HStack(spacing: 12) {
+                        Text(error)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(BessieDesign.strong)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Dismiss") { notifications.clearOperationError() }
+                            .buttonStyle(BessieQuietButtonStyle())
+                    }
+                    .padding(.top, 8)
+                }
 
                 BessieSectionLabel("STARTUP")
                     .padding(.top, 28)

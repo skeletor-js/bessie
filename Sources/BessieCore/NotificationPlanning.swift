@@ -40,6 +40,11 @@ public struct BessieNotificationEvent: Identifiable, Equatable, Sendable {
 }
 
 public struct BessieNotificationDeepLink: Equatable, Sendable {
+    private static let connectionKey = "connection_id"
+    private static let workspaceKey = "workspace_id"
+    private static let tabKey = "tab_id"
+    private static let paneKey = "pane_id"
+
     public let target: RoutedPaneTarget
 
     public init(target: RoutedPaneTarget) {
@@ -47,10 +52,10 @@ public struct BessieNotificationDeepLink: Equatable, Sendable {
     }
 
     public init?(userInfo: [String: String]) {
-        guard let connectionID = userInfo["connection_id"],
-              let workspaceID = userInfo["workspace_id"],
-              let tabID = userInfo["tab_id"],
-              let paneID = userInfo["pane_id"]
+        guard let connectionID = userInfo[Self.connectionKey],
+              let workspaceID = userInfo[Self.workspaceKey],
+              let tabID = userInfo[Self.tabKey],
+              let paneID = userInfo[Self.paneKey]
         else { return nil }
         target = RoutedPaneTarget(
             connectionID: connectionID,
@@ -69,10 +74,10 @@ public struct BessieNotificationDeepLink: Equatable, Sendable {
 
     public var userInfo: [String: String] {
         [
-            "connection_id": target.connectionID,
-            "workspace_id": target.workspaceID,
-            "tab_id": target.tabID,
-            "pane_id": target.paneID,
+            Self.connectionKey: target.connectionID,
+            Self.workspaceKey: target.workspaceID,
+            Self.tabKey: target.tabID,
+            Self.paneKey: target.paneID,
         ]
     }
 }

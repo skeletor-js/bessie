@@ -278,7 +278,11 @@ final class ConnectionViewModel: ObservableObject {
         }
     }
 
-    func openPane(_ target: PaneOpenTarget, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
+    func openPane(
+        _ target: PaneOpenTarget,
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
+        failure: (@MainActor () -> Void)? = nil
+    ) {
         let connectionGeneration = connectionToken
         let connectionID = activeConnection.id
         let requestToken = UUID()
@@ -307,6 +311,7 @@ final class ConnectionViewModel: ObservableObject {
                     else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
+                    failure?()
                 }
             }
         }
@@ -591,6 +596,15 @@ struct FleetConnectionIssue: Identifiable, Equatable {
     let detail: String
 }
 
+struct FleetNotificationSource {
+    let connection: BessieConnectionDefinition
+    let panes: [BessieNotificationPane]
+}
+
+enum FleetNotificationConnectionState: String {
+    case ready, waiting, unavailable
+}
+
 @MainActor
 final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var activeModel: ConnectionViewModel?
@@ -603,9 +617,20 @@ final class ConnectionFleetViewModel: ObservableObject {
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
     private let intentServer = AppIntentServer()
+    private var configuredConnectionIDs: Set<String> = []
+    private var hasStarted = false
 
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
+    var notificationSources: [FleetNotificationSource] {
+        models.values.compactMap { model in
+            guard let projection = model.projection else { return nil }
+            return FleetNotificationSource(
+                connection: model.activeConnection,
+                panes: BessieSurfaceProjection(projection: projection).notificationPanes
+            )
+        }.sorted { $0.connection.id < $1.connection.id }
+    }
 
     func startIntentServer() {
         do { try intentServer.start() }
@@ -626,6 +651,8 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     func sync(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
         let desired = Set(connections.map(\.id))
+        configuredConnectionIDs = desired
+        hasStarted = true
         for id in models.keys where !desired.contains(id) {
             models[id]?.stop()
             models[id] = nil
@@ -661,9 +688,28 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     func activate(connectionID: String) -> ConnectionViewModel? {
         guard let model = models[connectionID] else { return nil }
+        guard activeModel !== model else { return model }
         activeModel = model
         objectWillChange.send()
         return model
+    }
+
+    func notificationConnectionState(connectionID: String) -> FleetNotificationConnectionState {
+        guard let model = models[connectionID] else {
+            return !hasStarted || configuredConnectionIDs.contains(connectionID) ? .waiting : .unavailable
+        }
+        if model.projection != nil, model.terminalEndpoint != nil { return .ready }
+        switch model.presentation.status {
+        case .notFound, .stopped, .incompatible, .lost:
+            return .unavailable
+        default:
+            return .waiting
+        }
+    }
+
+    func activateFirstReadyConnection() {
+        guard let model = models.values.first(where: { $0.projection != nil && $0.terminalEndpoint != nil }) else { return }
+        _ = activate(connectionID: model.activeConnection.id)
     }
 
     func retryAll() {
@@ -747,8 +793,21 @@ struct ConnectView: View {
 
     private var presentation: ConnectPresentation { fleet.presentation }
     private var notificationActivationSignature: String {
-        let pendingConnectionID = notifications.pendingTarget?.connectionID ?? "-"
-        return "\(pendingConnectionID)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+        let pending = notifications.pendingRoute
+        let routeState = pending.map {
+            fleet.notificationConnectionState(connectionID: $0.target.connectionID).rawValue
+        } ?? "-"
+        return "\(pending?.id.uuidString ?? "-")|\(pending?.target.connectionID ?? "-")|\(routeState)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+    }
+    private var backgroundNotificationSignature: String {
+        let sources = fleet.notificationSources
+            .filter { $0.connection.id != fleet.activeConnectionID }
+            .map { source in
+                let panes = source.panes.map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }.joined(separator: ",")
+                return "\(source.connection.id)=\(panes)"
+            }
+            .joined(separator: "|")
+        return "\(notifications.authorizationLoaded)|\(settings.preferences.notifications.rawValue)|\(fleet.activeConnectionID ?? "-")|\(sources)"
     }
 
     var body: some View {
@@ -828,8 +887,24 @@ struct ConnectView: View {
             }
         }
         .task(id: notificationActivationSignature) {
-            guard let target = notifications.pendingTarget else { return }
-            _ = fleet.activate(connectionID: target.connectionID)
+            guard let route = notifications.pendingRoute else { return }
+            switch fleet.notificationConnectionState(connectionID: route.target.connectionID) {
+            case .ready, .waiting:
+                _ = fleet.activate(connectionID: route.target.connectionID)
+            case .unavailable:
+                fleet.activateFirstReadyConnection()
+                notifications.fallBackToAttention(for: route)
+            }
+        }
+        .task(id: backgroundNotificationSignature) {
+            for source in fleet.notificationSources where source.connection.id != fleet.activeConnectionID {
+                notifications.reconcile(
+                    connection: source.connection,
+                    panes: source.panes,
+                    policy: settings.preferences.notifications,
+                    activePaneID: nil
+                )
+            }
         }
         .onChange(of: terminalRegistry.diagnosticRevision) { _, _ in
             guard let model = fleet.activeModel else { return }
