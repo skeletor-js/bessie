@@ -1,9 +1,9 @@
 # Herdr session and connection manager
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Sessions and connections  
-**Implementation approval:** Not granted by this document
+**Status:** Approved
+**Roadmap horizon:** V1 (unified Herd labels + settings/onboarding + SSH harden)
+**Product area:** Sessions and connections
+**Implementation approval:** Granted (Occam-locked 2026-08-02)
 
 ## Outcome
 

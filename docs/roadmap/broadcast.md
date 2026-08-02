@@ -1,9 +1,10 @@
 # Broadcast
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Multi-agent operations  
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Multi-agent operations
 **Implementation approval:** Not granted by this document
+**Deferred reason:** Jordan — not needed for current product direction; do not sequence.
 
 ## Outcome
 
@@ -11,7 +12,7 @@ Send one reviewed prompt or key operation to a deliberate set of real Herdr pane
 
 ## Why this exists
 
-The design treats broadcast as a second-wave orchestration tool with filters, exclusions, variables, and a dry run.
+The design treated broadcast as a second-wave orchestration tool with filters, exclusions, variables, and a dry run. That need is not current; park the plan.
 
 ## First useful slice
 

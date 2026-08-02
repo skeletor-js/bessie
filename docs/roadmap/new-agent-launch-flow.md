@@ -1,9 +1,10 @@
 # New Agent launch flow
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** New Agent  
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** New Agent
 **Implementation approval:** Not granted by this document
+**Deferred reason:** Jordan 2026-08-02 — current launch path sufficient for V1.
 
 ## Outcome
 

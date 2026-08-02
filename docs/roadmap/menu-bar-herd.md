@@ -1,9 +1,10 @@
 # Menu-bar Herd and Mac push notifications
 
-**Status:** Proposed  
-**Roadmap horizon:** Post-V1, after the focused Herdr GUI passes hands-on acceptance  
-**Product area:** macOS menu bar, notifications, ambient supervision  
-**Implementation approval:** Not granted by this document  
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02) for status item; notification polish remains V1
+**Product area:** macOS menu bar, notifications, ambient supervision
+**Implementation approval:** Notification polish approved; menu bar not granted
+**Deferred reason:** Jordan occam-loop — defer NSStatusItem; polish existing push only.
 **Related plans:**
 - [`attention-queue-and-resolution.md`](attention-queue-and-resolution.md) — in-window triage; menu bar is the away-from-window surface
 - [`activity-timeline.md`](activity-timeline.md) — deeper history; digests already partially exist in-app and are **not** the first menu-bar milestone

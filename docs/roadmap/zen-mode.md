@@ -1,9 +1,10 @@
 # Zen mode
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Workspace focus  
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Workspace focus
 **Implementation approval:** Not granted by this document
+**Deferred reason:** Jordan 2026-08-02 — not needed for V1.
 
 ## Outcome
 

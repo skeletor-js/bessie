@@ -1,9 +1,9 @@
 # Richer Herd dashboard
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** The Herd  
-**Implementation approval:** Not granted by this document
+**Status:** Approved
+**Roadmap horizon:** V1 (Occam bar B)
+**Product area:** The Herd
+**Implementation approval:** Granted (Occam-locked 2026-08-02)
 
 ## Outcome
 
