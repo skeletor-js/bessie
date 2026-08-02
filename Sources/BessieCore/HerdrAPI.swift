@@ -13,9 +13,11 @@ public protocol HerdrEventSubscription: AnyObject, Sendable {
 }
 
 public final class HerdrSocketAPI: HerdrAPI, @unchecked Sendable {
-    private let socketPath: String
+    public let socketPath: String
 
-    public init(socketPath: String) { self.socketPath = socketPath }
+    public init(socketPath: String) {
+        self.socketPath = URL(fileURLWithPath: socketPath).standardizedFileURL.path
+    }
 
     public func ping() throws -> HerdrServerIdentity {
         try perform(method: "ping").identity()

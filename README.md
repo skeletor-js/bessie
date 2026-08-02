@@ -21,6 +21,8 @@
 
 Bessie is a graphical client, not a second session manager. [Herdr](https://github.com/herdrdev/herdr) remains the authority for workspaces, tabs, panes, terminal processes, and agent state. Bessie subscribes to that state and turns it into a native SwiftUI and AppKit interface backed by real [libghostty](https://github.com/Lakr233/libghostty-spm) terminals.
 
+`0.1.0-rc.3` is the verified foundation preview. Real V1 adds the compatible Herdr runtime inside the signed app, first-run onboarding and Trouble, and Native Bessie Projects for reusable workspace blueprints.
+
 ## What works
 
 - **Live workspaces:** create, rename, reorder, open, and close Herdr workspaces.
@@ -31,13 +33,14 @@ Bessie is a graphical client, not a second session manager. [Herdr](https://gith
 - **Safe ownership:** observe a terminal without taking control, then confirm before takeover.
 - **Native notifications:** opt in from Settings; blocked and completed work routes back to the exact pane.
 - **Seamless local startup:** Bessie starts and reopens its own detached Herdr session when needed.
+- **One unified herd:** local and saved SSH Herdr sessions stay connected together, so their agents appear in one roster without a connection switcher.
 - **Process survival:** close and reopen Bessie without killing the shells and agents Herdr owns.
 - **Two app icons:** choose the dark or light icon in Settings. Bessie reapplies it to the Dock and app switcher at launch.
 
 ## Requirements
 
 - Apple silicon Mac running macOS 14 or newer
-- Herdr 0.7.5
+- Herdr 0.7.5 for the current foundation preview; real V1 includes the compatible runtime
 - An agent CLI on your login `PATH` if you want to start an agent
 - Xcode command-line tools and Swift 6 only when building from source
 
@@ -59,11 +62,12 @@ The bundle reports version `0.1.0` with build number `3`. This branch is the `0.
 
 ## Using Bessie
 
-1. Open Bessie. It starts or reconnects to the `bessie` Herdr session automatically.
-2. Choose a workspace from **Open** or **Workspaces**.
-3. Use **New pane** to open a shell or start a supported agent.
-4. Open **The herd** to see running agents and their state.
-5. Open **Attention** when work needs you.
+1. Open Bessie. It starts the local `bessie` Herdr session and reconnects every saved SSH connection.
+2. Open **The herd** to see local and remote agents together. Opening a card routes workspace and terminal actions to the connection that owns it.
+3. Use **Workspaces** and **New pane** to open shells or start supported agents in the current workspace context.
+4. Open **Attention** when work needs you.
+
+The herd retains every Herdr-tracked agent across every workspace, including idle, blocked, done, and temporarily unknown agents—not only agents currently working.
 
 Bessie never silently steals a terminal controlled by another client. A conflicting pane opens read-only. Use **Take over terminal control** only when you mean it.
 
@@ -71,20 +75,15 @@ The background server survives Bessie quitting, so reopening the app returns to 
 
 ## Remote VPS sessions
 
-Herdr already supports native remote attach from a terminal:
+Open **Settings → Connections → Add SSH connection**, enter an SSH config host (or `user@host`), and optionally name a Herdr session. Leave the session blank for the remote default session. Every configured connection participates in The herd automatically; there is no connection switcher.
 
-```bash
-herdr --remote <ssh-host> --session bessie
-```
-
-Use an SSH config host with key or agent authentication. Herdr handles remote setup, server startup, keepalives, and the bridge; credentials stay with OpenSSH rather than Bessie. See [Herdr's persistence and remote-access guide](https://herdr.dev/docs/persistence-remote/).
-
-Bessie does not expose that connection in this candidate. Its graphical client needs both Herdr's public API socket and terminal-control socket, while Herdr 0.7.5's remote bridge currently serves the terminal client. The intended Bessie flow is **Settings → Connections → Add VPS**, choose an SSH host and Herdr session, then let Bessie open private local socket forwards and reconnect automatically. It should never expose a Herdr socket over TCP or store an SSH password. That flow needs a headless Herdr bridge contract for both sockets before it is safe to ship.
+Bessie asks the remote `herdr status --json` command for the authoritative Unix-socket path, then forwards both public Herdr Unix sockets to private sockets under `/tmp` with `0700` directory permissions. A stopped remote session must be started on its host first. No Herdr socket is exposed over TCP. Authentication remains entirely in OpenSSH configuration and the user's SSH agent; Bessie stores the host alias and session name but never a password or private key. See [Herdr's persistence and remote-access guide](https://herdr.dev/docs/persistence-remote/).
 
 ## Settings
 
 Settings covers:
 
+- local and SSH Herdr connections included in one herd
 - dark or light Dock icon
 - cowprint contrast and motion
 - terminal font size
@@ -110,7 +109,20 @@ The highest-value acceptance pass is short:
 - quit Bessie, reopen it, and confirm both are still there
 - switch between the dark and light app icons
 
-Record anything surprising, even if it is only a rough edge. The candidate is intentionally waiting on hands-on acceptance before it is called V1.
+Record anything surprising, even if it is only a rough edge. This candidate remains the foundation preview; it is not the complete V1 until bundled-runtime/onboarding/Trouble and Native Projects pass the integrated release contract.
+
+## Keyboard shortcuts
+
+Bessie uses native macOS Command shortcuts. Press `Cmd+B` to open the searchable command palette, browse every available action and its shortcut, and run an action with Return or a click.
+
+- `Cmd+N` creates a workspace; `Cmd+T` creates a tab; `Cmd+1`–`9` jumps directly.
+- `Cmd+[` / `Cmd+]` changes tabs; `Cmd+W` closes a tab.
+- `Cmd+D` splits right; `Shift+Cmd+D` splits down.
+- `Option+Cmd+Arrow` moves pane focus; add Shift to swap panes.
+- `Control+Cmd+Arrow` resizes a pane.
+- `Shift+Cmd+B` toggles the rail; `Cmd+,` opens Settings.
+
+Ordinary terminal input, including terminal Control sequences, remains owned by the focused terminal. Only exact Command shortcuts are claimed by Bessie.
 
 ## How it is built
 

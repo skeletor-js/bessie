@@ -1,5 +1,6 @@
 import AppKit
 import BessieCore
+import Combine
 import Foundation
 import GhosttyTerminal
 import SwiftUI
@@ -7,7 +8,9 @@ import SwiftUI
 @MainActor
 final class TerminalControllerRegistry: ObservableObject {
     @Published private(set) var controllers: [String: PaneTerminalController] = [:]
+    @Published private(set) var diagnosticRevision = 0
     private var endpoint: HerdrTerminalEndpoint?
+    private var diagnosticSubscriptions: [String: AnyCancellable] = [:]
 
     func synchronize(visiblePaneIDs: Set<String>, endpoint: HerdrTerminalEndpoint) {
         if self.endpoint != endpoint {
@@ -15,16 +18,35 @@ final class TerminalControllerRegistry: ObservableObject {
             self.endpoint = endpoint
         }
         for paneID in visiblePaneIDs where controllers[paneID] == nil {
-            controllers[paneID] = PaneTerminalController(paneID: paneID, endpoint: endpoint)
+            let controller = PaneTerminalController(paneID: paneID, endpoint: endpoint)
+            controllers[paneID] = controller
+            diagnosticSubscriptions[paneID] = controller.$status.sink { [weak self] _ in
+                self?.diagnosticRevision += 1
+            }
         }
         for paneID in Set(controllers.keys).subtracting(visiblePaneIDs) {
             controllers.removeValue(forKey: paneID)?.release()
+            diagnosticSubscriptions[paneID] = nil
         }
     }
 
     func releaseAll() {
         for controller in controllers.values { controller.release() }
         controllers.removeAll()
+        diagnosticSubscriptions.removeAll()
+        diagnosticRevision += 1
+    }
+
+    var diagnosticFacts: TerminalControllerFacts {
+        controllers.values.reduce(into: TerminalControllerFacts()) { facts, controller in
+            switch controller.status {
+            case .ready: facts.ready += 1
+            case .reconnecting: facts.reconnecting += 1
+            case .ownershipConflict: facts.ownershipConflicts += 1
+            case .failed: facts.failed += 1
+            case .starting, .waitingForFull, .stopped: break
+            }
+        }
     }
 }
 

@@ -4,7 +4,7 @@ import Darwin
 #endif
 
 public struct HerdrRuntime: Equatable, Sendable {
-    public enum Source: String, Equatable, Sendable { case explicitOverride, path, repositoryLocal }
+    public enum Source: String, Equatable, Sendable { case explicitOverride, bundled, system, custom, path, repositoryLocal }
     public let url: URL
     public let source: Source
 
@@ -45,6 +45,32 @@ public struct HerdrRuntimeLocator: Sendable {
             if isExecutable(candidate) { return HerdrRuntime(url: candidate, source: .repositoryLocal) }
         }
         return nil
+    }
+
+    public func resolve(explicitPath: String?, selection: HerdrRuntimeSelection, bundledURL: URL?, path: String?, homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> HerdrRuntime {
+        if let explicitPath, !explicitPath.isEmpty {
+            let url = URL(fileURLWithPath: explicitPath)
+            guard isExecutable(url) else { throw RuntimeResolutionFailure.customNotExecutable(url.path) }
+            return HerdrRuntime(url: url, source: .explicitOverride)
+        }
+        switch selection {
+        case .bundled:
+            guard let bundledURL, FileManager.default.fileExists(atPath: bundledURL.path) else { throw RuntimeResolutionFailure.bundledMissing }
+            guard isExecutable(bundledURL) else { throw RuntimeResolutionFailure.bundledNotExecutable }
+            return HerdrRuntime(url: bundledURL, source: .bundled)
+        case .custom(let url):
+            guard FileManager.default.fileExists(atPath: url.path) else { throw RuntimeResolutionFailure.customMissing(url.path) }
+            guard isExecutable(url) else { throw RuntimeResolutionFailure.customNotExecutable(url.path) }
+            return HerdrRuntime(url: url, source: .custom)
+        case .system:
+            for directory in (path ?? "").split(separator: ":") where !directory.isEmpty {
+                let url = URL(fileURLWithPath: String(directory)).appendingPathComponent("herdr")
+                if isExecutable(url) { return HerdrRuntime(url: url, source: .system) }
+            }
+            let url = homeDirectory.appendingPathComponent(".local/bin/herdr")
+            if isExecutable(url) { return HerdrRuntime(url: url, source: .system) }
+            throw RuntimeResolutionFailure.systemMissing
+        }
     }
 }
 

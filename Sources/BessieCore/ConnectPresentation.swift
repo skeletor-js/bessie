@@ -34,6 +34,10 @@ public struct ConnectPresentation: Equatable, Sendable {
                 detail: "Install Herdr to use Bessie.",
                 status: .notFound
             )
+        case .resolutionFailed(let failure):
+            self.init(title: "Runtime needs attention", detail: failure.localizedDescription, status: .notFound)
+        case .validationFailed(_, let failure):
+            self.init(title: "Runtime needs attention", detail: String(describing: failure), status: .incompatible)
         case .stopped:
             self.init(
                 title: "Herdr is not running",
@@ -56,6 +60,8 @@ public struct ConnectPresentation: Equatable, Sendable {
             self.init(title: "Herdr is incompatible", detail: reason, status: .incompatible)
         case .connecting:
             self.init(title: "Connecting to Herdr", detail: "Opening your Bessie session…", status: .connecting)
+        case .apiUnavailable(_, let reason):
+            self.init(title: "Herdr API unavailable", detail: reason, status: .lost)
         case .connected(_, _, let snapshot):
             self.init(
                 title: "Connected to Herdr",

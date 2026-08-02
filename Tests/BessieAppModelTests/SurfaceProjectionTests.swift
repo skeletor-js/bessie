@@ -3,6 +3,36 @@ import XCTest
 @testable import BessieCore
 
 final class SurfaceProjectionTests: XCTestCase {
+    func testConnectedAgentsRemainDistinctWhenSessionsReusePaneIDs() throws {
+        let agent = AgentProjection(
+            id: "p1", terminalID: "term-1", workspaceID: "w1", tabID: "t1",
+            focused: false, label: "Hermes", agent: "hermes", displayAgent: "Hermes",
+            name: nil, title: nil, agentStatus: "working", revision: 1, launchPending: false
+        )
+
+        let local = ConnectedAgentProjection(connection: .localBessie, agent: agent)
+        let remote = ConnectedAgentProjection(
+            connection: try BessieConnectionDefinition(
+                id: "remote", name: "Hermes VPS", kind: .ssh, sshHost: "hermes", session: nil
+            ).validated(),
+            agent: agent
+        )
+
+        XCTAssertNotEqual(local.id, remote.id)
+        XCTAssertEqual(local.paneID, "p1")
+        XCTAssertEqual(remote.paneID, "p1")
+        XCTAssertEqual(remote.connectionName, "Hermes VPS")
+    }
+
+    func testHerdUsesAuthoritativeAgentRosterAcrossWorkspacesAndEveryState() throws {
+        let projection = try HerdrSessionProjection(snapshot: .surfaceFixture)
+
+        XCTAssertEqual(projection.agents.map(\.id), ["p1", "p3", "p2"])
+        XCTAssertEqual(projection.agents.prefix(2).map(\.workspaceID), ["w1", "w2"])
+        XCTAssertEqual(projection.agents.prefix(2).map(\.agentStatus), ["idle", "unknown"])
+        XCTAssertEqual(projection.agents.prefix(2).map(\.identity), ["Codex one", "Claude two"])
+    }
+
     func testWorkspaceRollupsAndAttentionUseOnlyAuthoritativePaneState() throws {
         let projection = try HerdrSessionProjection(snapshot: .surfaceFixture)
         let surfaces = BessieSurfaceProjection(projection: projection)
@@ -219,6 +249,10 @@ private extension HerdrSnapshot {
             .object(["pane_id": .string("p2"), "terminal_id": .string("term2"), "workspace_id": .string("w1"), "tab_id": .string("t1"), "focused": .bool(true), "label": .string("done pane"), "agent": .string("claude"), "agent_status": .string("done"), "revision": .number(2)]),
             .object(["pane_id": .string("p3"), "terminal_id": .string("term3"), "workspace_id": .string("w2"), "tab_id": .string("t2"), "focused": .bool(false), "agent_status": .string("idle"), "revision": .number(1)]),
         ],
-        layouts: [], agents: []
+        layouts: [],
+        agents: [
+            .object(["pane_id": .string("p1"), "terminal_id": .string("term1"), "workspace_id": .string("w1"), "tab_id": .string("t1"), "focused": .bool(false), "agent": .string("codex"), "name": .string("Codex one"), "agent_status": .string("idle"), "revision": .number(3)]),
+            .object(["pane_id": .string("p3"), "terminal_id": .string("term3"), "workspace_id": .string("w2"), "tab_id": .string("t2"), "focused": .bool(false), "display_agent": .string("Claude"), "name": .string("Claude two"), "agent_status": .string("unknown"), "revision": .number(4)]),
+        ]
     )
 }

@@ -53,16 +53,28 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
 }
 
 public struct BessiePresentationState: Codable, Equatable, Sendable {
+    public static let firstRealTerminalCompletionVersion = 1
     public var lastWorkspaceID: String?
+    public var lastWorkspaceIDByConnectionID: [String: String]?
     public var preferences: BessiePreferences
-    public init(lastWorkspaceID: String? = nil, preferences: BessiePreferences = BessiePreferences()) {
+    public var firstRealTerminalCompletionVersion: Int?
+    public init(
+        lastWorkspaceID: String? = nil,
+        lastWorkspaceIDByConnectionID: [String: String]? = nil,
+        preferences: BessiePreferences = BessiePreferences(),
+        firstRealTerminalCompletionVersion: Int? = nil
+    ) {
         self.lastWorkspaceID = lastWorkspaceID
+        self.lastWorkspaceIDByConnectionID = lastWorkspaceIDByConnectionID
         self.preferences = preferences
+        self.firstRealTerminalCompletionVersion = firstRealTerminalCompletionVersion
     }
 
     enum CodingKeys: String, CodingKey {
         case lastWorkspaceID = "last_workspace_id"
+        case lastWorkspaceIDByConnectionID = "last_workspace_id_by_connection_id"
         case preferences
+        case firstRealTerminalCompletionVersion = "first_real_terminal_completion_version"
     }
 }
 

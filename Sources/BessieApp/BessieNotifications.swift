@@ -7,9 +7,10 @@ import UserNotifications
 final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published private(set) var pendingTarget: PaneOpenTarget?
+    @Published private(set) var pendingConnectionID: String?
 
     private let center: UNUserNotificationCenter
-    private var planner = BessieNotificationPlanner()
+    private var planners: [String: BessieNotificationPlanner] = [:]
 
     override init() {
         center = .current()
@@ -37,11 +38,14 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
     }
 
     func reconcile(
+        connectionID: String,
         panes: [BessieNotificationPane],
         policy: BessieNotifications,
         activePaneID: String?
     ) {
+        var planner = planners[connectionID] ?? BessieNotificationPlanner()
         let events = planner.events(for: panes, policy: policy, activePaneID: activePaneID)
+        planners[connectionID] = planner
         guard authorizationStatus.allowsDelivery else { return }
 
         for event in events {
@@ -50,18 +54,20 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
             content.body = event.body
             content.sound = .default
             content.userInfo = [
+                "connection_id": connectionID,
                 "workspace_id": event.target.workspaceID,
                 "tab_id": event.target.tabID,
                 "pane_id": event.target.paneID,
             ]
-            let request = UNNotificationRequest(identifier: event.id, content: content, trigger: nil)
+            let request = UNNotificationRequest(identifier: "\(connectionID):\(event.id)", content: content, trigger: nil)
             center.add(request)
         }
     }
 
-    func consumePendingTarget(paneID: String) {
-        guard pendingTarget?.paneID == paneID else { return }
+    func consumePendingTarget(connectionID: String, paneID: String) {
+        guard pendingConnectionID == connectionID, pendingTarget?.paneID == paneID else { return }
         pendingTarget = nil
+        pendingConnectionID = nil
     }
 
     nonisolated func userNotificationCenter(
@@ -77,21 +83,25 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let target = Self.target(from: response.notification.request.content.userInfo)
+        let routed = Self.target(from: response.notification.request.content.userInfo)
         completionHandler()
-        guard let target else { return }
+        guard let routed else { return }
         Task { @MainActor [weak self] in
-            self?.pendingTarget = target
+            self?.pendingConnectionID = routed.connectionID
+            self?.pendingTarget = routed.target
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
-    nonisolated private static func target(from info: [AnyHashable: Any]) -> PaneOpenTarget? {
+    nonisolated private static func target(from info: [AnyHashable: Any]) -> (connectionID: String?, target: PaneOpenTarget)? {
         guard let workspaceID = info["workspace_id"] as? String,
               let tabID = info["tab_id"] as? String,
               let paneID = info["pane_id"] as? String
         else { return nil }
-        return PaneOpenTarget(workspaceID: workspaceID, tabID: tabID, paneID: paneID)
+        return (
+            info["connection_id"] as? String,
+            PaneOpenTarget(workspaceID: workspaceID, tabID: tabID, paneID: paneID)
+        )
     }
 }
 

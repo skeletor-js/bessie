@@ -1,10 +1,12 @@
 import Foundation
 
 public struct HerdrTerminalEndpoint: Equatable, Sendable {
+    public let connectionID: String
     public let executablePath: String
     public let socketPath: String
 
-    public init(executablePath: String, socketPath: String) {
+    public init(connectionID: String, executablePath: String, socketPath: String) {
+        self.connectionID = connectionID
         self.executablePath = executablePath
         self.socketPath = socketPath
     }

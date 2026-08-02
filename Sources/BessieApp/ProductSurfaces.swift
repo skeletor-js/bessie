@@ -2,9 +2,10 @@ import AppKit
 import BessieCore
 import SwiftUI
 
-private enum ProductDestination: String, CaseIterable, Identifiable {
+enum ProductDestination: String, CaseIterable, Identifiable {
     case herd = "The herd"
     case workspaces = "Workspaces"
+    case projects = "Projects"
     case workspace = "Workspace"
     case attention = "Attention"
     case agent = "Agent"
@@ -14,6 +15,7 @@ private enum ProductDestination: String, CaseIterable, Identifiable {
         switch self {
         case .herd: "circle.grid.3x3"
         case .workspaces: "square.grid.2x2"
+        case .projects: "folder.badge.gearshape"
         case .workspace: "rectangle.split.3x1"
         case .attention: "bell"
         case .agent: "terminal"
@@ -26,12 +28,18 @@ private enum ProductDestination: String, CaseIterable, Identifiable {
         if raw == "new-process" { return .workspace }
         if raw == "herd" { return .herd }
         if raw == "agent-detail" { return .agent }
+        if raw == "project-capture" || raw == "project-launch-review" { return .projects }
         return ProductDestination.allCases.first { $0.rawValue.lowercased() == raw } ?? .workspaces
+    }
+
+    static func navigationTarget(for command: BessieShortcutCommand) -> ProductDestination? {
+        command == .projectsPicker ? .projects : nil
     }
 }
 
 struct BessieProductShell: View {
     @ObservedObject var model: ConnectionViewModel
+    @ObservedObject var fleet: ConnectionFleetViewModel
     let projection: HerdrSessionProjection
     let terminalEndpoint: HerdrTerminalEndpoint
     @ObservedObject var terminalRegistry: TerminalControllerRegistry
@@ -42,6 +50,12 @@ struct BessieProductShell: View {
     @State private var selectedWorkspaceID: String?
     @State private var selectedPaneID: String?
     @State private var processAutomationStarted = false
+    @StateObject private var shortcuts = BessieKeyboardShortcutCoordinator()
+    @State private var sidebarCollapsed = false
+    @State private var showCommandPalette = false
+    @State private var shortcutEditor: ProductEditor?
+    @State private var shortcutClose: PendingClose?
+    @ObservedObject var projects: ProjectsViewModel
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
     private var activeNotificationPaneID: String? {
@@ -57,7 +71,7 @@ struct BessieProductShell: View {
         let panes = surfaces.notificationPanes
             .map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }
             .joined(separator: "|")
-        return "\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
+        return "\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
     private var notificationRouteSignature: String {
         let pending = notifications.pendingTarget?.paneID ?? "-"
@@ -67,6 +81,19 @@ struct BessieProductShell: View {
             .joined(separator: "|")
         return "\(pending)|\(panes)"
     }
+    private var shortcutContextSignature: String {
+        [
+            destination.rawValue,
+            selectedWorkspaceID ?? "-",
+            selectedPaneID ?? "-",
+            projection.focusedWorkspace?.id ?? "-",
+            projection.focusedTab?.id ?? "-",
+            projection.focusedPane?.id ?? "-",
+            projection.workspaces.map(\.id).joined(separator: ","),
+            projection.tabs.map(\.id).joined(separator: ","),
+            projection.panes.map(\.id).joined(separator: ","),
+        ].joined(separator: "|")
+    }
 
     var body: some View {
         ZStack {
@@ -75,8 +102,10 @@ struct BessieProductShell: View {
 
             VStack(spacing: 0) {
                 HStack(spacing: BessieDesign.cardGap) {
-                    productRail
-                        .bessieSurface(base: BessieDesign.rail, crop: railCrop)
+                    if !sidebarCollapsed {
+                        productRail
+                            .bessieSurface(base: BessieDesign.rail, crop: railCrop)
+                    }
 
                     productContent
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,19 +116,54 @@ struct BessieProductShell: View {
 
                 BessieStatusLine(
                     workspaceCount: projection.workspaces.count,
-                    attentionCount: surfaces.attention.count
+                    attentionCount: surfaces.attention.count,
+                    connectionCount: fleet.connectedCount
                 )
             }
         }
         .background(BessieDesign.window)
         .foregroundStyle(BessieDesign.text)
         .tint(BessieDesign.strong)
+        .overlay {
+            if showCommandPalette {
+                ZStack {
+                    Color.black.opacity(0.48)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { showCommandPalette = false }
+                    BessieCommandPalette(
+                        close: { showCommandPalette = false },
+                        perform: { command in handleShortcut(command) }
+                    )
+                    .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                .zIndex(20)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: showCommandPalette)
         .onAppear {
+            shortcuts.start { command in handleShortcut(command) }
+            if ProcessInfo.processInfo.environment["BESSIE_COMMAND_PALETTE_PREVIEW"] != nil {
+                showCommandPalette = true
+            }
             if ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"] != nil {
                 selectedWorkspaceID = projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
                 selectedPaneID = projection.focusedPane?.id
+                if ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased() == "project-capture" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        projects.beginCaptureCurrentWorkspace()
+                    }
+                }
+                if ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased() == "project-launch-review" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        projects.presentDesignPreviewLaunchReview(
+                            connectionName: model.activeConnection.name
+                        )
+                    }
+                }
             } else if settings.preferences.startupBehavior == .lastWorkspace,
-               let last = settings.lastWorkspaceID,
+               let last = settings.lastWorkspaceID(for: model.activeConnection.id),
                projection.workspaces.contains(where: { $0.id == last }) {
                 selectedWorkspaceID = last
                 destination = .workspace
@@ -109,6 +173,7 @@ struct BessieProductShell: View {
             }
             routePendingNotification()
         }
+        .onDisappear { shortcuts.stop() }
         .onChange(of: projection.workspaces.count) { _, count in
             if count > 0,
                ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_TRIGGER"] == "live-two-pane" {
@@ -125,35 +190,65 @@ struct BessieProductShell: View {
             destination = .workspace
             BessieWindowSnapshot.captureWhenReady(registry: terminalRegistry, paneIDs: Set(projection.panes.map(\.id)))
         }
-        .onChange(of: selectedWorkspaceID) { _, id in settings.recordLastWorkspace(id) }
+        .onChange(of: selectedWorkspaceID) { _, id in
+            settings.recordLastWorkspace(id, connectionID: model.activeConnection.id)
+        }
         .task(id: "\(projection.panes.count)-\(model.agentCatalog.items.count)") { runProcessAutomationIfRequested() }
         .task(id: notificationSignature) {
             notifications.reconcile(
+                connectionID: model.activeConnection.id,
                 panes: surfaces.notificationPanes,
                 policy: settings.preferences.notifications,
                 activePaneID: activeNotificationPaneID
             )
         }
         .task(id: notificationRouteSignature) { routePendingNotification() }
+        .task(id: shortcutContextSignature) {
+            shortcuts.update { command in handleShortcut(command) }
+        }
+        .sheet(item: $shortcutEditor) { editor in
+            ProductEditorSheet(editor: editor) { action in
+                model.perform(action)
+                shortcutEditor = nil
+            }
+        }
+        .confirmationDialog(
+            shortcutClose?.title ?? "Close?",
+            isPresented: Binding(get: { shortcutClose != nil }, set: { if !$0 { shortcutClose = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let shortcutClose {
+                Button(shortcutClose.buttonTitle, role: .destructive) {
+                    model.perform(shortcutClose.action)
+                    self.shortcutClose = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { shortcutClose = nil }
+        } message: { Text(shortcutClose?.message(in: projection) ?? "") }
         .alert("Action failed", isPresented: Binding(
             get: { model.actionError != nil },
             set: { if !$0 { model.clearActionError() } }
         )) {
             Button("OK") { model.clearActionError() }
         } message: { Text(model.actionError ?? "No error details were returned.") }
+        .projectConnectionSync(
+            model: projects,
+            connection: model.projectMaterializationConnection,
+            snapshot: projection.snapshot
+        )
+        .projectLaunchPresentation(model: projects, navigate: openProjectHandoff)
     }
 
     @ViewBuilder private var productContent: some View {
         switch destination {
         case .herd:
             HerdSurface(
-                model: model,
-                projection: projection,
-                selectedPaneID: $selectedPaneID,
-                openPane: openPane,
-                inspectPane: { paneID in
-                    selectedPaneID = paneID
-                    selectedWorkspaceID = surfaces.openTarget(paneID: paneID)?.workspaceID
+                fleet: fleet,
+                openPane: openConnectedAgent,
+                inspectPane: { connected in
+                    _ = fleet.activate(connected)
+                    selectedPaneID = connected.paneID
+                    selectedWorkspaceID = connected.workspaceID
                     destination = .agent
                 }
             )
@@ -163,6 +258,8 @@ struct BessieProductShell: View {
                 selectedPaneID = nil
                 destination = .workspace
             }
+        case .projects:
+            ProjectsSurface(model: projects)
         case .workspace:
             WorkspaceSurface(
                 model: model,
@@ -190,7 +287,7 @@ struct BessieProductShell: View {
                 }
             )
         case .settings:
-            BessieSettingsView(embedded: true)
+            BessieSettingsView(embedded: true, runtimeDiagnostic: model.runtimeDiagnostic)
         }
     }
 
@@ -204,11 +301,32 @@ struct BessieProductShell: View {
             .padding(.top, 13)
             .padding(.bottom, 8)
 
+            Button { destination = .settings } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                    Text("ALL CONNECTIONS")
+                        .lineLimit(1)
+                    Spacer()
+                    Text("\(fleet.connectedCount)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(BessieDesign.text)
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(BessieDesign.inset)
+                .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     railDestination(.herd)
                     railDestination(.attention)
                     railDestination(.workspaces)
+                    railDestination(.projects)
 
                     railGroupLabel("OPEN")
                         .padding(.top, 17)
@@ -320,6 +438,7 @@ struct BessieProductShell: View {
         switch destination {
         case .herd: .herd
         case .workspaces: .workspaces
+        case .projects: .workspaces
         case .workspace: .workspace
         case .attention: .attention
         case .agent: .agent
@@ -409,14 +528,129 @@ struct BessieProductShell: View {
         }
     }
 
+    private func openConnectedAgent(_ connected: ConnectedAgentProjection) {
+        guard let targetModel = fleet.activate(connected) else { return }
+        let target = PaneOpenTarget(
+            workspaceID: connected.workspaceID,
+            tabID: connected.tabID,
+            paneID: connected.paneID
+        )
+        targetModel.openPane(target) { _ in
+            selectedWorkspaceID = connected.workspaceID
+            selectedPaneID = connected.paneID
+            destination = .workspace
+        }
+    }
+
+    private func openProjectHandoff(_ handoff: ProjectWorkspaceHandoff) {
+        model.openProjectHandoff(handoff) { _ in
+            selectedWorkspaceID = handoff.workspaceID
+            selectedPaneID = handoff.paneID
+            destination = .workspace
+        }
+    }
+
+    private func handleShortcut(_ command: BessieShortcutCommand) {
+        if model.actionInFlight {
+            switch command {
+            case .showCommandPalette, .showSettings, .projectsPicker, .saveCurrentWorkspaceAsProject, .workspacePicker, .openNotificationTarget, .toggleSidebar:
+                break
+            default:
+                return
+            }
+        }
+        let workspace = currentWorkspace ?? projection.focusedWorkspace ?? projection.workspaces.first
+        let tabs = workspace.map { item in projection.tabs.filter { $0.workspaceID == item.id } } ?? []
+        let tab = tabs.first(where: \.focused) ?? tabs.first
+        let paneIDs = tab.flatMap { projection.layouts[$0.id]?.root.paneIDs } ?? []
+        let paneID = BessiePaneActionTarget.resolve(
+            selectedPaneID: selectedPaneID,
+            visiblePaneIDs: Set(paneIDs),
+            projection: projection
+        )
+
+        switch command {
+        case .showCommandPalette:
+            showCommandPalette.toggle()
+        case .showSettings:
+            destination = .settings
+        case .projectsPicker:
+            destination = ProductDestination.navigationTarget(for: command) ?? destination
+        case .saveCurrentWorkspaceAsProject:
+            destination = .projects
+            projects.beginCaptureCurrentWorkspace()
+        case .newWorkspace:
+            shortcutEditor = .createWorkspace
+        case .renameWorkspace:
+            if let workspace { shortcutEditor = .renameWorkspace(id: workspace.id, value: workspace.label) }
+        case .closeWorkspace:
+            if let workspace { shortcutClose = .workspace(workspace.id) }
+        case .workspacePicker:
+            destination = .workspaces
+        case .openNotificationTarget:
+            if let item = surfaces.attention.first { openPane(item.paneID) }
+            else { destination = .attention }
+        case .newTab:
+            if let workspace { model.perform(.tabCreate(workspaceID: workspace.id, cwd: nil, label: nil, focus: true)) }
+        case .renameTab:
+            if let tab { shortcutEditor = .renameTab(id: tab.id, value: tab.label) }
+        case .previousTab:
+            focusTab(offset: -1, tabs: tabs, current: tab)
+        case .nextTab:
+            focusTab(offset: 1, tabs: tabs, current: tab)
+        case .switchTab(let index):
+            guard tabs.indices.contains(index - 1) else { return }
+            selectedPaneID = nil
+            model.perform(.tabFocus(id: tabs[index - 1].id))
+        case .closeTab:
+            if let tab { shortcutClose = .tab(tab.id) }
+        case .renamePane:
+            if let paneID, let pane = projection.panes.first(where: { $0.id == paneID }) {
+                shortcutEditor = .renamePane(id: paneID, value: pane.label ?? "")
+            }
+        case .focusPane(let direction):
+            guard let paneID, let tab, let layout = projection.layouts[tab.id],
+                  let target = BessiePaneNavigation.target(from: paneID, direction: direction, in: layout.root)
+            else { return }
+            selectedPaneID = target
+            model.perform(.paneFocus(id: target))
+        case .swapPane(let direction):
+            if let paneID { model.perform(.paneSwap(id: paneID, direction: direction)) }
+
+        case .splitPane(let direction):
+            if let paneID { model.perform(.paneSplit(targetPaneID: paneID, direction: direction, ratio: 0.5, cwd: nil, focus: true)) }
+        case .closePane:
+            if let paneID { shortcutClose = .pane(paneID) }
+        case .zoomPane:
+            if let paneID { model.perform(.paneZoom(id: paneID, mode: .toggle)) }
+        case .resizePane(let direction):
+            if let paneID { model.perform(.paneResize(id: paneID, direction: direction, amount: 0.05)) }
+        case .toggleSidebar:
+            sidebarCollapsed.toggle()
+        }
+    }
+
+    private func focusTab(offset: Int, tabs: [TabProjection], current: TabProjection?) {
+        guard !tabs.isEmpty else { return }
+        let index = current.flatMap { item in tabs.firstIndex { $0.id == item.id } } ?? 0
+        let target = tabs[(index + offset + tabs.count) % tabs.count]
+        selectedPaneID = nil
+        model.perform(.tabFocus(id: target.id))
+    }
+
     private func routePendingNotification() {
         guard let pending = notifications.pendingTarget else { return }
+        if let connectionID = notifications.pendingConnectionID,
+           connectionID != model.activeConnection.id {
+            _ = fleet.activate(connectionID: connectionID)
+            return
+        }
         guard let target = BessieNotificationRoute.resolve(pending: pending, projection: projection) else {
             destination = .attention
             return
         }
         model.openPane(target) { _ in
-            notifications.consumePendingTarget(paneID: pending.paneID)
+            notifications.consumePendingTarget(connectionID: model.activeConnection.id, paneID: pending.paneID)
             selectedWorkspaceID = target.workspaceID
             selectedPaneID = target.paneID
             destination = .workspace
@@ -465,25 +699,18 @@ private enum HerdFilter: String, CaseIterable, Identifiable {
 }
 
 private struct HerdSurface: View {
-    @ObservedObject var model: ConnectionViewModel
-    let projection: HerdrSessionProjection
-    @Binding var selectedPaneID: String?
-    let openPane: (String) -> Void
-    let inspectPane: (String) -> Void
+    @ObservedObject var fleet: ConnectionFleetViewModel
+    let openPane: (ConnectedAgentProjection) -> Void
+    let inspectPane: (ConnectedAgentProjection) -> Void
     @State private var filter: HerdFilter = .all
-    @State private var showNewProcess = false
 
-    private var agents: [PaneProjection] {
-        projection.panes
-            .filter { $0.agent != nil }
-            .sorted { stateRank($0) < stateRank($1) }
+    private var agents: [ConnectedAgentProjection] {
+        fleet.agents.sorted { stateRank($0.agent) < stateRank($1.agent) }
     }
 
-    private var panes: [PaneProjection] {
-        agents.filter { filter.includes(AgentSemanticState(herdrValue: $0.agentStatus)) }
+    private var panes: [ConnectedAgentProjection] {
+        agents.filter { filter.includes(AgentSemanticState(herdrValue: $0.agent.agentStatus)) }
     }
-
-    private var workspace: WorkspaceProjection? { projection.focusedWorkspace ?? projection.workspaces.first }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -496,9 +723,7 @@ private struct HerdSurface: View {
                         .frame(height: 24)
                         .background(BessieDesign.inset)
                         .overlay { RoundedRectangle(cornerRadius: BessieDesign.controlRadius).stroke(BessieDesign.border, lineWidth: 1) }
-                    Button("New agent") { showNewProcess = true }
-                        .buttonStyle(BessiePrimaryButtonStyle())
-                        .disabled(workspace == nil)
+
                 }
             }
 
@@ -516,9 +741,9 @@ private struct HerdSurface: View {
                         ProductEmptyState(
                             symbol: "circle.grid.3x3",
                             title: agents.isEmpty ? "No agents running" : "No matching agents",
-                            detail: agents.isEmpty ? "" : "Choose another filter.",
-                            actionTitle: "New agent",
-                            action: agents.isEmpty && workspace != nil ? { showNewProcess = true } : nil
+                            detail: agents.isEmpty ? "Start an agent from a workspace." : "Choose another filter.",
+                            actionTitle: "",
+                            action: nil
                         )
                         .frame(minHeight: 300)
                     } else {
@@ -534,21 +759,7 @@ private struct HerdSurface: View {
                 .padding(.bottom, 50)
             }
         }
-        .sheet(isPresented: $showNewProcess) {
-            if let workspace {
-                NewProcessSheet(
-                    catalog: model.agentCatalog,
-                    catalogLoaded: model.catalogLoaded,
-                    startsInAgentMode: true,
-                    workspaceID: workspace.id,
-                    targetPaneID: selectedPaneID ?? projection.focusedPane?.id,
-                    existingNames: Set(projection.panes.compactMap { $0.label ?? $0.agent })
-                ) { placement, process in
-                    model.launch(placement: placement, process: process) { result in selectedPaneID = result.paneID }
-                    showNewProcess = false
-                }
-            }
-        }
+
     }
 
     private var herdFilters: some View {
@@ -569,12 +780,13 @@ private struct HerdSurface: View {
         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
     }
 
-    private func herdCard(_ pane: PaneProjection) -> some View {
+    private func herdCard(_ connected: ConnectedAgentProjection) -> some View {
+        let pane = connected.agent
         let state = AgentSemanticState(herdrValue: pane.agentStatus)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 AgentStateGlyph(state: state, size: 7)
-                Text(pane.agent ?? pane.label ?? pane.title ?? "Untitled pane")
+                Text(pane.identity)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BessieDesign.strong)
                     .lineLimit(1)
@@ -589,7 +801,7 @@ private struct HerdSurface: View {
             Rectangle().fill(BessieDesign.border).frame(height: 1)
 
             VStack(alignment: .leading, spacing: 9) {
-                Text(location(for: pane))
+                Text(location(for: connected))
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(BessieDesign.faint)
                     .lineLimit(1)
@@ -607,9 +819,9 @@ private struct HerdSurface: View {
 
             HStack(spacing: 7) {
                 Spacer()
-                Button("Open pane") { openPane(pane.id) }
+                Button("Open pane") { openPane(connected) }
                     .buttonStyle(BessieSecondaryButtonStyle())
-                Button("Details") { inspectPane(pane.id) }
+                Button("Details") { inspectPane(connected) }
                     .buttonStyle(BessiePrimaryButtonStyle())
             }
             .padding(.horizontal, 10)
@@ -624,7 +836,7 @@ private struct HerdSurface: View {
         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.cardRadius))
     }
 
-    private func stateRank(_ pane: PaneProjection) -> Int {
+    private func stateRank(_ pane: AgentProjection) -> Int {
         switch AgentSemanticState(herdrValue: pane.agentStatus) {
         case .blocked: 0
         case .working: 1
@@ -643,13 +855,14 @@ private struct HerdSurface: View {
         }
     }
 
-    private func location(for pane: PaneProjection) -> String {
-        let workspace = projection.workspaces.first { $0.id == pane.workspaceID }?.label ?? "Untitled workspace"
-        let tab = projection.tabs.first { $0.id == pane.tabID }?.label ?? "Untitled tab"
-        return "\(workspace) / \(tab) / \(pane.label ?? pane.title ?? "Untitled pane")"
+    private func location(for connected: ConnectedAgentProjection) -> String {
+        let pane = connected.agent
+        let workspace = connected.workspaceLabel ?? "Untitled workspace"
+        let tab = connected.tabLabel ?? "Untitled tab"
+        return "\(connected.connectionName) / \(workspace) / \(tab) / \(pane.label ?? pane.title ?? "Untitled pane")"
     }
 
-    private func activity(for pane: PaneProjection, state: AgentSemanticState) -> String? {
+    private func activity(for pane: AgentProjection, state: AgentSemanticState) -> String? {
         if let title = pane.title, !title.isEmpty { return title }
         switch state {
         case .blocked: return "Open the pane to respond."
@@ -1850,11 +2063,11 @@ private extension ProductEditor {
 }
 
 private enum PendingClose {
-    case tab(String), pane(String)
-    var action: HerdrAction { switch self { case .tab(let id): .tabClose(id: id); case .pane(let id): .paneClose(id: id) } }
-    var title: String { switch self { case .tab: "Close tab?"; case .pane: "Close pane?" } }
-    var buttonTitle: String { switch self { case .tab: "Close tab"; case .pane: "Close pane" } }
-    func message(in projection: HerdrSessionProjection) -> String { switch self { case .tab(let id): projection.confirmationForClosingTab(id: id).message; case .pane(let id): projection.confirmationForClosingPane(id: id).message } }
+    case workspace(String), tab(String), pane(String)
+    var action: HerdrAction { switch self { case .workspace(let id): .workspaceClose(id: id); case .tab(let id): .tabClose(id: id); case .pane(let id): .paneClose(id: id) } }
+    var title: String { switch self { case .workspace: "Close workspace?"; case .tab: "Close tab?"; case .pane: "Close pane?" } }
+    var buttonTitle: String { switch self { case .workspace: "Close workspace"; case .tab: "Close tab"; case .pane: "Close pane" } }
+    func message(in projection: HerdrSessionProjection) -> String { switch self { case .workspace(let id): projection.confirmationForClosingWorkspace(id: id).message; case .tab(let id): projection.confirmationForClosingTab(id: id).message; case .pane(let id): projection.confirmationForClosingPane(id: id).message } }
 }
 
 private struct ProductSectionLabel: View {

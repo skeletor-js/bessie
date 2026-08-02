@@ -31,17 +31,20 @@ final class PersistenceReconnectTests: XCTestCase {
 
         let states: [HerdrConnectionState] = [
             .notFound,
+            .resolutionFailed(.systemMissing),
+            .validationFailed(runtime: runtime, failure: .bundledIntegrity),
             .stopped(runtime: runtime, socketPath: "/tmp/herdr.sock"),
             .starting(runtime: runtime),
             .startFailed(runtime: runtime, reason: "spawn failed"),
             .incompatible(runtime: runtime, identity: identity, reason: "protocol 16 is unsupported"),
             .connecting(runtime: runtime),
+            .apiUnavailable(runtime: runtime, reason: "socket unavailable"),
             .connected(runtime: runtime, socketPath: "/tmp/herdr.sock", snapshot: .fixture),
             .retrying(runtime: runtime, attempt: 2, delay: 0.5, reason: "socket closed"),
             .lost(runtime: runtime, reason: "retry budget exhausted"),
         ]
 
-        XCTAssertEqual(states.map(\.label), ["Herdr not found", "Herdr stopped", "Starting Herdr", "Herdr start failed", "Herdr incompatible", "Connecting", "Connected", "Retrying", "Connection lost"])
+        XCTAssertEqual(states.map(\.label), ["Herdr not found", "Runtime selection failed", "Runtime validation failed", "Herdr stopped", "Starting Herdr", "Herdr start failed", "Herdr incompatible", "Connecting", "Herdr API unavailable", "Connected", "Retrying", "Connection lost"])
     }
 
     func testCanceledConnectionRunnerStopsBeforeDiscovery() async {
