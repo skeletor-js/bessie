@@ -518,11 +518,19 @@ final class ConnectionViewModel: ObservableObject {
 /// Keeps every configured Herdr connection live. The product shell uses one
 /// session for workspace and terminal navigation at a time, while The herd is
 /// the union of every connected session.
+struct FleetConnectionIssue: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let title: String
+    let detail: String
+}
+
 @MainActor
 final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var activeModel: ConnectionViewModel?
     @Published private(set) var agents: [ConnectedAgentProjection] = []
     @Published private(set) var connectedCount = 0
+    @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
 
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
@@ -579,6 +587,7 @@ final class ConnectionFleetViewModel: ObservableObject {
         subscriptions.removeAll()
         agents = []
         connectedCount = 0
+        connectionIssues = []
         activeModel = nil
     }
 
@@ -599,6 +608,15 @@ final class ConnectionFleetViewModel: ObservableObject {
                 )
             }
         }
+        connectionIssues = models.values.compactMap { model in
+            guard model.presentation.status != .connected else { return nil }
+            return FleetConnectionIssue(
+                id: model.activeConnection.id,
+                label: ConnectionDisplayLabel(connection: model.activeConnection).short,
+                title: model.presentation.title,
+                detail: model.presentation.detail
+            )
+        }.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
         let sources = connected.map { "\($0.activeConnection.name):\($0.projection?.agents.count ?? 0)" }.sorted().joined(separator: ",")
         BessieDiagnosticLog.append("Fleet connected=\(connectedCount) agents=\(agents.count) sources=\(sources)")
     }
