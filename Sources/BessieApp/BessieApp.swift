@@ -26,7 +26,9 @@ struct BessieApp: App {
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)
         }
-        .windowStyle(.hiddenTitleBar)
+        // Real titlebar (above content) so traffic-light row can double-click to full screen.
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .defaultSize(width: 1180, height: 740)
         .commands {
             CommandGroup(replacing: .appTermination) {

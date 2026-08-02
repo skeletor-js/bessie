@@ -48,7 +48,7 @@ struct FollowFilesSurface: View {
             .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
 
             HSplitView {
-                touchedList.frame(minWidth: 150, idealWidth: 175, maxWidth: 210)
+                touchedList.frame(minWidth: 140, idealWidth: 200, maxWidth: 360)
                 preview.frame(minWidth: 220, maxWidth: .infinity, maxHeight: .infinity)
             }
 

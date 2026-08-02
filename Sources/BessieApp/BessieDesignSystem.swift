@@ -303,20 +303,16 @@ struct BessieTopBar<Actions: View>: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
             }
-            .allowsHitTesting(false)
 
             HStack(spacing: 5) { actions }
         }
         .font(.system(size: 13))
-        // Leave room for traffic lights; whole bar is still a drag/fullscreen target.
-        .padding(.leading, 72)
+        .padding(.leading, 16)
         .padding(.trailing, 12)
         .frame(maxWidth: .infinity)
-        .frame(height: max(density.topbarHeight, BessieDesign.titlebarHeight + 8))
+        .frame(height: density.topbarHeight)
         .background(BessieDesign.background)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
-        .background(BessieWindowChromeRegion(action: .toggleFullScreen))
-        .accessibilityHint("Double-click to enter or exit full screen")
     }
 }
 

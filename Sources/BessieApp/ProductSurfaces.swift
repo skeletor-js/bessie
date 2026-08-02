@@ -61,6 +61,7 @@ struct BessieProductShell: View {
     @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
     @State private var railWidth: CGFloat = BessieDesign.railWidth
+    @State private var workbenchWidth: CGFloat = 420
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
     private var attentionItems: [AttentionItemModel] {
@@ -110,31 +111,22 @@ struct BessieProductShell: View {
             BessieCowprintTexture(base: BessieDesign.window, crop: activeCrop, intensityScale: 0.9)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Full-width title chrome in line with traffic lights (hidden titlebar).
-                BessieWindowChromeRegion(action: .toggleFullScreen)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 28)
-                    .background(BessieDesign.window)
-                    .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
-                    .accessibilityLabel("Window title bar")
-                    .accessibilityHint("Double-click to enter or exit full screen")
-
-                HStack(spacing: density.cardGap) {
-                    if !sidebarCollapsed {
-                        productRail
-                            .frame(minWidth: 180, idealWidth: railWidth, maxWidth: 420)
-                            .frame(width: railWidth)
-                            .bessieSurface(base: BessieDesign.rail, crop: railCrop)
-                    }
-
-                    productContent
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .bessieSurface(base: BessieDesign.background, crop: activeCrop)
+            // HSplitView gives a real drag divider for the left rail.
+            HSplitView {
+                if !sidebarCollapsed {
+                    productRail
+                        .frame(minWidth: 180, idealWidth: railWidth, maxWidth: 460)
+                        .layoutPriority(0)
+                        .bessieSurface(base: BessieDesign.rail, crop: railCrop)
                 }
-                .padding(.horizontal, density.cardGap)
-                .padding(.bottom, max(2, density.cardGap - 2))
+
+                productContent
+                    .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
+                    .bessieSurface(base: BessieDesign.background, crop: activeCrop)
             }
+            .padding(.horizontal, density.cardGap)
+            .padding(.bottom, max(2, density.cardGap - 2))
         }
         .background(BessieDesign.window)
         .foregroundStyle(BessieDesign.text)
@@ -442,11 +434,7 @@ struct BessieProductShell: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
         }
-        .frame(width: railWidth)
-        .clipped()
-        .overlay(alignment: .trailing) {
-            RailResizeHandle(width: $railWidth)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var selectedAgentPane: PaneProjection? {
@@ -966,7 +954,7 @@ private struct AgentDetailSurface: View {
             if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner(hasFileAccess: model.remoteFileAccess != nil) }
 
             if let pane {
-                HStack(spacing: density.cardGap) {
+                HSplitView {
                     VStack(spacing: 0) {
                         HStack(spacing: 8) {
                             AgentStateGlyph(state: AgentSemanticState(herdrValue: pane.agentStatus), size: 6)
@@ -1007,9 +995,10 @@ private struct AgentDetailSurface: View {
                     }
                     .clipShape(RoundedRectangle(cornerRadius: BessieDesign.paneRadius))
                     .overlay { RoundedRectangle(cornerRadius: BessieDesign.paneRadius).stroke(BessieDesign.border, lineWidth: 1) }
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
 
                     agentWorkbench(pane)
-                        .frame(width: 470)
+                        .frame(minWidth: 260, idealWidth: 420, maxWidth: 720)
                 }
                 .padding(density.cardGap)
             } else {
