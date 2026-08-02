@@ -102,19 +102,39 @@ public enum WorkspaceFS {
         let workspacePanes = projection.panes.filter { $0.workspaceID == resolvedWorkspaceID }
         guard !workspacePanes.isEmpty else { return .failure(.missingRoot) }
 
-        let absoluteCWDs = workspacePanes.compactMap(\.cwd).filter(Self.isAbsolutePath)
-        let consensusCWD = absoluteCWDs.count == workspacePanes.count && Set(absoluteCWDs).count == 1
-            ? absoluteCWDs.first
-            : nil
-        let selectedCWD = selectedPane.flatMap { pane -> String? in
-            guard pane.workspaceID == resolvedWorkspaceID,
-                  let cwd = pane.cwd,
-                  Self.isAbsolutePath(cwd) else { return nil }
+        func absoluteCWD(of pane: PaneProjection) -> String? {
+            guard let cwd = pane.effectiveCWD, Self.isAbsolutePath(cwd) else { return nil }
             return cwd
         }
-        guard let candidate = consensusCWD ?? selectedCWD else { return .failure(.missingRoot) }
 
-        let resolution: RootResolution = consensusCWD == nil ? .selectedPaneCwd : .herdrCwd
+        let absoluteCWDs = workspacePanes.compactMap(absoluteCWD)
+        let consensusCWD = !workspacePanes.isEmpty
+            && absoluteCWDs.count == workspacePanes.count
+            && Set(absoluteCWDs).count == 1
+            ? absoluteCWDs.first
+            : nil
+
+        let selectedOrFocusedPane = selectedPane
+            ?? workspacePanes.first(where: \.focused)
+            ?? projection.focusedPane.flatMap { focused in
+                focused.workspaceID == resolvedWorkspaceID ? focused : nil
+            }
+            ?? workspacePanes.first
+
+        let selectedCWD = selectedOrFocusedPane.flatMap(absoluteCWD)
+        let anyWorkspaceCWD = absoluteCWDs.first
+        guard let candidate = consensusCWD ?? selectedCWD ?? anyWorkspaceCWD else {
+            return .failure(.missingRoot)
+        }
+
+        let resolution: RootResolution
+        if consensusCWD != nil {
+            resolution = .herdrCwd
+        } else if selectedCWD != nil {
+            resolution = .selectedPaneCwd
+        } else {
+            resolution = .agentWorkingDir
+        }
 
         if let remoteAccess {
             let client = SSHRemoteFileClient(access: remoteAccess)

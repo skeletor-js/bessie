@@ -30,7 +30,7 @@ final class FollowFilesViewModel: ObservableObject {
         remoteFileAccess: SSHRemoteFileAccess? = nil
     ) {
         let pane = projection.panes.first { $0.id == paneID }
-        let nextContextID = "\(connection.id)::\(paneID)::\(pane?.workspaceID ?? "-")::\(pane?.cwd ?? "-")::\(remoteFileAccess?.controlPath ?? "local")"
+        let nextContextID = "\(connection.id)::\(paneID)::\(pane?.workspaceID ?? "-")::\(pane?.effectiveCWD ?? "-")::\(remoteFileAccess?.controlPath ?? "local")"
         guard nextContextID != contextID else { return }
         stop()
         contextID = nextContextID
