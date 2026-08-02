@@ -52,7 +52,9 @@ final class SurfaceProjectionTests: XCTestCase {
     func testPreferencesRoundTripEveryApprovedV1SettingAndDecodeLegacyValues() throws {
         let preferences = BessiePreferences(
             appearance: .light,
+            density: .compact,
             appIcon: .light,
+            cowprintEnabled: false,
             cowPrintIntensity: 0.08,
             cowPrintMotion: false,
             terminalFontSize: 15,
@@ -67,7 +69,9 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(decoded.terminalFontSize, 14)
         XCTAssertEqual(decoded.paneGap, 7)
         XCTAssertEqual(decoded.appearance, .system)
+        XCTAssertEqual(decoded.density, .comfortable)
         XCTAssertEqual(decoded.appIcon, .dark)
+        XCTAssertTrue(decoded.cowprintEnabled)
         XCTAssertEqual(decoded.notifications, .blockedOnly)
     }
 

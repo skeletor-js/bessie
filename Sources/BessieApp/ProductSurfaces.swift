@@ -46,6 +46,7 @@ struct BessieProductShell: View {
     @EnvironmentObject private var settings: BessieSettingsModel
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.bessieDensity) private var density
     @State private var destination: ProductDestination = .initial
     @State private var selectedWorkspaceID: String?
     @State private var selectedPaneID: String?
@@ -101,7 +102,7 @@ struct BessieProductShell: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                HStack(spacing: BessieDesign.cardGap) {
+                HStack(spacing: density.cardGap) {
                     if !sidebarCollapsed {
                         productRail
                             .bessieSurface(base: BessieDesign.rail, crop: railCrop)
@@ -111,8 +112,8 @@ struct BessieProductShell: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .bessieSurface(base: BessieDesign.background, crop: activeCrop)
                 }
-                .padding(.horizontal, BessieDesign.cardGap)
-                .padding(.bottom, BessieDesign.cardGap - 2)
+                .padding(.horizontal, density.cardGap)
+                .padding(.bottom, max(2, density.cardGap - 2))
 
                 BessieStatusLine(
                     workspaceCount: projection.workspaces.count,
@@ -405,7 +406,7 @@ struct BessieProductShell: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
         }
-        .frame(width: BessieDesign.railWidth)
+        .frame(width: density.railWidth)
         .clipped()
     }
 
@@ -508,7 +509,7 @@ struct BessieProductShell: View {
             }
         }
         .padding(.horizontal, 9)
-        .frame(height: BessieDesign.rowHeight)
+        .frame(height: density.rowHeight)
         .foregroundStyle(selected ? BessieDesign.strong : BessieDesign.text)
         .background(selected ? BessieDesign.selected : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -703,6 +704,7 @@ private struct HerdSurface: View {
     let openPane: (ConnectedAgentProjection) -> Void
     let inspectPane: (ConnectedAgentProjection) -> Void
     @State private var filter: HerdFilter = .all
+    @Environment(\.bessieDensity) private var density
 
     private var agents: [ConnectedAgentProjection] {
         fleet.agents.sorted { stateRank($0.agent) < stateRank($1.agent) }
@@ -747,7 +749,7 @@ private struct HerdSurface: View {
                         )
                         .frame(minHeight: 300)
                     } else {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), alignment: .leading, spacing: 10) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: density.cardGap), count: 3), alignment: .leading, spacing: density.cardGap) {
                             ForEach(panes) { pane in
                                 herdCard(pane)
                             }
@@ -796,7 +798,7 @@ private struct HerdSurface: View {
                     .foregroundStyle(stateColor(state))
             }
             .padding(.horizontal, 12)
-            .frame(height: 38)
+            .frame(height: density.herdCardHeaderHeight)
 
             Rectangle().fill(BessieDesign.border).frame(height: 1)
 
@@ -815,7 +817,7 @@ private struct HerdSurface: View {
                     Spacer().frame(minHeight: 48)
                 }
             }
-            .padding(12)
+            .padding(density.attentionPadding)
 
             HStack(spacing: 7) {
                 Spacer()
@@ -825,7 +827,7 @@ private struct HerdSurface: View {
                     .buttonStyle(BessiePrimaryButtonStyle())
             }
             .padding(.horizontal, 10)
-            .frame(height: 42)
+            .frame(height: density.herdCardFooterHeight)
             .background(BessieDesign.inset.opacity(0.7))
         }
         .background(BessieDesign.panel)
@@ -882,6 +884,7 @@ private struct AgentDetailSurface: View {
     let openWorkspace: () -> Void
     @State private var prompt = ""
     @State private var editor: ProductEditor?
+    @Environment(\.bessieDensity) private var density
 
     private var pane: PaneProjection? {
         projection.panes.first { $0.id == selectedPaneID } ?? projection.focusedPane ?? projection.panes.first
@@ -905,7 +908,7 @@ private struct AgentDetailSurface: View {
             }
 
             if let pane {
-                HStack(spacing: BessieDesign.cardGap) {
+                HStack(spacing: density.cardGap) {
                     VStack(spacing: 0) {
                         HStack(spacing: 8) {
                             AgentStateGlyph(state: AgentSemanticState(herdrValue: pane.agentStatus), size: 6)
@@ -917,7 +920,7 @@ private struct AgentDetailSurface: View {
                             else { Text("CONNECTING").font(.system(size: 9, design: .monospaced)).foregroundStyle(BessieDesign.subtle) }
                         }
                         .padding(.horizontal, 10)
-                        .frame(height: 27)
+                        .frame(height: density.paneHeaderHeight)
                         .background(BessieDesign.panel)
                         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
 
@@ -950,7 +953,7 @@ private struct AgentDetailSurface: View {
                     agentWorkbench(pane)
                         .frame(width: 470)
                 }
-                .padding(BessieDesign.cardGap)
+                .padding(density.cardGap)
             } else {
                 ProductEmptyState(symbol: "terminal", title: "No agent selected", detail: "Choose an agent from The herd.", action: nil)
             }
@@ -1540,7 +1543,6 @@ private struct NewProcessSheet: View {
             }
         }
         .frame(width: 760, height: agentMode ? 600 : 360)
-        .preferredColorScheme(.dark)
         .background(BessieWindowSnapshotProbe(role: "sheet"))
         .onAppear {
             agentMode = startsInAgentMode
@@ -1762,6 +1764,7 @@ private struct ProductPane: View {
     let action: (HerdrAction) -> Void
     let close: (String) -> Void
     @State private var confirmingTakeover = false
+    @Environment(\.bessieDensity) private var density
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1790,7 +1793,7 @@ private struct ProductPane: View {
                 }
                 .padding(.leading, 9)
                 .padding(.trailing, 6)
-                .frame(height: 27)
+                .frame(height: density.paneHeaderHeight)
                 .background(selected ? ProductPalette.selected : ProductPalette.panel)
                 .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
             }
@@ -1937,12 +1940,13 @@ private struct RecoverableTerminalSurface: View {
 private struct AttentionSurface: View {
     let items: [AttentionSurfaceItem]
     let open: (String) -> Void
+    @Environment(\.bessieDensity) private var density
     var body: some View {
         VStack(spacing: 0) {
             BessieTopBar(title: "Attention") {}
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 11) {
+                VStack(alignment: .leading, spacing: density.attentionGap) {
                     if !items.isEmpty {
                         HStack(spacing: 7) {
                             Text("\(items.count) item\(items.count == 1 ? "" : "s")")
@@ -1963,7 +1967,7 @@ private struct AttentionSurface: View {
                             }
                             Spacer()
                         }
-                        .padding(15)
+                        .padding(density.attentionPadding)
                         .background(BessieDesign.panel)
                         .overlay {
                             RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
@@ -1996,7 +2000,7 @@ private struct AttentionSurface: View {
                                     }
                                 }
                             }
-                            .padding(15)
+                            .padding(density.attentionPadding)
                             .background(BessieDesign.panel)
                             .overlay {
                                 RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
