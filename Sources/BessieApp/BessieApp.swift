@@ -49,6 +49,7 @@ final class ConnectionViewModel: ObservableObject {
     private var remoteBridge: RemoteHerdrBridge?
     private var connectionToken = UUID()
     private var actionClient: HerdrActionClient?
+    private var openPaneToken: UUID?
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
     private var projectHandoffToken: UUID?
@@ -191,6 +192,8 @@ final class ConnectionViewModel: ObservableObject {
 
     func stop() {
         connectionToken = UUID()
+        openPaneToken = nil
+        actionInFlight = false
         connectionRunner?.cancel()
         connectionTask?.cancel()
         connectionTask = nil
@@ -223,6 +226,9 @@ final class ConnectionViewModel: ObservableObject {
 
     func openPane(_ target: PaneOpenTarget, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
         guard let actionClient else { return }
+        let connectionGeneration = connectionToken
+        let requestToken = UUID()
+        openPaneToken = requestToken
         actionInFlight = true
         actionError = nil
         Task.detached {
@@ -233,12 +239,18 @@ final class ConnectionViewModel: ObservableObject {
                     .paneFocus(id: target.paneID),
                 ])
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration,
+                          self.openPaneToken == requestToken
+                    else { return }
                     self.projection = projection
                     self.actionInFlight = false
                     completion?(projection)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration,
+                          self.openPaneToken == requestToken
+                    else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
                 }
@@ -529,6 +541,7 @@ struct FleetConnectionIssue: Identifiable, Equatable {
 final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var activeModel: ConnectionViewModel?
     @Published private(set) var agents: [ConnectedAgentProjection] = []
+    @Published private(set) var attentionAgents: [ConnectedAgentProjection] = []
     @Published private(set) var connectedCount = 0
     @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
 
@@ -586,6 +599,7 @@ final class ConnectionFleetViewModel: ObservableObject {
         models.removeAll()
         subscriptions.removeAll()
         agents = []
+        attentionAgents = []
         connectedCount = 0
         connectionIssues = []
         activeModel = nil
@@ -605,6 +619,17 @@ final class ConnectionFleetViewModel: ObservableObject {
                     agent: agent,
                     workspaceLabel: projection.workspaces.first { $0.id == agent.workspaceID }?.label,
                     tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label
+                )
+            }
+        }
+        attentionAgents = connected.flatMap { model -> [ConnectedAgentProjection] in
+            guard let projection = model.projection else { return [] }
+            return projection.panes.map { pane in
+                ConnectedAgentProjection(
+                    connection: model.activeConnection,
+                    agent: AgentProjection(pane: pane),
+                    workspaceLabel: projection.workspaces.first { $0.id == pane.workspaceID }?.label,
+                    tabLabel: projection.tabs.first { $0.id == pane.tabID }?.label
                 )
             }
         }

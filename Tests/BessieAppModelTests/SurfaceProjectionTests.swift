@@ -47,6 +47,11 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertEqual(surfaces.attention[0].action, .openPane(paneID: "p1"))
         XCTAssertEqual(surfaces.notificationPanes.map(\.paneID), ["p1", "p2", "p3"])
         XCTAssertEqual(surfaces.notificationPanes[0].target, PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1"))
+
+        let connectedPanes = projection.panes.map {
+            ConnectedAgentProjection(connection: .localBessie, agent: AgentProjection(pane: $0))
+        }
+        XCTAssertEqual(AttentionListBuilder.items(from: connectedPanes).map(\.state), [.blocked, .done])
     }
 
     func testPreferencesRoundTripEveryApprovedV1SettingAndDecodeLegacyValues() throws {

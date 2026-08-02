@@ -888,3 +888,13 @@ Blocker closed after Amp paused only for missing launch-review visual evidence:
 - Ordinary sessions untouched; staging empty; no commit/push/publish/notarize.
 
 Native Projects Milestones 0–6 are accepted for V1 product scope. Public notarization remains deferred.
+
+## V1 Slice E — Herd B + Attention thin
+
+Status: code milestones complete; focused native verification passed. Shared-mirror package/install verification was intentionally not claimed because concurrent slice synchronization overwrote a mirrored source file during the first run.
+
+- Added Core Herd and Attention builders, shared connection labels and routed pane targets, explicit Needs-you = blocked filtering, count and ordering tests, and fleet-wide blocked+done Attention ordering.
+- Wired Herd counts/cards/connection chips/degraded banners and fleet-wide Attention/Open pane/⌥⌘N routing in the product shell.
+- VPS `./scripts/check.sh`: exit 0.
+- Isolated Mac `xcrun swift test --filter "HerdListTests|AttentionListTests|SurfaceProjectionTests|KeyboardShortcutTests"`: BessieApp compiled; **21 tests, 0 failures**.
+- No full `mac-verify.sh`, screenshot, package install, executable identity, push, or PR result is claimed for this slice.

@@ -23,6 +23,10 @@ grep -Fq 'runtimeSelection: HerdrRuntimeSelection' Sources/BessieCore/Connection
 grep -Fq 'struct BessieSurfaceProjection' Sources/BessieCore/SurfaceProjection.swift
 grep -Fq 'struct AttentionSurface' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'struct HerdSurface' Sources/BessieApp/ProductSurfaces.swift
+grep -Fq 'public enum HerdListBuilder' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .needsYou: state == .blocked' Sources/BessieCore/HerdList.swift
+grep -Fq 'public enum AttentionListBuilder' Sources/BessieCore/AttentionList.swift
+grep -Fq 'public struct ConnectionDisplayLabel' Sources/BessieCore/ConnectionDisplay.swift
 grep -Fq 'struct AgentDetailSurface' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'struct NewProcessSheet' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'public struct AgentCatalog' Sources/BessieCore/AgentLaunch.swift

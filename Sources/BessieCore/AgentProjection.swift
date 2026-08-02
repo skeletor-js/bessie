@@ -121,7 +121,7 @@ public struct AgentProjection: Codable, Equatable, Identifiable, Sendable {
         self.launchPending = launchPending
     }
 
-    init(pane: PaneProjection) {
+    public init(pane: PaneProjection) {
         self.init(
             id: pane.id,
             terminalID: pane.terminalID,

@@ -28,6 +28,7 @@ final class KeyboardShortcutTests: XCTestCase {
             (.init(key: .character("D"), command: true, shift: true), .splitPane(.down)),
             (.init(key: .character("b"), command: true, shift: true), .toggleSidebar),
             (.init(key: .character(","), command: true), .showSettings),
+            (.init(key: .character("n"), option: true, command: true), .openNotificationTarget),
         ]
         let router = BessieKeyboardShortcutRouter()
         for (stroke, command) in cases {

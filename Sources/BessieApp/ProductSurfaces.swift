@@ -55,11 +55,12 @@ struct BessieProductShell: View {
     @State private var showCommandPalette = false
     @State private var shortcutEditor: ProductEditor?
     @State private var shortcutClose: PendingClose?
+    @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
     private var attentionItems: [AttentionItemModel] {
-        AttentionListBuilder.items(from: fleet.agents)
+        AttentionListBuilder.items(from: fleet.attentionAgents)
     }
     private var activeNotificationPaneID: String? {
         guard scenePhase == .active, destination == .workspace || destination == .agent else { return nil }
@@ -275,7 +276,7 @@ struct BessieProductShell: View {
                 terminalFontSize: settings.preferences.terminalFontSize
             )
         case .attention:
-            AttentionSurface(items: attentionItems, open: openRoutedPane)
+            AttentionSurface(items: attentionItems, connectionIssues: fleet.connectionIssues, open: openRoutedPane)
         case .agent:
             AgentDetailSurface(
                 model: model,
@@ -524,12 +525,17 @@ struct BessieProductShell: View {
 
     private func openRoutedPane(_ routed: RoutedPaneTarget) {
         guard let targetModel = fleet.activate(connectionID: routed.connectionID) else { return }
+        let token = UUID()
+        openRouteToken = token
         let target = PaneOpenTarget(
             workspaceID: routed.workspaceID,
             tabID: routed.tabID,
             paneID: routed.paneID
         )
         targetModel.openPane(target) { _ in
+            guard openRouteToken == token,
+                  fleet.activeConnectionID == routed.connectionID
+            else { return }
             selectedWorkspaceID = routed.workspaceID
             selectedPaneID = routed.paneID
             destination = .workspace
@@ -724,10 +730,11 @@ private struct HerdSurface: View {
                     }
 
                     if cards.isEmpty {
+                        let noConnections = fleet.connectedCount == 0
                         ProductEmptyState(
                             symbol: "circle.grid.3x3",
-                            title: fleet.agents.isEmpty ? "No agents running" : "No matching agents",
-                            detail: fleet.agents.isEmpty ? "Connected sessions have no running agents." : "Choose another filter.",
+                            title: noConnections ? "No connected sessions" : (fleet.agents.isEmpty ? "No agents running" : "No matching agents"),
+                            detail: noConnections ? "Connections are unavailable. Your Herdr work may still be running." : (fleet.agents.isEmpty ? "Connected sessions have no running agents." : "Choose another filter."),
                             actionTitle: "",
                             action: nil
                         )
@@ -1932,6 +1939,7 @@ private struct RecoverableTerminalSurface: View {
 
 private struct AttentionSurface: View {
     let items: [AttentionItemModel]
+    let connectionIssues: [FleetConnectionIssue]
     let open: (RoutedPaneTarget) -> Void
     var body: some View {
         VStack(spacing: 0) {
@@ -1939,6 +1947,23 @@ private struct AttentionSurface: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 11) {
+                    if !connectionIssues.isEmpty {
+                        ForEach(connectionIssues) { issue in
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle")
+                                Text(issue.label).fontWeight(.semibold)
+                                Text(issue.title)
+                                Spacer()
+                            }
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(BessieDesign.subtle)
+                            .padding(.horizontal, 11)
+                            .frame(height: 30)
+                            .background(BessieDesign.inset)
+                            .overlay { RoundedRectangle(cornerRadius: 6).stroke(BessieDesign.border, lineWidth: 1) }
+                        }
+                    }
+
                     if !items.isEmpty {
                         HStack(spacing: 7) {
                             Text("\(items.count) item\(items.count == 1 ? "" : "s")")
@@ -1953,7 +1978,7 @@ private struct AttentionSurface: View {
                             Image(systemName: "checkmark.circle")
                                 .font(.system(size: 17, weight: .regular))
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Nothing needs you")
+                                Text(connectionIssues.isEmpty ? "Nothing needs you" : "No attention items on connected sessions")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(BessieDesign.strong)
                             }
