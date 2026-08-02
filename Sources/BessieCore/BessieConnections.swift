@@ -137,7 +137,7 @@ public enum BessieConnectionError: LocalizedError, Equatable, Sendable {
     }
 }
 
-private extension String {
+extension String {
     var trimmedOrNil: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value

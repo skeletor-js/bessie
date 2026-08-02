@@ -8,6 +8,16 @@ public enum AgentSemanticState: String, Codable, CaseIterable, Equatable, Sendab
     }
 
     public var needsAttention: Bool { self == .blocked || self == .done }
+
+    var sortRank: Int {
+        switch self {
+        case .blocked: 0
+        case .working: 1
+        case .done: 2
+        case .idle: 3
+        case .unknown: 4
+        }
+    }
 }
 
 public enum AttentionProvenance: String, Codable, Equatable, Sendable { case herdr }
@@ -19,6 +29,20 @@ public struct PaneOpenTarget: Equatable, Sendable {
     public let paneID: String
 
     public init(workspaceID: String, tabID: String, paneID: String) {
+        self.workspaceID = workspaceID
+        self.tabID = tabID
+        self.paneID = paneID
+    }
+}
+
+public struct RoutedPaneTarget: Equatable, Sendable {
+    public let connectionID: String
+    public let workspaceID: String
+    public let tabID: String
+    public let paneID: String
+
+    public init(connectionID: String, workspaceID: String, tabID: String, paneID: String) {
+        self.connectionID = connectionID
         self.workspaceID = workspaceID
         self.tabID = tabID
         self.paneID = paneID
@@ -137,7 +161,8 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
                 label: workspace.label,
                 tabCount: workspace.tabCount,
                 paneCount: workspace.paneCount,
-                rolledState: Self.highest(states, fallback: AgentSemanticState(herdrValue: workspace.agentStatus)),
+                rolledState: states.min(by: { $0.sortRank < $1.sortRank })
+                    ?? AgentSemanticState(herdrValue: workspace.agentStatus),
                 attentionCount: states.filter(\.needsAttention).count,
                 focused: workspace.focused
             )
@@ -173,7 +198,7 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
                 provenance: .herdr,
                 action: .openPane(paneID: pane.id)
             )
-        }.sorted { Self.rank($0.state) < Self.rank($1.state) }
+        }.sorted { $0.state.sortRank < $1.state.sortRank }
 
         targets = Dictionary(uniqueKeysWithValues: projection.panes.map {
             ($0.id, PaneOpenTarget(workspaceID: $0.workspaceID, tabID: $0.tabID, paneID: $0.id))
@@ -181,18 +206,4 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
     }
 
     public func openTarget(paneID: String) -> PaneOpenTarget? { targets[paneID] }
-
-    private static func highest(_ states: [AgentSemanticState], fallback: AgentSemanticState) -> AgentSemanticState {
-        states.min { rank($0) < rank($1) } ?? fallback
-    }
-
-    private static func rank(_ state: AgentSemanticState) -> Int {
-        switch state {
-        case .blocked: 0
-        case .working: 1
-        case .done: 2
-        case .idle: 3
-        case .unknown: 4
-        }
-    }
 }

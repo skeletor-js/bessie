@@ -55,9 +55,13 @@ struct BessieProductShell: View {
     @State private var showCommandPalette = false
     @State private var shortcutEditor: ProductEditor?
     @State private var shortcutClose: PendingClose?
+    @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
 
     private var surfaces: BessieSurfaceProjection { BessieSurfaceProjection(projection: projection) }
+    private var attentionItems: [AttentionItemModel] {
+        AttentionListBuilder.items(from: fleet.attentionAgents)
+    }
     private var activeNotificationPaneID: String? {
         guard scenePhase == .active, destination == .workspace || destination == .agent else { return nil }
         let candidate = selectedPaneID ?? projection.focusedPane?.id
@@ -116,7 +120,7 @@ struct BessieProductShell: View {
 
                 BessieStatusLine(
                     workspaceCount: projection.workspaces.count,
-                    attentionCount: surfaces.attention.count,
+                    attentionCount: attentionItems.count,
                     connectionCount: fleet.connectedCount
                 )
             }
@@ -244,11 +248,11 @@ struct BessieProductShell: View {
         case .herd:
             HerdSurface(
                 fleet: fleet,
-                openPane: openConnectedAgent,
-                inspectPane: { connected in
-                    _ = fleet.activate(connected)
-                    selectedPaneID = connected.paneID
-                    selectedWorkspaceID = connected.workspaceID
+                openPane: openRoutedPane,
+                inspectPane: { card in
+                    _ = fleet.activate(connectionID: card.connectionID)
+                    selectedPaneID = card.paneTarget.paneID
+                    selectedWorkspaceID = card.paneTarget.workspaceID
                     destination = .agent
                 }
             )
@@ -272,7 +276,7 @@ struct BessieProductShell: View {
                 terminalFontSize: settings.preferences.terminalFontSize
             )
         case .attention:
-            AttentionSurface(items: surfaces.attention, open: openPane)
+            AttentionSurface(items: attentionItems, connectionIssues: fleet.connectionIssues, open: openRoutedPane)
         case .agent:
             AgentDetailSurface(
                 model: model,
@@ -459,7 +463,7 @@ struct BessieProductShell: View {
             railRow(
                 symbol: item.symbol,
                 label: label ?? item.rawValue,
-                end: item == .attention && !surfaces.attention.isEmpty ? "\(surfaces.attention.count)" : nil,
+                end: item == .attention && !attentionItems.isEmpty ? "\(attentionItems.count)" : nil,
                 selected: destination == item || (item == .herd && destination == .agent)
             )
         }
@@ -516,28 +520,24 @@ struct BessieProductShell: View {
     }
 
     private func itemEndColor(label: String) -> Color {
-        label == ProductDestination.attention.rawValue && !surfaces.attention.isEmpty ? BessieDesign.strong : BessieDesign.faint
+        label == ProductDestination.attention.rawValue && !attentionItems.isEmpty ? BessieDesign.strong : BessieDesign.faint
     }
 
-    private func openPane(_ paneID: String) {
-        guard let target = surfaces.openTarget(paneID: paneID) else { return }
-        model.openPane(target) { _ in
-            selectedWorkspaceID = target.workspaceID
-            selectedPaneID = target.paneID
-            destination = .workspace
-        }
-    }
-
-    private func openConnectedAgent(_ connected: ConnectedAgentProjection) {
-        guard let targetModel = fleet.activate(connected) else { return }
+    private func openRoutedPane(_ routed: RoutedPaneTarget) {
+        guard let targetModel = fleet.activate(connectionID: routed.connectionID) else { return }
+        let token = UUID()
+        openRouteToken = token
         let target = PaneOpenTarget(
-            workspaceID: connected.workspaceID,
-            tabID: connected.tabID,
-            paneID: connected.paneID
+            workspaceID: routed.workspaceID,
+            tabID: routed.tabID,
+            paneID: routed.paneID
         )
         targetModel.openPane(target) { _ in
-            selectedWorkspaceID = connected.workspaceID
-            selectedPaneID = connected.paneID
+            guard openRouteToken == token,
+                  fleet.activeConnectionID == routed.connectionID
+            else { return }
+            selectedWorkspaceID = routed.workspaceID
+            selectedPaneID = routed.paneID
             destination = .workspace
         }
     }
@@ -588,7 +588,7 @@ struct BessieProductShell: View {
         case .workspacePicker:
             destination = .workspaces
         case .openNotificationTarget:
-            if let item = surfaces.attention.first { openPane(item.paneID) }
+            if let item = attentionItems.first { openRoutedPane(item.target) }
             else { destination = .attention }
         case .newTab:
             if let workspace { model.perform(.tabCreate(workspaceID: workspace.id, cwd: nil, label: nil, focus: true)) }
@@ -685,38 +685,25 @@ struct BessieProductShell: View {
     }
 }
 
-private enum HerdFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case blocked = "Needs you"
-    case working = "Working"
-    case done = "Done"
-    case idle = "Idle"
-    var id: String { rawValue }
-
-    func includes(_ state: AgentSemanticState) -> Bool {
-        self == .all || rawValue.lowercased() == state.rawValue
-    }
-}
-
 private struct HerdSurface: View {
     @ObservedObject var fleet: ConnectionFleetViewModel
-    let openPane: (ConnectedAgentProjection) -> Void
-    let inspectPane: (ConnectedAgentProjection) -> Void
-    @State private var filter: HerdFilter = .all
+    let openPane: (RoutedPaneTarget) -> Void
+    let inspectPane: (HerdCardModel) -> Void
+    @State private var filter: HerdListFilter = .all
 
-    private var agents: [ConnectedAgentProjection] {
-        fleet.agents.sorted { stateRank($0.agent) < stateRank($1.agent) }
+    private var cards: [HerdCardModel] {
+        HerdListBuilder.cards(agents: fleet.agents, filter: filter)
     }
 
-    private var panes: [ConnectedAgentProjection] {
-        agents.filter { filter.includes(AgentSemanticState(herdrValue: $0.agent.agentStatus)) }
+    private var counts: [HerdListFilter: Int] {
+        HerdListBuilder.counts(agents: fleet.agents)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             BessieTopBar(title: "The herd") {
-                if !agents.isEmpty {
-                    Text("\(agents.count) AGENT\(agents.count == 1 ? "" : "S")")
+                if !fleet.agents.isEmpty {
+                    Text("\(fleet.agents.count) AGENT\(fleet.agents.count == 1 ? "" : "S")")
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(BessieDesign.subtle)
                         .padding(.horizontal, 9)
@@ -729,7 +716,12 @@ private struct HerdSurface: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !agents.isEmpty {
+                    if !fleet.connectionIssues.isEmpty {
+                        connectionIssues
+                            .padding(.bottom, 14)
+                    }
+
+                    if !fleet.agents.isEmpty {
                         HStack(alignment: .bottom) {
                             Spacer()
                             herdFilters
@@ -737,19 +729,20 @@ private struct HerdSurface: View {
                         .padding(.bottom, 18)
                     }
 
-                    if panes.isEmpty {
+                    if cards.isEmpty {
+                        let noConnections = fleet.connectedCount == 0
                         ProductEmptyState(
                             symbol: "circle.grid.3x3",
-                            title: agents.isEmpty ? "No agents running" : "No matching agents",
-                            detail: agents.isEmpty ? "Start an agent from a workspace." : "Choose another filter.",
+                            title: noConnections ? "No connected sessions" : (fleet.agents.isEmpty ? "No agents running" : "No matching agents"),
+                            detail: noConnections ? "Connections are unavailable. Your Herdr work may still be running." : (fleet.agents.isEmpty ? "Connected sessions have no running agents." : "Choose another filter."),
                             actionTitle: "",
                             action: nil
                         )
                         .frame(minHeight: 300)
                     } else {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), alignment: .leading, spacing: 10) {
-                            ForEach(panes) { pane in
-                                herdCard(pane)
+                            ForEach(cards) { card in
+                                herdCard(card)
                             }
                         }
                     }
@@ -764,8 +757,15 @@ private struct HerdSurface: View {
 
     private var herdFilters: some View {
         HStack(spacing: 0) {
-            ForEach(HerdFilter.allCases) { item in
-                Button(item.rawValue) { filter = item }
+            ForEach(HerdListFilter.allCases, id: \.self) { item in
+                Button { filter = item } label: {
+                    HStack(spacing: 5) {
+                        Text(item.rawValue)
+                        Text("\(counts[item, default: 0])")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(filter == item ? BessieDesign.text : BessieDesign.faint)
+                    }
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 10.5, weight: filter == item ? .semibold : .regular))
                     .foregroundStyle(filter == item ? BessieDesign.strong : BessieDesign.subtle)
@@ -780,20 +780,41 @@ private struct HerdSurface: View {
         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
     }
 
-    private func herdCard(_ connected: ConnectedAgentProjection) -> some View {
-        let pane = connected.agent
-        let state = AgentSemanticState(herdrValue: pane.agentStatus)
-        return VStack(alignment: .leading, spacing: 0) {
+    private var connectionIssues: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(fleet.connectionIssues) { issue in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(issue.label)
+                        .fontWeight(.semibold)
+                    Text(issue.title)
+                    Spacer()
+                    Text(issue.detail)
+                        .foregroundStyle(BessieDesign.faint)
+                        .lineLimit(1)
+                }
+                .font(.system(size: 10.5))
+                .foregroundStyle(BessieDesign.subtle)
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(BessieDesign.inset)
+                .overlay { RoundedRectangle(cornerRadius: 6).stroke(BessieDesign.border, lineWidth: 1) }
+            }
+        }
+    }
+
+    private func herdCard(_ card: HerdCardModel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                AgentStateGlyph(state: state, size: 7)
-                Text(pane.identity)
+                AgentStateGlyph(state: card.state, size: 7)
+                Text(card.identity)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BessieDesign.strong)
                     .lineLimit(1)
                 Spacer()
-                Text(state.title.uppercased())
+                Text(card.state.title.uppercased())
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(stateColor(state))
+                    .foregroundStyle(stateColor(card.state))
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
@@ -801,11 +822,19 @@ private struct HerdSurface: View {
             Rectangle().fill(BessieDesign.border).frame(height: 1)
 
             VStack(alignment: .leading, spacing: 9) {
-                Text(location(for: connected))
+                HStack(spacing: 7) {
+                    Text(card.connectionLabel)
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
+                        .background(BessieDesign.selected)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .help(card.connectionDetail)
+                    Text(card.location)
+                        .lineLimit(1)
+                }
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(BessieDesign.faint)
-                    .lineLimit(1)
-                if let activity = activity(for: pane, state: state) {
+                if let activity = card.activity {
                     Text(activity)
                         .font(.system(size: 12))
                         .foregroundStyle(BessieDesign.text)
@@ -819,9 +848,9 @@ private struct HerdSurface: View {
 
             HStack(spacing: 7) {
                 Spacer()
-                Button("Open pane") { openPane(connected) }
+                Button("Open pane") { openPane(card.paneTarget) }
                     .buttonStyle(BessieSecondaryButtonStyle())
-                Button("Details") { inspectPane(connected) }
+                Button("Details") { inspectPane(card) }
                     .buttonStyle(BessiePrimaryButtonStyle())
             }
             .padding(.horizontal, 10)
@@ -831,19 +860,9 @@ private struct HerdSurface: View {
         .background(BessieDesign.panel)
         .overlay {
             RoundedRectangle(cornerRadius: BessieDesign.cardRadius)
-                .stroke(state == .blocked ? BessieDesign.strong.opacity(0.72) : BessieDesign.border, lineWidth: 1)
+                .stroke(card.state == .blocked ? BessieDesign.strong.opacity(0.72) : BessieDesign.border, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.cardRadius))
-    }
-
-    private func stateRank(_ pane: AgentProjection) -> Int {
-        switch AgentSemanticState(herdrValue: pane.agentStatus) {
-        case .blocked: 0
-        case .working: 1
-        case .done: 2
-        case .idle: 3
-        case .unknown: 4
-        }
     }
 
     private func stateColor(_ state: AgentSemanticState) -> Color {
@@ -852,22 +871,6 @@ private struct HerdSurface: View {
         case .working: BessieDesign.running
         case .done: BessieDesign.done
         case .idle, .unknown: BessieDesign.idle
-        }
-    }
-
-    private func location(for connected: ConnectedAgentProjection) -> String {
-        let pane = connected.agent
-        let workspace = connected.workspaceLabel ?? "Untitled workspace"
-        let tab = connected.tabLabel ?? "Untitled tab"
-        return "\(connected.connectionName) / \(workspace) / \(tab) / \(pane.label ?? pane.title ?? "Untitled pane")"
-    }
-
-    private func activity(for pane: AgentProjection, state: AgentSemanticState) -> String? {
-        if let title = pane.title, !title.isEmpty { return title }
-        switch state {
-        case .blocked: return "Open the pane to respond."
-        case .done: return "Open the pane to review."
-        case .working, .idle, .unknown: return nil
         }
     }
 }
@@ -1935,14 +1938,32 @@ private struct RecoverableTerminalSurface: View {
 }
 
 private struct AttentionSurface: View {
-    let items: [AttentionSurfaceItem]
-    let open: (String) -> Void
+    let items: [AttentionItemModel]
+    let connectionIssues: [FleetConnectionIssue]
+    let open: (RoutedPaneTarget) -> Void
     var body: some View {
         VStack(spacing: 0) {
             BessieTopBar(title: "Attention") {}
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 11) {
+                    if !connectionIssues.isEmpty {
+                        ForEach(connectionIssues) { issue in
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle")
+                                Text(issue.label).fontWeight(.semibold)
+                                Text(issue.title)
+                                Spacer()
+                            }
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(BessieDesign.subtle)
+                            .padding(.horizontal, 11)
+                            .frame(height: 30)
+                            .background(BessieDesign.inset)
+                            .overlay { RoundedRectangle(cornerRadius: 6).stroke(BessieDesign.border, lineWidth: 1) }
+                        }
+                    }
+
                     if !items.isEmpty {
                         HStack(spacing: 7) {
                             Text("\(items.count) item\(items.count == 1 ? "" : "s")")
@@ -1957,7 +1978,7 @@ private struct AttentionSurface: View {
                             Image(systemName: "checkmark.circle")
                                 .font(.system(size: 17, weight: .regular))
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("You're all caught up.")
+                                Text(connectionIssues.isEmpty ? "Nothing needs you" : "No attention items on connected sessions")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(BessieDesign.strong)
                             }
@@ -1985,13 +2006,20 @@ private struct AttentionSurface: View {
                                 Text(item.location)
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(BessieDesign.subtle)
+                                Text(item.connectionLabel)
+                                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(BessieDesign.faint)
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 18)
+                                    .background(BessieDesign.selected)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
                                 HStack(spacing: 7) {
                                     Spacer()
                                     if item.state == .blocked {
-                                        Button("Open pane") { open(item.paneID) }
+                                        Button("Open pane") { open(item.target) }
                                             .buttonStyle(ProductPrimaryButton())
                                     } else {
-                                        Button("Open pane") { open(item.paneID) }
+                                        Button("Open pane") { open(item.target) }
                                             .buttonStyle(BessieSecondaryButtonStyle())
                                     }
                                 }
