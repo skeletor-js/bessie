@@ -87,6 +87,7 @@ public struct BessieIntentDefinition: Codable, Equatable, Sendable {
     public let requiresLiveConnection: Bool
     public let offlineOK: Bool
     public let paramsSchema: BessieJSONSchema
+    public let confirmation: String?
 
     public init(
         id: BessieIntentID,
@@ -95,7 +96,8 @@ public struct BessieIntentDefinition: Codable, Equatable, Sendable {
         risk: BessieIntentRisk,
         requiresLiveConnection: Bool,
         offlineOK: Bool = false,
-        paramsSchema: BessieJSONSchema
+        paramsSchema: BessieJSONSchema,
+        confirmation: String? = nil
     ) {
         self.id = id
         self.description = description
@@ -104,6 +106,7 @@ public struct BessieIntentDefinition: Codable, Equatable, Sendable {
         self.requiresLiveConnection = requiresLiveConnection
         self.offlineOK = offlineOK
         self.paramsSchema = paramsSchema
+        self.confirmation = confirmation
     }
 
     enum CodingKeys: String, CodingKey {
@@ -114,6 +117,7 @@ public struct BessieIntentDefinition: Codable, Equatable, Sendable {
         case requiresLiveConnection = "requires_live_connection"
         case offlineOK = "offline_ok"
         case paramsSchema = "params_schema"
+        case confirmation
     }
 }
 
@@ -188,6 +192,7 @@ public enum BessieIntentRegistry {
             owner: .herdr,
             risk: .destructive,
             requiresLiveConnection: true,
+            confirmation: "Requires a one-shot token from a needs_confirmation response.",
             properties: connectionProperties([
                 "workspace_id": .string("Herdr workspace identifier scoped to the connection."),
             ]),
@@ -228,6 +233,7 @@ public enum BessieIntentRegistry {
         risk: BessieIntentRisk,
         requiresLiveConnection: Bool = false,
         offlineOK: Bool = false,
+        confirmation: String? = nil,
         properties: [String: BessieJSONSchema] = [:],
         required: [String] = []
     ) -> BessieIntentDefinition {
@@ -238,7 +244,8 @@ public enum BessieIntentRegistry {
             risk: risk,
             requiresLiveConnection: requiresLiveConnection,
             offlineOK: offlineOK,
-            paramsSchema: .object(properties: properties, required: required)
+            paramsSchema: .object(properties: properties, required: required),
+            confirmation: confirmation
         )
     }
 

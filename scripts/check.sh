@@ -6,6 +6,7 @@ cd "$repo_root"
 
 bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/fetch-herdr-runtime.sh scripts/mac-verify.sh scripts/package-app.sh
 python3 scripts/check-herdr-runtime.py
+python3 scripts/check-intent-parity.py
 
 grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift

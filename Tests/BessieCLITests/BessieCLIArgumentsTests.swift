@@ -55,6 +55,19 @@ struct BessieCLIArgumentsTests {
         #expect(Set(catalog.intents.map(\.id.rawValue)) == Set(BessieIntentRegistry.catalog.intents.map(\.id.rawValue)))
     }
 
+    @Test func liveIntentDiscoveryUsesExactEffectiveCatalog() throws {
+        let effective = BessieIntentCatalog(version: 42, intents: [BessieIntentRegistry.catalog.intents[1]])
+        let runner = BessieCLIRunner(call: { request in
+            let value = try! JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(effective))
+            return .success(id: request.id, value: value)
+        })
+        let outcome = try runner.run(arguments: ["intents"])
+        let data = try JSONEncoder().encode(outcome.result.value)
+        let catalog = try JSONDecoder().decode(BessieIntentCatalog.self, from: data)
+        #expect(catalog == effective)
+        #expect(catalog.intents.map(\.id.rawValue) == effective.intents.map(\.id.rawValue))
+    }
+
     @Test func requestsReceiveUniqueIDs() throws {
         var ids: [String] = []
         let runner = BessieCLIRunner(call: { request in

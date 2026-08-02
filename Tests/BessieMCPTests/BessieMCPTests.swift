@@ -36,6 +36,24 @@ struct BessieMCPTests {
         }
     }
 
+    @Test func toolsListNamesEqualCustomEffectiveCatalog() throws {
+        let effective = BessieIntentCatalog(version: 9, intents: [
+            BessieIntentRegistry.catalog.intents[2],
+            BessieIntentRegistry.catalog.intents[6],
+        ])
+        let adapter = runner { request in
+            let value = try! JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(effective))
+            return .success(id: request.id, value: value)
+        }
+        let data = try output(adapter, #"{"jsonrpc":"2.0","id":"effective","method":"tools/list"}"#)
+        let tools = try #require((try object(data)["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        #expect(tools.compactMap { $0["name"] as? String } == effective.intents.map(\.id.rawValue))
+        let destructive = try #require(tools.first { ($0["name"] as? String) == "workspace.close" })
+        let schema = try #require(destructive["inputSchema"] as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        #expect(properties["confirm_token"] != nil)
+    }
+
     @Test func toolsCallTranslatesArgumentsAndConfirmationToken() throws {
         var received: BessieIntentRequest?
         let adapter = runner { request in

@@ -1008,3 +1008,9 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 
 - Added the stdio-only `bessie-mcp` executable with MCP initialization, notifications, `tools/list`, and `tools/call`. Tools are projected directly from the effective registry with exact dotted names and schemas; destructive tool schemas expose the protocol-level `confirm_token`. Calls return one structured result JSON text item with correct `isError`; stdout remains protocol-only.
 - Failure-first Mac build proved the MCP target was absent. Additional proof-first tests caught missing confirm-token schema advertisement and omitted-arguments handling before repair. Final `xcrun swift test --filter BessieMCPTests`: **7 tests, 0 failures**; `swift build --product bessie-mcp`: exit 0. Scripted smoke returned three protocol lines, nine exact tools, an honest offline error, and empty stderr. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U7 skill and parity complete
+
+- Added the repo-local `operating-bessie` skill and linked it from `AGENTS.md`. It teaches discovery-first CLI/MCP operation, Herdr ownership and quit survival, explicit connection scoping, one-shot confirmation, honest offline errors, human-only boundaries, and the prohibition on GUI puppeting, terminal injection, private protocols, or a shadow `bessie server`.
+- Added destructive confirmation metadata to the registry and a static parity checker wired into `check.sh`. It enforces unique MCP-safe names, generic CLI/MCP projections without copied domain catalogs, destructive metadata, Package products/targets, Swift parity anchors, and discovery-first skill guidance.
+- Final focused Mac suites: CLI **9 tests**, MCP **8 tests**, registry **4 tests**, all with 0 failures. `./scripts/check.sh`, `git diff --check`, parity-checker syntax, skill frontmatter validation, and workspace skill reload all passed.

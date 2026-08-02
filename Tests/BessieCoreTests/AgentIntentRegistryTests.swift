@@ -42,6 +42,9 @@ final class AgentIntentRegistryTests: XCTestCase {
             XCTAssertFalse(intent.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             XCTAssertEqual(intent.paramsSchema.type, .object)
             XCTAssertNotNil(intent.paramsSchema.additionalProperties)
+            if intent.risk == .destructive {
+                XCTAssertFalse(intent.confirmation?.isEmpty ?? true)
+            }
         }
 
         let close = BessieIntentRegistry.definition(for: "workspace.close")
