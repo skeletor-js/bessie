@@ -180,6 +180,7 @@ struct GhosttyPaneSurface: NSViewRepresentable {
 
     func makeNSView(context: Context) -> BessieTerminalView {
         let view = BessieTerminalView(frame: .zero)
+        view.appearance = NSAppearance(named: .darkAqua)
         view.controller = controller.ghosttyController
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(controller.session), fontSize: Float(fontSize))
         view.configuredFontSize = fontSize
@@ -217,7 +218,13 @@ final class BessieTerminalView: TerminalView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "v" {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if flags.contains(.command), flags.intersection([.control, .option, .shift]).isEmpty,
+           let key, ["q", "h", "m", "`"].contains(key) {
+            return false
+        }
+        if flags.contains(.command), key == "v" {
             if let text = NSPasteboard.general.string(forType: .string) { sendOperation?(.paste(text)) }
             return true
         }

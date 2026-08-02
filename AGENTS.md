@@ -79,3 +79,7 @@ For UI verification, launch the built app on the Mac, capture a screenshot, and 
 - Do not delete, skip, weaken, narrow, or relabel checks to manufacture a pass.
 - Avoid speculative abstractions and dependencies. Prefer one honest vertical slice over decorative dead UI.
 - Keep the repo uncommitted unless Jordan explicitly asks for commits.
+
+## Agent surfaces
+
+Use the repo-local [`operating-bessie`](.agents/skills/operating-bessie/SKILL.md) skill for Bessie's CLI and MCP intent surfaces. It preserves the Herdr ownership rules above and teaches runtime capability discovery rather than maintaining a second command catalog.

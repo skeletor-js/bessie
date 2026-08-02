@@ -27,6 +27,19 @@ public struct ConnectedAgentProjection: Equatable, Identifiable, Sendable {
     public var paneID: String { agent.id }
     public var workspaceID: String { agent.workspaceID }
     public var tabID: String { agent.tabID }
+
+    var presentationLocation: String {
+        "\(workspaceLabel ?? "Untitled workspace") · \(tabLabel ?? "Untitled tab")"
+    }
+
+    var routedPaneTarget: RoutedPaneTarget {
+        RoutedPaneTarget(
+            connectionID: connectionID,
+            workspaceID: workspaceID,
+            tabID: tabID,
+            paneID: paneID
+        )
+    }
 }
 
 /// One currently tracked Herdr agent, independent of whether it is working,
@@ -108,7 +121,7 @@ public struct AgentProjection: Codable, Equatable, Identifiable, Sendable {
         self.launchPending = launchPending
     }
 
-    init(pane: PaneProjection) {
+    public init(pane: PaneProjection) {
         self.init(
             id: pane.id,
             terminalID: pane.terminalID,

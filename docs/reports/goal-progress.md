@@ -1,5 +1,31 @@
 # Goal progress
 
+## 2026-08-02 — V1 Slice F2: workspace media and markdown viewer
+
+Status: implementation complete; shared-mirror integration verification blocked by unrelated Slice J source drift.
+
+Changed behavior:
+
+- Files is a local-workspace surface backed by `WorkspaceFS`, with capped directory browsing, directories-first sorting, image preview, AVKit video preview, read-only plain text, and honest remote/missing-root states.
+- Markdown has native preview and edit modes, explicit atomic Save, content-backed revision checks, and explicit Reload/Overwrite handling for stale files. Saves remain bound to the loaded file even if selection changes, and edits made during an in-flight save remain visibly dirty.
+- Rename/move destinations are workspace-relative and containment-checked. Delete requires confirmation and moves the selected item to macOS Trash. Mutations reject symbolic links rather than acting on their referents.
+- Directory and file loads cancel stale work so rapid navigation cannot publish older results over the current selection.
+
+Evidence:
+
+- VPS `./scripts/check.sh`: passed.
+- Clean disposable Mac checkout `xcrun swift test`: 183 tests executed, 4 live-Herdr tests skipped because the isolated live socket was not supplied, 0 failures.
+- Focused Mac F2 suite: 6 tests, 0 failures, covering list sorting/capping, atomic save and stale conflict, escape rejection, Trash injection, symbolic-link mutation rejection, read-only text selection, and Files navigation registration.
+- macOS 14 compilation passed after replacing the unsupported `ContentUnavailableView(actions:)` overload.
+- `./scripts/mac-verify.sh` was attempted after syncing F2. It stopped during production compilation in unrelated shared-mirror files `AttentionList.swift` and `HerdList.swift`, which reference missing Slice J types (`RoutedPaneTarget` and `AgentSemanticState.sortRank`). Packaging, the new Files screenshot, `/Applications/Bessie.app` replacement, and installed-executable matching did not run in that attempt.
+- `git diff --check` passed for the F2 implementation and verification files.
+
+Review and hardening:
+
+- Reuse, quality, and efficiency passes removed duplicate Trash handling and repeated text reads, moved blocking file work off the main actor, canceled stale navigation tasks, and clarified markdown-only errors.
+- Independent review found file-identity, in-flight-save, and symbolic-link referent risks; those were repaired and covered by focused tests.
+- Descriptor-scoped protection against an adversarial process replacing a validated path between check and mutation remains a limitation of the existing URL-based F0 `WorkspaceFS` contract, not a new F2 guarantee.
+
 ## 2026-07-31 — Complete herd roster
 
 Status: complete.
@@ -888,3 +914,112 @@ Blocker closed after Amp paused only for missing launch-review visual evidence:
 - Ordinary sessions untouched; staging empty; no commit/push/publish/notarize.
 
 Native Projects Milestones 0–6 are accepted for V1 product scope. Public notarization remains deferred.
+
+## V1 Slice E — Herd B + Attention thin
+
+Status: code milestones complete; focused native verification passed. Shared-mirror package/install verification was intentionally not claimed because concurrent slice synchronization overwrote a mirrored source file during the first run.
+
+- Added Core Herd and Attention builders, shared connection labels and routed pane targets, explicit Needs-you = blocked filtering, count and ordering tests, and fleet-wide blocked+done Attention ordering.
+- Wired Herd counts/cards/connection chips/degraded banners and fleet-wide Attention/Open pane/⌥⌘N routing in the product shell.
+- VPS `./scripts/check.sh`: exit 0.
+- Isolated Mac `xcrun swift test --filter "HerdListTests|AttentionListTests|SurfaceProjectionTests|KeyboardShortcutTests"`: BessieApp compiled; **21 tests, 0 failures**.
+- No full `mac-verify.sh`, screenshot, package install, executable identity, push, or PR result is claimed for this slice.
+
+## V1 Slice I — Appearance
+
+Status: complete. Bessie now honors System, Dark, and Light appearance preferences instead of forcing dark; exposes Comfortable and Compact density; and lets users disable cowprint texture without discarding contrast or motion preferences.
+
+- Added legacy-safe persisted defaults for density (`comfortable`) and cowprint texture (`on`), with round-trip and sparse legacy decode coverage.
+- Added a warm light semantic palette while retaining the existing dark palette. SwiftUI chrome follows the selected or system color scheme live; the libghostty terminal surface remains explicitly dark and independent of chrome appearance.
+- Density metrics now drive shell gaps, rail width and rows, top bars, Herd cards, Attention rows, Settings rows, workspace tab chrome, and pane headers.
+- Settings exposes Theme, Density, and Cowprint texture controls. No token editor or terminal theme marketplace was added.
+- `mac-verify.sh` now uses a deterministic dark fixture, permits marked isolated temporary mirrors for concurrent worktrees, canonicalizes temporary paths, and serializes Mac verification/install work with a host-wide lock.
+
+Verification evidence:
+
+- `./scripts/check.sh`: passed.
+- Native focused preference test: **1 test, 0 failures**.
+- Native release build of `BessieApp`: passed after the final review fixes.
+- A prior full native run on the Slice I source completed **177 tests with 0 failures**; later isolated full runs repeatedly hit the pre-existing flaky `testProjectsMilestoneZeroContractAgainstIsolatedHerdr` live decode failure, unrelated to appearance. One isolated run completed **168 tests with 0 failures** before stopping at temporary-path canonicalization, which is now fixed.
+- Light + Compact + cowprint-off Settings proof: 1180×740 PNG, SHA-256 `ace26ddca75678f1852cb1cbb0dbde62959b567f6f04ab607a9c30ca74eafa01`. Visual inspection confirmed readable warm light chrome, selected Light/Compact controls, cowprint texture off, no visible texture, and no clipping or overlap.
+- Packaged-install replacement was not repeated after the final review fixes because another `/Applications/Bessie.app` process was active from concurrent Bessie work; the existing app was not interrupted or overwritten.
+
+## 2026-08-02: V1 Slice F0 Workspace FS substrate complete
+
+Status: complete for the Core-only F0 acceptance contract. No watcher, Git diff service, file-operation UI, or SwiftUI surface was added.
+
+- Added `WorkspaceFS.swift` with local-only root resolution from authoritative Herdr pane CWDs, explicit workspace-consensus versus selected-pane provenance, fail-closed stale/contradictory pane selection, readable-directory validation, and optional Git top-level discovery without changing the browse root.
+- Added component-wise POSIX symlink resolution for existing files and contained missing destinations. Traversal, sibling-prefix paths, direct/nested symlink escapes, stale roots replaced by outside symlinks, and remote connections fail closed. `WorkspaceFileRoot` cannot be constructed by external consumers outside the resolver.
+- Added shared heavy-directory ignores for `.git`, `node_modules`, `.build`, and `DerivedData`, plus bounded metadata classification for directory, markdown, text, image, video, and binary content. Text-like extensions still pass the UTF-8/NUL heuristic; non-regular filesystem entries are not sampled.
+- Added `WorkspaceFSTests.swift` with 14 focused tests covering remote unsupported, consensus and selected-pane roots, invalid selections, Git discovery, traversal and sibling-prefix rejection, contained and escaping symlinks, nested missing-target escapes, root replacement, POSIX tilde targets, ignore rules, metadata, binary markdown, and size limits.
+- Failure-first Mac evidence: before production code existed, the focused test target failed compilation because `WorkspaceFS` and `WorkspaceFileRoot` were absent. The first implementation then passed 9 focused tests. Independent review found stale-pane fallback, missing-destination containment, provenance loss, externally constructible roots, extension-only text classification, non-regular file handling, nested symlink targets, and stale-root rebinding; each in-scope finding was repaired and covered by focused tests.
+
+Verification evidence:
+
+- Final `./scripts/check.sh`: exit 0; runtime lock/compatibility/notice/package, UI-copy, shell, package, and F0 static anchors passed.
+- Final focused isolated Mac command `xcrun swift test --filter WorkspaceFSTests`: **14 tests, 0 failures**.
+- Full isolated Mac `xcrun swift test`: **182 tests, 0 failures, 4 expected live-Herdr skips**. The final error-classification hardening was then recompiled and covered by the 14-test focused rerun.
+- Focused `git diff --check` for the F0 source, tests, progress report, and check script: exit 0. Repository-wide `git diff --check` remains blocked by pre-existing trailing whitespace in unrelated dirty roadmap files; those files were not modified by F0.
+- `./scripts/mac-verify.sh`, package installation, and relaunch were not run because the shared Mac mirror currently contains concurrent E/F2 slice files not present in this worktree, including an incomplete `AttentionList`/`HerdList` dependency set. Running the shared verifier would overwrite or mix unrelated work. F0 compilation and tests instead ran from verifier-owned temporary Mac directories that were removed afterward.
+- URL-returning containment cannot make a later consumer's separate read or mutation race-free against a malicious concurrent directory swap. F1/F2 operation wrappers must revalidate immediately before use; descriptor-relative `openat`-style operations are a later hardening option if that stronger threat model is adopted.
+
+No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, publication, deployment, or installed app was changed by F0.
+
+## 2026-08-02: V1 Slice F1 Follow files complete on VPS
+
+- Added Core-owned watch stretches, recursive 250 ms workspace polling, ignored-directory pruning, coalesced touched-path recency with a 500-path cap, follow-latest selection, and one pinned selection. Initial filesystem state is the stretch baseline and is not reported as touched.
+- Added read-only previews against git HEAD for tracked modifications/deletions and full-file-as-added previews for untracked or non-git files. Git runs use argument arrays with `--`, a bounded timeout, and a 1.5 MB text limit; binary, oversized, missing, escaped, and unavailable paths degrade explicitly.
+- Added the native Agent detail Changes panel with Follow latest and Pin controls, an honest “Workspace changes observed while watching” attribution label, local working-directory lifecycle, same-pane cwd restart handling, and an explicit remote-unsupported state. No editor, save path, remote filesystem transport, or Herdr mutation was added.
+- Added focused Core tests for touch ordering/coalescing/capping, pin behavior, watcher initial suppression and add/modify/delete events, ignored directories, containment, git tracked/deleted/untracked previews, non-git fallback, binary files, and size limits. Added App model tests for same-pane cwd reconfiguration and remote capability gating.
+- `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package anchors, UI copy, and F1 structural anchors passed. Swift is unavailable on this VPS, and the goal contract explicitly prohibited fake or remote Mac verification, so native compilation, Swift test execution, packaging, installation, app relaunch, and screenshot inspection were not run or claimed.
+- Simplification review consolidated relative-path containment, batched touch updates, reduced redundant preview reloads, and rejected oversized files before reading them. Focused code review found one P1 stale-root lifecycle defect; the configuration identity now includes workspace and cwd, with regression coverage. A final independent Swift/concurrency review found no high-confidence blockers.
+- Existing planning and roadmap dirt remained untouched. No push, PR, publication, deployment, Mac sync, app installation, or Herdr/file mutation occurred.
+
+## 2026-08-02: Agent Intent Bus U1 registry complete
+
+- Added the versioned `BessieCore` intent registry, typed owner/risk metadata, JSON Schema parameter descriptions, and all nine pilot definitions. Herdr-scoped routes require `connection_id`; Bessie Project reads are explicitly `offline_ok`; `workspace.close` is marked destructive.
+- Failure-first Mac run `xcrun swift test --filter AgentIntentRegistryTests` failed because the registry and catalog types did not exist. After implementation, the focused suite passed **4 tests with 0 failures**, covering Codable round-trip, exact pilot membership, unique MCP-safe names, required metadata, and exported JSON Schema field names.
+- `./scripts/check.sh`: exit 0. Swift is unavailable on the VPS; focused Swift compilation and tests ran on `jordan-macbook`. No app lifecycle, socket, CLI, MCP, skill, Herdr session, push, PR, publication, deployment, or notarization work occurred in U1.
+
+## 2026-08-02: Agent Intent Bus U2 executor complete
+
+- Added the versioned request/result wire model and one Core executor for all pilot intents. It performs strict schema validation, returns structured error codes, requires explicit connection IDs for Herdr-scoped routes, exposes connection-scoped projection/focus/layout facts, and maps focus/close through injectable `HerdrAction` paths. Effective intent discovery omits live-only intents while disconnected.
+- Added in-memory lock-protected one-shot confirmation tokens bound to the destructive intent plus canonical sorted params. `workspace.close` uses the exact authoritative projection cascade text; changed arguments and token reuse fail with `confirm_token_invalid`.
+- Failure-first Mac compilation proved the executor/request/result/port types were absent. A second proof-first run failed on missing connection-scoped focus/layout output. Final `xcrun swift test --filter AgentIntentExecutorTests`: **7 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U3 UI dispatch complete
+
+- Added a persistent app-side dispatcher around the Core executor and routed all current pilot workspace/pane focus and workspace-close paths through it, including routed pane opening and Project handoff sequences. Non-pilot actions retain the existing action client path. Disconnected UI actions now surface an error instead of silently returning.
+- Workspace-close UI confirmations explicitly grant the destructive follow-up; an unconfirmed programmatic close receives the executor's `needs_confirmation` result and cannot auto-confirm. MainActor projection updates and connection/request generation guards remain intact.
+- Failure-first Mac compilation proved the pilot mapping seam was absent. Final `xcrun swift test --filter IntentActionDispatcherTests`: **2 tests, 0 failures**. The command compiled both `BessieApp` and `BessieAppModelTests`. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U4 local socket complete
+
+- Added the Core NDJSON Unix-socket client/server, a 0600 Application Support endpoint with isolated-path override, stale-endpoint and competing-owner protection, structured malformed-request handling, and honest `bessie_not_running` client failures. No TCP listener exists.
+- BessieApp now hosts one persistent executor/socket for the fleet, backed by the real Project store and explicit multi-connection live routing. It starts with the app and releases only the local bus endpoint on termination; Herdr and pane processes are untouched.
+- Failure-first Mac compilation proved the socket server/client contract was absent. Final `xcrun swift test --filter AgentIntent`: **15 tests, 0 failures** across XCTest and Swift Testing; `xcrun swift test --filter IntentActionDispatcherTests`: **3 tests, 0 failures**. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U5 CLI complete
+
+- Added the thin `bessie` executable with only `intents`, `status`, and generic `call` forms. It translates arguments to the shared request/client, emits one structured JSON result on stdout, keeps usage diagnostics on stderr, preserves confirmation tokens, and exits nonzero on failed results or invalid input. Offline `intents` falls back to the static Core catalog; live calls fail honestly when the app is absent.
+- Failure-first Mac build proved the executable target had no source. Final `xcrun swift test --filter BessieCLIArgumentsTests`: **8 tests, 0 failures**; `swift build --product bessie`: exit 0. Offline smoke exits were intents=0, status=1, invalid-args=2 with valid JSON results. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U6 MCP complete
+
+- Added the stdio-only `bessie-mcp` executable with MCP initialization, notifications, `tools/list`, and `tools/call`. Tools are projected directly from the effective registry with exact dotted names and schemas; destructive tool schemas expose the protocol-level `confirm_token`. Calls return one structured result JSON text item with correct `isError`; stdout remains protocol-only.
+- Failure-first Mac build proved the MCP target was absent. Additional proof-first tests caught missing confirm-token schema advertisement and omitted-arguments handling before repair. Final `xcrun swift test --filter BessieMCPTests`: **7 tests, 0 failures**; `swift build --product bessie-mcp`: exit 0. Scripted smoke returned three protocol lines, nine exact tools, an honest offline error, and empty stderr. `./scripts/check.sh` and `git diff --check`: exit 0.
+
+## 2026-08-02: Agent Intent Bus U7 skill and parity complete
+
+- Added the repo-local `operating-bessie` skill and linked it from `AGENTS.md`. It teaches discovery-first CLI/MCP operation, Herdr ownership and quit survival, explicit connection scoping, one-shot confirmation, honest offline errors, human-only boundaries, and the prohibition on GUI puppeting, terminal injection, private protocols, or a shadow `bessie server`.
+- Added destructive confirmation metadata to the registry and a static parity checker wired into `check.sh`. It enforces unique MCP-safe names, generic CLI/MCP projections without copied domain catalogs, destructive metadata, Package products/targets, Swift parity anchors, and discovery-first skill guidance.
+- Final focused Mac suites: CLI **9 tests**, MCP **8 tests**, registry **4 tests**, all with 0 failures. `./scripts/check.sh`, `git diff --check`, parity-checker syntax, skill frontmatter validation, and workspace skill reload all passed.
+
+## 2026-08-02: Agent Intent Bus U8 live verification complete
+
+- Extended `mac-verify.sh` with a verifier-owned 0600 app socket and live CLI coverage for exact nine-intent discovery, app/connection status, session projection, Project list, workspace focus, and pane focus. Ordinary Herdr snapshots prove the agent mutations reached Herdr's authoritative state.
+- Added stdio MCP initialize/list/call coverage with exact CLI tool-name parity and empty stderr, an honest `bessie_not_running` assertion after app shutdown while Herdr remains alive, and an isolated destructive workspace-close flow that verifies exact cascade text, one-shot confirmation success, Herdr-observed closure, and replay rejection.
+- The first full run exposed a pre-existing unbounded Git-root traversal on the current Mac/Foundation version. `WorkspaceFS` now stops before deleting the filesystem root path; its stale nil-projection assertion now matches the documented Files-home behavior. The focused regression test passed before the full verifier was repeated.
+- Final `./scripts/check.sh && ./scripts/mac-verify.sh`: exit 0. The native suite executed **224 XCTest tests and 21 Swift Testing tests with 0 failures**; both CLI products built; packaging, isolated live Herdr checks, app-hosted bus checks, screenshots, installation to `/Applications/Bessie.app`, relaunch, and executable identity verification passed.
+- Packaged and installed executable SHA-256 values both equal `0175768a4b0f5ba453ebea0ae200479ad232fa4e92290ad71c5a95ecd3be5335`. The inspected 1180×740 live screenshot showed a usable Bessie window with two rendered terminal panes and no blank, clipped, corrupt, or blocking-error surface; minor glyph overlap in deliberate terminal test output does not affect the intent bus.
+- Final `git diff --check`: exit 0. No push, PR, notarization, network listener, daemon, private Herdr protocol, ordinary Herdr session, or unrelated untracked planning artifact was changed.

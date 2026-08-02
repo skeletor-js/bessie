@@ -6,11 +6,24 @@ cd "$repo_root"
 
 bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/fetch-herdr-runtime.sh scripts/mac-verify.sh scripts/package-app.sh
 python3 scripts/check-herdr-runtime.py
+python3 scripts/check-intent-parity.py
 
 grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift
 grep -Fq 'case notChecked' Sources/BessieCore/ConnectPresentation.swift
 grep -Fq 'public struct HerdrSessionProjection' Sources/BessieCore/SessionProjection.swift
+grep -Fq 'public enum WorkspaceFS' Sources/BessieCore/WorkspaceFS.swift
+grep -Fq 'public enum WorkspaceFileOps' Sources/BessieCore/WorkspaceFileOps.swift
+grep -Fq 'struct WorkspaceFilesSurface' Sources/BessieApp/WorkspaceFilesSurface.swift
+grep -Fq 'struct MarkdownFileEditor' Sources/BessieApp/MarkdownFileEditor.swift
+grep -Fq 'testResolveFileRejectsSymlinkEscapeButAllowsContainedSymlink' Tests/BessieCoreTests/WorkspaceFSTests.swift
+grep -Fq 'public actor WorkspaceFileWatcher' Sources/BessieCore/FollowWatch.swift
+grep -Fq 'public struct GitDiffService' Sources/BessieCore/GitDiffService.swift
+grep -Fq 'struct FollowFilesSurface' Sources/BessieApp/FollowFilesSurface.swift
+grep -Fq 'Workspace changes observed while watching' Sources/BessieApp/FollowFilesSurface.swift
+grep -Fq 'testWatcherSuppressesInitialSnapshotAndReportsAddModifyDelete' Tests/BessieCoreTests/FollowWatchTests.swift
+grep -Fq 'testGitHEADPreviewIncludesTrackedModifiedDeletedAndUntrackedFiles' Tests/BessieCoreTests/GitDiffServiceTests.swift
+grep -Fq 'testConfigureRestartsTheStretchWhenTheSamePaneChangesDirectory' Tests/BessieAppModelTests/FollowFilesViewModelTests.swift
 grep -Fq 'case setSplitRatio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'layout.set_split_ratio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'BessieProductShell(' Sources/BessieApp/BessieApp.swift
@@ -23,6 +36,10 @@ grep -Fq 'runtimeSelection: HerdrRuntimeSelection' Sources/BessieCore/Connection
 grep -Fq 'struct BessieSurfaceProjection' Sources/BessieCore/SurfaceProjection.swift
 grep -Fq 'struct AttentionSurface' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'struct HerdSurface' Sources/BessieApp/ProductSurfaces.swift
+grep -Fq 'public enum HerdListBuilder' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .needsYou: state == .blocked' Sources/BessieCore/HerdList.swift
+grep -Fq 'public enum AttentionListBuilder' Sources/BessieCore/AttentionList.swift
+grep -Fq 'public struct ConnectionDisplayLabel' Sources/BessieCore/ConnectionDisplay.swift
 grep -Fq 'struct AgentDetailSurface' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'struct NewProcessSheet' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'public struct AgentCatalog' Sources/BessieCore/AgentLaunch.swift

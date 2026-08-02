@@ -7,16 +7,23 @@ mac_dir=${BESSIE_MAC_DIR:-/Users/jordanstella/GitHub/bessie}
 agent_kind=${BESSIE_AGENT_KIND:-codex}
 codesign_identity=${BESSIE_CODESIGN_IDENTITY:--}
 mirror_marker='source=/home/hermes/code/bessie'
+verification_lock=/tmp/bessie-mac-verify.lock
 
 case "$agent_kind" in
     pi|claude|codex|gemini|amp|grok|hermes) ;;
     *) echo "Refusing unsupported live verification agent: $agent_kind" >&2; exit 1 ;;
 esac
 
-if [[ "$mac_dir" != /Users/jordanstella/GitHub/bessie ]]; then
-    echo "Refusing unapproved Mac mirror path: $mac_dir" >&2
+case "$mac_dir" in
+    /Users/jordanstella/GitHub/bessie|/tmp/bessie-verify-*) ;;
+    *) echo "Refusing unapproved Mac mirror path: $mac_dir" >&2; exit 1 ;;
+esac
+
+if ! ssh "$mac_host" mkdir "$verification_lock"; then
+    echo "Another Bessie Mac verification is already running: $verification_lock" >&2
     exit 1
 fi
+trap 'ssh "$mac_host" rmdir "$verification_lock" 2>/dev/null || true' EXIT
 
 ssh "$mac_host" bash -s -- "$mac_dir" "$mirror_marker" <<'REMOTE'
 set -euo pipefail
@@ -61,6 +68,7 @@ mac_dir=$1
 requested_agent_kind=$2
 codesign_identity=$3
 export BESSIE_CODESIGN_IDENTITY="$codesign_identity"
+mac_dir=$(cd "$mac_dir" && pwd -P)
 cd "$mac_dir"
 
 login_path=$(zsh -lic 'printf "%s\n" "$PATH"' 2>/dev/null | tail -n 1)
@@ -86,6 +94,7 @@ herdr_xdg_state="$herdr_dir/xdg-state/verify-$$"
 herdr_log="$herdr_dir/runtime/server.log"
 state_log="$herdr_dir/runtime/bessie-state.log"
 app_log="$herdr_dir/runtime/bessie-app.log"
+intent_socket="$herdr_dir/runtime/bessie-intent-verify-$$.sock"
 presentation_path="$herdr_dir/runtime/bessie-presentation-$$.json"
 projects_root="$herdr_dir/runtime/projects-$$"
 snapshot_path="$mac_dir/dist/Bessie-window.png"
@@ -133,6 +142,7 @@ launch_app() {
         --env "PATH=$PATH"
         --env "BESSIE_STATE_LOG_PATH=$state_log"
         --env "BESSIE_RUN_TOKEN=$run_token"
+        --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket"
         --env "BESSIE_PRESENTATION_PATH=$presentation_path"
         --env "BESSIE_PROJECTS_PATH=$projects_root"
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=$terminal_automation"
@@ -177,6 +187,7 @@ launch_autostart_app() {
         --env "PATH=/usr/bin:/bin" \
         --env "BESSIE_STATE_LOG_PATH=$autostart_state_log" \
         --env "BESSIE_RUN_TOKEN=$run_token" \
+        --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$autostart_presentation_path" \
         --env "BESSIE_SETUP_AUTOMATION=$setup_automation" \
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$autostart_snapshot_path" \
@@ -226,6 +237,33 @@ stop_app() {
     app_pid=''
 }
 
+intent_cli() {
+    BESSIE_INTENT_SOCKET_PATH="$intent_socket" "$mac_dir/.build/debug/bessie" "$@"
+}
+
+assert_intent_ok() {
+    /usr/bin/python3 -c '
+import json, sys
+result = json.load(sys.stdin)
+if result.get("ok") is not True:
+    raise SystemExit(f"intent failed: {result}")
+'
+}
+
+assert_herdr_focus() {
+    local expected_workspace=$1
+    local expected_pane=$2
+    /usr/bin/python3 -c '
+import json, sys
+snapshot = json.load(sys.stdin)
+workspace, pane = sys.argv[1:3]
+session = snapshot.get("result", {}).get("snapshot", {})
+actual = (session.get("focused_workspace_id"), session.get("focused_pane_id"))
+if actual != (workspace, pane):
+    raise SystemExit(f"Herdr focus mismatch: workspace={actual[0]!r}, pane={actual[1]!r}")
+' "$expected_workspace" "$expected_pane"
+}
+
 verify_runtime_failure_case() {
     local name=$1
     local app_bundle=$2
@@ -256,6 +294,7 @@ verify_runtime_failure_case() {
         --env "XDG_STATE_HOME=$root/xdg-state" \
         --env "BESSIE_STATE_LOG_PATH=$state" \
         --env "BESSIE_RUN_TOKEN=$token" \
+        --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$presentation" \
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$screenshot" \
         --env "BESSIE_WINDOW_SNAPSHOT_DELAY=1"
@@ -314,6 +353,7 @@ verify_external_runtime_success_case() {
         --env "XDG_STATE_HOME=$root/xdg-state" \
         --env "BESSIE_STATE_LOG_PATH=$state" \
         --env "BESSIE_RUN_TOKEN=$token" \
+        --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$presentation" \
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
         --env "BESSIE_PROCESS_LIVE_AUTOMATION=0"
@@ -395,6 +435,7 @@ cleanup() {
     if ! pgrep -f "^$herdr_bin server" >/dev/null; then
         rm -f "$herdr_socket" "$herdr_dir/runtime/herdr-client.sock"
     fi
+    rm -f "$intent_socket" "$intent_socket.lock"
     rm -f "$presentation_path"
     [[ ! -e "$projects_root" ]] || find "$projects_root" -depth -delete
 }
@@ -488,6 +529,10 @@ grep -Fq '"running":true' <<<"$status_json"
 xcrun swift package clean
 XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
     BESSIE_LIVE_HERDR_SOCKET="$herdr_socket" BESSIE_LIVE_RUN_ID="verify-$$" xcrun swift test
+xcrun swift build --product bessie
+xcrun swift build --product bessie-mcp
+test -x .build/debug/bessie
+test -x .build/debug/bessie-mcp
 
 test -x dist/Bessie.app/Contents/MacOS/BessieApp
 test -x dist/Bessie.app/Contents/Resources/Herdr/herdr
@@ -505,7 +550,7 @@ grep -Fq 'GhosttyTerminal03AppB4View' "$herdr_dir/runtime/bessie-symbols.txt"
 
 : > "$state_log"
 : > "$app_log"
-printf '%s\n' '{"preferences":{"appIcon":"light"}}' > "$presentation_path"
+printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"}}' > "$presentation_path"
 rm -f "$snapshot_path"
 launch_app
 
@@ -574,6 +619,62 @@ grep -Fq "Terminal pane=$split_pane_id viewport raw=true paste=true" "$state_log
 controller_count=$(pgrep -P "$app_pid" -f "^$herdr_bin terminal session control" | wc -l | tr -d ' ')
 [[ "$controller_count" == 2 ]]
 
+# Exercise the verifier-owned agent bus while the packaged app and isolated
+# Herdr server are live (AE1-AE3 and AE6).
+for _ in {1..40}; do
+    [[ -S "$intent_socket" && $(stat -f %Lp "$intent_socket") == 600 ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ -S "$intent_socket" ]]
+[[ $(stat -f %Lp "$intent_socket") == 600 ]]
+
+intent_names_json=$(intent_cli intents)
+/usr/bin/python3 -c '
+import json, sys
+result = json.load(sys.stdin)
+expected = {"intents.list", "app.status", "connection.status", "session.projection", "pane.focus", "workspace.focus", "workspace.close", "project.list", "project.show"}
+actual = {intent["id"] for intent in result.get("value", {}).get("intents", [])}
+if result.get("ok") is not True or actual != expected:
+    raise SystemExit(f"CLI intent catalog mismatch: {sorted(actual)}")
+' <<<"$intent_names_json"
+
+intent_cli status | assert_intent_ok
+connection_status=$(intent_cli call connection.status --json '{"connection_id":"local-bessie"}')
+/usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin).get("value", {}); raise SystemExit(0 if value == {"connected": True, "connection_id": "local-bessie"} else f"bad connection status: {value}")' <<<"$connection_status"
+projection_json=$(intent_cli call session.projection --json '{"connection_id":"local-bessie"}')
+/usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin).get("value", {}); raise SystemExit(0 if value.get("connection_id") == "local-bessie" and value.get("workspaces") else f"bad projection: {value}")' <<<"$projection_json"
+intent_cli call project.list | assert_intent_ok
+intent_cli call workspace.focus --json "{\"connection_id\":\"local-bessie\",\"workspace_id\":\"$cli_workspace_id\"}" | assert_intent_ok
+intent_cli call pane.focus --json "{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\"}" | assert_intent_ok
+focused_snapshot=$(printf '%s\n' '{"id":"mac-agent-bus-focus","method":"session.snapshot","params":{}}' | nc -U "$herdr_socket")
+assert_herdr_focus "$cli_workspace_id" "$cli_pane_id" <<<"$focused_snapshot"
+
+mcp_stdout="$herdr_dir/runtime/bessie-mcp-$$.stdout"
+mcp_stderr="$herdr_dir/runtime/bessie-mcp-$$.stderr"
+printf '%s\n' \
+    '{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
+    '{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}' \
+    '{"jsonrpc":"2.0","id":"call","method":"tools/call","params":{"name":"app.status","arguments":{}}}' \
+    | BESSIE_INTENT_SOCKET_PATH="$intent_socket" "$mac_dir/.build/debug/bessie-mcp" >"$mcp_stdout" 2>"$mcp_stderr"
+[[ ! -s "$mcp_stderr" ]]
+/usr/bin/python3 -c '
+import json, sys
+cli = json.loads(sys.argv[1])
+expected = {intent["id"] for intent in cli["value"]["intents"]}
+with open(sys.argv[2], encoding="utf-8") as stream:
+    lines = stream.readlines()
+if len(lines) != 3:
+    raise SystemExit(f"MCP emitted {len(lines)} stdout lines, expected 3")
+initialize, listed, called = map(json.loads, lines)
+actual = {tool["name"] for tool in listed["result"]["tools"]}
+if initialize["result"]["serverInfo"]["name"] != "bessie-mcp" or actual != expected:
+    raise SystemExit(f"MCP catalog mismatch: {sorted(actual)}")
+intent_result = json.loads(called["result"]["content"][0]["text"])
+if called["result"]["isError"] or not intent_result.get("ok"):
+    raise SystemExit(f"MCP call failed: {called}")
+' "$intent_names_json" "$mcp_stdout"
+
 # Capture the actual AppKit window without Screen Recording permission and validate a usable PNG artifact.
 for _ in {1..40}; do
     [[ -s "$snapshot_path" ]] && break
@@ -622,6 +723,9 @@ grep -Fq 'already has an attached client' <<<"$conflict_output"
 
 # Quit Bessie, prove both Herdr panes and their output survive, then reopen and reacquire two fresh controllers.
 stop_app
+not_running=$(intent_cli status || true)
+/usr/bin/python3 -c 'import json, sys; result=json.load(sys.stdin); raise SystemExit(0 if result.get("error", {}).get("code") == "bessie_not_running" else f"expected bessie_not_running: {result}")' <<<"$not_running"
+kill -0 "$herdr_pid"
 for _ in {1..40}; do
     ! pgrep -f "^$herdr_bin terminal session control ($cli_pane_id|$split_pane_id)" >/dev/null && break
     sleep 0.25
@@ -819,6 +923,28 @@ projects_height=$(sips -g pixelHeight "$projects_snapshot_path" | awk '/pixelHei
 xcrun swift scripts/verify-design-snapshot.swift "$projects_snapshot_path"
 grep -Fq "Window snapshot path=$projects_snapshot_path" "$state_log"
 
+# Capture the local workspace file browser. The focused verification workspace
+# uses the repository root as its cwd, so this exercises a real WorkspaceFS root.
+stop_app
+files_snapshot_path="$mac_dir/dist/Bessie-files.png"
+rm -f "$files_snapshot_path"
+snapshot_path=$files_snapshot_path
+design_preview=files
+launch_app
+for _ in {1..80}; do
+    [[ -s "$files_snapshot_path" ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ -s "$files_snapshot_path" ]]
+file "$files_snapshot_path" | grep -Fq 'PNG image data'
+files_width=$(sips -g pixelWidth "$files_snapshot_path" | awk '/pixelWidth/ {print $2}')
+files_height=$(sips -g pixelHeight "$files_snapshot_path" | awk '/pixelHeight/ {print $2}')
+[[ "$files_width" -ge 760 && "$files_height" -ge 520 ]]
+[[ $(stat -f %z "$files_snapshot_path") -gt 20000 ]]
+xcrun swift scripts/verify-design-snapshot.swift "$files_snapshot_path"
+grep -Fq "Window snapshot path=$files_snapshot_path" "$state_log"
+
 # Capture the reviewed draft produced from the authoritative current workspace.
 stop_app
 project_capture_snapshot_path="$mac_dir/dist/Bessie-project-capture.png"
@@ -860,15 +986,55 @@ launch_review_height=$(sips -g pixelHeight "$project_launch_review_snapshot_path
 grep -Fq "Window snapshot path=$project_launch_review_snapshot_path" "$state_log"
 design_preview=''
 
-XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
-HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
-    "$herdr_bin" workspace close "$cli_workspace_id" >/dev/null
+# Close the existing disposable workspace through the bus at its established
+# safe cleanup point, including the exact cascade and one-shot token (AE4).
+closed_workspace_id=$cli_workspace_id
+close_args="{\"connection_id\":\"local-bessie\",\"workspace_id\":\"$cli_workspace_id\"}"
+close_projection=$(intent_cli call session.projection --json '{"connection_id":"local-bessie"}')
+close_challenge=$(intent_cli call workspace.close --json "$close_args" || true)
+confirm_token=$(/usr/bin/python3 -c '
+import json, sys
+projection = json.loads(sys.argv[1])["value"]
+workspace_id = sys.argv[2]
+result = json.load(sys.stdin)
+workspace = next((item for item in projection["workspaces"] if item["workspace_id"] == workspace_id), None)
+if workspace is None:
+    raise SystemExit(f"workspace missing before close: {workspace_id}")
+count = workspace["pane_count"]
+noun = "pane" if count == 1 else "panes"
+expected = f"This will stop processes in {count} {noun}. Closing Bessie alone leaves them running."
+error = result.get("error", {})
+if error.get("code") != "needs_confirmation" or error.get("message") != expected or not error.get("confirm_token"):
+    raise SystemExit(f"bad confirmation challenge: expected={expected!r}, result={result}")
+print(error["confirm_token"])
+' "$close_projection" "$cli_workspace_id" <<<"$close_challenge")
+close_success=$(intent_cli call workspace.close --json "$close_args" --confirm "$confirm_token")
+assert_intent_ok <<<"$close_success"
 cli_workspace_id=''
 for _ in {1..40}; do
     grep -Eq '^Snapshot workspace_labels=$' "$state_log" && break
     sleep 0.25
 done
 grep -Eq '^Snapshot workspace_labels=$' "$state_log"
+closed_snapshot=$(printf '%s\n' '{"id":"mac-agent-bus-closed","method":"session.snapshot","params":{}}' | nc -U "$herdr_socket")
+/usr/bin/python3 -c '
+import json, sys
+snapshot = json.load(sys.stdin)
+target = sys.argv[1]
+
+def contains(value):
+    if isinstance(value, dict):
+        return value.get("workspace_id") == target or any(contains(child) for child in value.values())
+    if isinstance(value, list):
+        return any(contains(child) for child in value)
+    return False
+
+if contains(snapshot):
+    raise SystemExit(f"closed workspace remains in Herdr snapshot: {target}")
+' "$closed_workspace_id" <<<"$closed_snapshot"
+reuse_result=$(intent_cli call workspace.close --json "$close_args" --confirm "$confirm_token" || true)
+/usr/bin/python3 -c 'import json, sys; result=json.load(sys.stdin); raise SystemExit(0 if result.get("error", {}).get("code") == "confirm_token_invalid" else f"confirmation token reuse did not fail: {result}")' <<<"$reuse_result"
+kill -0 "$herdr_pid"
 for _ in {1..40}; do
     ! pgrep -P "$app_pid" -f "^$herdr_bin terminal session control" >/dev/null && break
     sleep 0.25
@@ -1018,6 +1184,7 @@ open -n "$installed_app" \
     --env "PATH=$PATH" \
     --env "BESSIE_STATE_LOG_PATH=$installed_state_log" \
     --env "BESSIE_RUN_TOKEN=$installed_token" \
+    --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
     --env "BESSIE_PRESENTATION_PATH=$presentation_path" \
     --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
     --env "BESSIE_PROCESS_LIVE_AUTOMATION=0"

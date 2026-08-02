@@ -37,13 +37,22 @@ public struct PaneProjection: Codable, Equatable, Identifiable, Sendable {
     public let focused: Bool
     public let label: String?
     public let cwd: String?
+    public let foregroundCWD: String?
     public let agent: String?
     public let title: String?
     public let agentStatus: String
     public let revision: UInt64
     enum CodingKeys: String, CodingKey {
         case id = "pane_id", terminalID = "terminal_id", workspaceID = "workspace_id", tabID = "tab_id", focused, label, cwd, agent, title
+        case foregroundCWD = "foreground_cwd"
         case agentStatus = "agent_status", revision
+    }
+
+    /// Prefer live process cwd, then Herdr pane cwd.
+    public var effectiveCWD: String? {
+        if let foregroundCWD, !foregroundCWD.isEmpty { return foregroundCWD }
+        if let cwd, !cwd.isEmpty { return cwd }
+        return nil
     }
 }
 

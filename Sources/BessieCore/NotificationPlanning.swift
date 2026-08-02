@@ -39,12 +39,56 @@ public struct BessieNotificationEvent: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct BessieNotificationDeepLink: Equatable, Sendable {
+    public let target: RoutedPaneTarget
+
+    public init(target: RoutedPaneTarget) {
+        self.target = target
+    }
+
+    public init?(userInfo: [String: String]) {
+        guard let connectionID = userInfo["connection_id"],
+              let workspaceID = userInfo["workspace_id"],
+              let tabID = userInfo["tab_id"],
+              let paneID = userInfo["pane_id"]
+        else { return nil }
+        target = RoutedPaneTarget(
+            connectionID: connectionID,
+            workspaceID: workspaceID,
+            tabID: tabID,
+            paneID: paneID
+        )
+    }
+
+    public init?(userInfo: [AnyHashable: Any]) {
+        self.init(userInfo: Dictionary(uniqueKeysWithValues: userInfo.compactMap { key, value in
+            guard let key = key as? String, let value = value as? String else { return nil }
+            return (key, value)
+        }))
+    }
+
+    public var userInfo: [String: String] {
+        [
+            "connection_id": target.connectionID,
+            "workspace_id": target.workspaceID,
+            "tab_id": target.tabID,
+            "pane_id": target.paneID,
+        ]
+    }
+}
+
 public enum BessieNotificationRoute {
     public static func resolve(
-        pending: PaneOpenTarget,
+        pending: RoutedPaneTarget,
+        connectionID: String,
         projection: HerdrSessionProjection
     ) -> PaneOpenTarget? {
-        BessieSurfaceProjection(projection: projection).openTarget(paneID: pending.paneID)
+        guard pending.connectionID == connectionID,
+              let current = BessieSurfaceProjection(projection: projection).openTarget(paneID: pending.paneID),
+              current.workspaceID == pending.workspaceID,
+              current.tabID == pending.tabID
+        else { return nil }
+        return current
     }
 }
 
@@ -57,7 +101,8 @@ public struct BessieNotificationPlanner: Sendable {
     public mutating func events(
         for panes: [BessieNotificationPane],
         policy: BessieNotifications,
-        activePaneID: String?
+        activePaneID: String?,
+        connectionLabel: String? = nil
     ) -> [BessieNotificationEvent] {
         let nextStates = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneID, $0.state) })
         defer {
@@ -86,7 +131,7 @@ public struct BessieNotificationPlanner: Sendable {
             return BessieNotificationEvent(
                 id: "bessie.\(pane.paneID).\(pane.state.rawValue).\(pane.revision)",
                 title: title,
-                body: pane.location,
+                body: connectionLabel.map { "\(pane.location) · \($0)" } ?? pane.location,
                 target: pane.target
             )
         }

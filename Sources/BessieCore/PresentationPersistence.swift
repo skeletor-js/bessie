@@ -1,13 +1,16 @@
 import Foundation
 
 public enum BessieAppearance: String, Codable, CaseIterable, Equatable, Sendable { case system, dark, light }
+public enum BessieDensity: String, Codable, CaseIterable, Equatable, Sendable { case comfortable, compact }
 public enum BessieAppIcon: String, Codable, CaseIterable, Equatable, Sendable { case dark, light }
 public enum BessieNotifications: String, Codable, CaseIterable, Equatable, Sendable { case off, blockedOnly, blockedAndDone }
 public enum BessieStartupBehavior: String, Codable, CaseIterable, Equatable, Sendable { case lastWorkspace, workspaceChooser }
 
 public struct BessiePreferences: Codable, Equatable, Sendable {
     public var appearance: BessieAppearance
+    public var density: BessieDensity
     public var appIcon: BessieAppIcon
+    public var cowprintEnabled: Bool
     public var cowPrintIntensity: Double
     public var cowPrintMotion: Bool
     public var terminalFontSize: Double
@@ -17,7 +20,9 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
 
     public init(
         appearance: BessieAppearance = .system,
+        density: BessieDensity = .comfortable,
         appIcon: BessieAppIcon = .dark,
+        cowprintEnabled: Bool = true,
         cowPrintIntensity: Double = 0.05,
         cowPrintMotion: Bool = true,
         terminalFontSize: Double = 13,
@@ -26,7 +31,9 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
         startupBehavior: BessieStartupBehavior = .lastWorkspace
     ) {
         self.appearance = appearance
+        self.density = density
         self.appIcon = appIcon
+        self.cowprintEnabled = cowprintEnabled
         self.cowPrintIntensity = cowPrintIntensity
         self.cowPrintMotion = cowPrintMotion
         self.terminalFontSize = terminalFontSize
@@ -36,13 +43,15 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case appearance, appIcon, cowPrintIntensity, cowPrintMotion, terminalFontSize, paneGap, notifications, startupBehavior
+        case appearance, density, appIcon, cowprintEnabled, cowPrintIntensity, cowPrintMotion, terminalFontSize, paneGap, notifications, startupBehavior
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         appearance = try values.decodeIfPresent(BessieAppearance.self, forKey: .appearance) ?? .system
+        density = try values.decodeIfPresent(BessieDensity.self, forKey: .density) ?? .comfortable
         appIcon = try values.decodeIfPresent(BessieAppIcon.self, forKey: .appIcon) ?? .dark
+        cowprintEnabled = try values.decodeIfPresent(Bool.self, forKey: .cowprintEnabled) ?? true
         cowPrintIntensity = try values.decodeIfPresent(Double.self, forKey: .cowPrintIntensity) ?? 0.05
         cowPrintMotion = try values.decodeIfPresent(Bool.self, forKey: .cowPrintMotion) ?? true
         terminalFontSize = try values.decodeIfPresent(Double.self, forKey: .terminalFontSize) ?? 13

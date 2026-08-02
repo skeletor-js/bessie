@@ -1,3 +1,4 @@
+import AppKit
 import BessieCore
 import Combine
 import Foundation
@@ -6,29 +7,47 @@ import SwiftUI
 
 @main
 struct BessieApp: App {
+    @NSApplicationDelegateAdaptor(BessieAppDelegate.self) private var appDelegate
     @StateObject private var settings = BessieSettingsModel()
     @StateObject private var notifications = BessieNotificationCoordinator()
+    @StateObject private var fleet = ConnectionFleetViewModel()
 
     var body: some Scene {
         WindowGroup {
-            ConnectView()
+            ConnectView(fleet: fleet)
                 .environmentObject(settings)
                 .environmentObject(notifications)
                 .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
                 .onChange(of: settings.preferences.appIcon) { _, icon in
                     BessieAppIconController.apply(icon)
                 }
-                .preferredColorScheme(.dark)
+                .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
+                .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)
+                .task { fleet.startIntentServer() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    fleet.stopIntentServer()
+                }
         }
-        .windowStyle(.hiddenTitleBar)
+        // Real titlebar (above content) so traffic-light row can double-click to full screen.
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .defaultSize(width: 1180, height: 740)
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                    .keyboardShortcut("q", modifiers: .command)
+            }
+        }
 
         Settings {
             BessieSettingsView()
                 .environmentObject(settings)
                 .environmentObject(notifications)
+                .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
+                .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
+                .environmentObject(fleet)
         }
     }
 }
@@ -44,11 +63,14 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var actionInFlight = false
     @Published private(set) var activeConnection: BessieConnectionDefinition = .localBessie
     @Published private(set) var projectMaterializationConnection: BessieProjectMaterializationConnection?
+    @Published private(set) var remoteFileAccess: SSHRemoteFileAccess?
     private var connectionTask: Task<Void, Never>?
     private var connectionRunner: HerdrConnectionRunner?
     private var remoteBridge: RemoteHerdrBridge?
     private var connectionToken = UUID()
     private var actionClient: HerdrActionClient?
+    private let intentDispatcher: BessieIntentActionDispatcher
+    private var openPaneToken: UUID?
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
     private var projectHandoffToken: UUID?
@@ -58,9 +80,14 @@ final class ConnectionViewModel: ObservableObject {
     private let runtimeValidator: HerdrRuntimeValidator?
     private let bundledRuntimeLock: BundledRuntimeLock?
 
-    init(runtimeSelection: HerdrRuntimeSelection = .bundled, bundledRuntimeURL: URL? = nil) {
+    init(
+        runtimeSelection: HerdrRuntimeSelection = .bundled,
+        bundledRuntimeURL: URL? = nil,
+        intentDispatcher: BessieIntentActionDispatcher = BessieIntentActionDispatcher()
+    ) {
         self.runtimeSelection = runtimeSelection
         self.bundledRuntimeURL = bundledRuntimeURL
+        self.intentDispatcher = intentDispatcher
         let validation = bundledRuntimeURL.map(Self.runtimeValidation(for:))
         runtimeValidator = validation?.validator
         bundledRuntimeLock = validation?.lock
@@ -83,13 +110,17 @@ final class ConnectionViewModel: ObservableObject {
             case .ssh:
                 do {
                     let bridge = try RemoteHerdrBridge(connection: connection)
+                    self.remoteBridge = bridge
                     let socketPath = try await Task.detached { try bridge.start() }.value
                     guard !Task.isCancelled, self.connectionToken == token else { bridge.stop(); return }
-                    self.remoteBridge = bridge
+                    self.remoteFileAccess = bridge.fileAccess
                     environment["BESSIE_HERDR_SOCKET_PATH"] = socketPath
                     environment["BESSIE_HERDR_AUTOSTART"] = "0"
                 } catch {
                     guard self.connectionToken == token else { return }
+                    self.remoteBridge?.stop()
+                    self.remoteBridge = nil
+                    self.remoteFileAccess = nil
                     self.presentation = ConnectPresentation(
                         title: "Couldn't connect to \(connection.name)",
                         detail: error.localizedDescription,
@@ -159,6 +190,11 @@ final class ConnectionViewModel: ObservableObject {
                     self?.projection = projection
                     self?.terminalEndpoint = endpoint
                     self?.actionClient = endpoint.map { HerdrActionClient(api: HerdrSocketAPI(socketPath: $0.socketPath)) }
+                    self?.intentDispatcher.update(
+                        client: self?.actionClient,
+                        connectionID: connection.id,
+                        projection: projection
+                    )
                     if let endpoint { self?.ensureAgentCatalog(socketPath: endpoint.socketPath) }
                 }
             }
@@ -191,29 +227,50 @@ final class ConnectionViewModel: ObservableObject {
 
     func stop() {
         connectionToken = UUID()
+        openPaneToken = nil
+        actionInFlight = false
         connectionRunner?.cancel()
         connectionTask?.cancel()
         connectionTask = nil
         connectionRunner = nil
         remoteBridge?.stop()
         remoteBridge = nil
+        remoteFileAccess = nil
+        projection = nil
+        terminalEndpoint = nil
+        actionClient = nil
+        intentDispatcher.update(client: nil, connectionID: activeConnection.id, projection: nil)
+        catalogSocketPath = nil
+        catalogLoaded = false
+        agentCatalog = AgentCatalog(items: [])
         projectMaterializationConnection = nil
     }
 
-    func perform(_ action: HerdrAction, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
-        guard let actionClient else { return }
+    func perform(
+        _ action: HerdrAction,
+        confirmDestructive: Bool = false,
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil
+    ) {
+        let connectionGeneration = connectionToken
+        let connectionID = activeConnection.id
         actionInFlight = true
         actionError = nil
         Task.detached {
             do {
-                let projection = try actionClient.perform(action)
+                let projection = try self.intentDispatcher.perform(
+                    [action],
+                    connectionID: connectionID,
+                    confirmDestructive: confirmDestructive
+                )
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration else { return }
                     self.projection = projection
                     self.actionInFlight = false
                     completion?(projection)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
                 }
@@ -222,23 +279,32 @@ final class ConnectionViewModel: ObservableObject {
     }
 
     func openPane(_ target: PaneOpenTarget, completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil) {
-        guard let actionClient else { return }
+        let connectionGeneration = connectionToken
+        let connectionID = activeConnection.id
+        let requestToken = UUID()
+        openPaneToken = requestToken
         actionInFlight = true
         actionError = nil
         Task.detached {
             do {
-                let projection = try actionClient.perform([
+                let projection = try self.intentDispatcher.perform([
                     .workspaceFocus(id: target.workspaceID),
                     .tabFocus(id: target.tabID),
                     .paneFocus(id: target.paneID),
-                ])
+                ], connectionID: connectionID)
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration,
+                          self.openPaneToken == requestToken
+                    else { return }
                     self.projection = projection
                     self.actionInFlight = false
                     completion?(projection)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.connectionToken == connectionGeneration,
+                          self.openPaneToken == requestToken
+                    else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
                 }
@@ -259,8 +325,7 @@ final class ConnectionViewModel: ObservableObject {
               handoff.paneID == nil || handoffProjection.panes.contains(where: {
                   $0.id == handoff.paneID && $0.workspaceID == handoff.workspaceID
                       && (handoff.tabID == nil || $0.tabID == handoff.tabID)
-              }),
-              let actionClient
+              })
         else { return }
         var actions: [HerdrAction] = [.workspaceFocus(id: handoff.workspaceID)]
         if let tabID = handoff.tabID { actions.append(.tabFocus(id: tabID)) }
@@ -269,9 +334,10 @@ final class ConnectionViewModel: ObservableObject {
         actionError = nil
         let handoffToken = UUID()
         projectHandoffToken = handoffToken
+        let connectionID = activeConnection.id
         Task.detached {
             do {
-                let projection = try actionClient.perform(actions)
+                let projection = try self.intentDispatcher.perform(actions, connectionID: connectionID)
                 await MainActor.run {
                     guard self.projectHandoffToken == handoffToken,
                           self.projectMaterializationConnection == handoff.connection
@@ -518,20 +584,44 @@ final class ConnectionViewModel: ObservableObject {
 /// Keeps every configured Herdr connection live. The product shell uses one
 /// session for workspace and terminal navigation at a time, while The herd is
 /// the union of every connected session.
+struct FleetConnectionIssue: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let title: String
+    let detail: String
+}
+
 @MainActor
 final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var activeModel: ConnectionViewModel?
     @Published private(set) var agents: [ConnectedAgentProjection] = []
+    @Published private(set) var attentionAgents: [ConnectedAgentProjection] = []
     @Published private(set) var connectedCount = 0
+    @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
+    @Published private(set) var connectionHealth: [ConnectionHealth] = []
 
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
+    private let intentServer = AppIntentServer()
 
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
 
-    func start(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
+    func startIntentServer() {
+        do { try intentServer.start() }
+        catch { BessieDiagnosticLog.append("Intent socket unavailable: \(error.localizedDescription)") }
+    }
+
+    func stopIntentServer() { intentServer.stop() }
+
+    func start(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        runtimeSelection: HerdrRuntimeSelection,
+        bundledRuntimeURL: URL?
+    ) {
         sync(connections: connections, runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
+        _ = activate(connectionID: selectedConnectionID)
     }
 
     func sync(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
@@ -541,8 +631,15 @@ final class ConnectionFleetViewModel: ObservableObject {
             models[id] = nil
             subscriptions[id] = nil
         }
+        if let activeConnectionID, !desired.contains(activeConnectionID) {
+            activeModel = nil
+        }
         for connection in connections where models[connection.id] == nil {
-            let model = ConnectionViewModel(runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
+            let model = ConnectionViewModel(
+                runtimeSelection: runtimeSelection,
+                bundledRuntimeURL: bundledRuntimeURL,
+                intentDispatcher: intentServer.dispatcher
+            )
             models[connection.id] = model
             subscriptions[connection.id] = model.objectWillChange.sink { [weak self] _ in
                 Task { @MainActor in
@@ -573,19 +670,26 @@ final class ConnectionFleetViewModel: ObservableObject {
         for model in models.values { model.retry() }
     }
 
+    func retry(connectionID: String) {
+        models[connectionID]?.retry()
+    }
+
     func stop() {
         for model in models.values { model.stop() }
         models.removeAll()
         subscriptions.removeAll()
         agents = []
+        attentionAgents = []
         connectedCount = 0
+        connectionIssues = []
+        connectionHealth = []
         activeModel = nil
     }
 
     private func refresh() {
         let connected = models.values.filter { $0.projection != nil && $0.terminalEndpoint != nil }
         connectedCount = connected.count
-        if activeModel?.projection == nil, let replacement = connected.first {
+        if activeModel == nil, let replacement = connected.first {
             activeModel = replacement
         }
         agents = connected.flatMap { model -> [ConnectedAgentProjection] in
@@ -599,19 +703,53 @@ final class ConnectionFleetViewModel: ObservableObject {
                 )
             }
         }
+        attentionAgents = connected.flatMap { model -> [ConnectedAgentProjection] in
+            guard let projection = model.projection else { return [] }
+            return projection.panes.map { pane in
+                ConnectedAgentProjection(
+                    connection: model.activeConnection,
+                    agent: AgentProjection(pane: pane),
+                    workspaceLabel: projection.workspaces.first { $0.id == pane.workspaceID }?.label,
+                    tabLabel: projection.tabs.first { $0.id == pane.tabID }?.label
+                )
+            }
+        }
+        connectionHealth = models.values.map {
+            ConnectionHealth(connection: $0.activeConnection, presentation: $0.presentation)
+        }.sorted { lhs, rhs in
+            let lhsLabel = models[lhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? lhs.connectionID
+            let rhsLabel = models[rhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? rhs.connectionID
+            let comparison = lhsLabel.localizedCaseInsensitiveCompare(rhsLabel)
+            return comparison == .orderedSame ? lhs.connectionID < rhs.connectionID : comparison == .orderedAscending
+        }
+        connectionIssues = models.values.compactMap { model in
+            guard model.presentation.status != .connected else { return nil }
+            return FleetConnectionIssue(
+                id: model.activeConnection.id,
+                label: ConnectionDisplayLabel(connection: model.activeConnection).short,
+                title: model.presentation.title,
+                detail: model.presentation.detail
+            )
+        }.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
         let sources = connected.map { "\($0.activeConnection.name):\($0.projection?.agents.count ?? 0)" }.sorted().joined(separator: ",")
         BessieDiagnosticLog.append("Fleet connected=\(connectedCount) agents=\(agents.count) sources=\(sources)")
     }
 }
 
 struct ConnectView: View {
-    @StateObject private var fleet = ConnectionFleetViewModel()
+    @ObservedObject var fleet: ConnectionFleetViewModel
     @StateObject private var terminalRegistry = TerminalControllerRegistry()
     @StateObject private var projects = ProjectsViewModel()
     @EnvironmentObject private var settings: BessieSettingsModel
+    @Environment(\.bessieDensity) private var density
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @State private var setupAutomationStarted = false
 
     private var presentation: ConnectPresentation { fleet.presentation }
+    private var notificationActivationSignature: String {
+        let pendingConnectionID = notifications.pendingTarget?.connectionID ?? "-"
+        return "\(pendingConnectionID)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+    }
 
     var body: some View {
         Group {
@@ -653,23 +791,45 @@ struct ConnectView: View {
                 }
             } else {
                 if let diagnostic = fleet.activeModel?.runtimeDiagnostic, diagnostic.finding != nil {
-                    TroubleView(diagnostic: diagnostic) { fleet.retryAll() }
+                    TroubleView(diagnostic: diagnostic) { retryActiveConnection() }
                 } else {
                     connectPanel
                 }
             }
         }
-        .preferredColorScheme(.dark)
-        .task { fleet.start(connections: settings.connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL) }
+        .environmentObject(fleet)
+        .task {
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
+        }
         .onChange(of: settings.connections) { _, connections in
             fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
-            fleet.start(connections: settings.connections, runtimeSelection: selection, bundledRuntimeURL: Self.bundledRuntimeURL)
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: selection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
         }
-        .onChange(of: fleet.activeConnectionID) { _, _ in
+        .onChange(of: settings.selectedConnectionID) { _, id in
+            _ = fleet.activate(connectionID: id)
+        }
+        .onChange(of: fleet.activeConnectionID) { _, id in
             terminalRegistry.releaseAll()
+            if let id, settings.selectedConnectionID != id {
+                settings.selectConnection(id)
+            }
+        }
+        .task(id: notificationActivationSignature) {
+            guard let target = notifications.pendingTarget else { return }
+            _ = fleet.activate(connectionID: target.connectionID)
         }
         .onChange(of: terminalRegistry.diagnosticRevision) { _, _ in
             guard let model = fleet.activeModel else { return }
@@ -680,11 +840,18 @@ struct ConnectView: View {
             }
         }
         .onDisappear {
-            projects.updateConnection(nil, snapshot: nil)
-            terminalRegistry.releaseAll()
-            fleet.stop()
+            shutdownForAppExit()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            shutdownForAppExit()
         }
         .background(BessieWindowSnapshotProbe())
+    }
+
+    private func shutdownForAppExit() {
+        projects.updateConnection(nil, snapshot: nil)
+        terminalRegistry.releaseAll()
+        fleet.stop()
     }
 
     private var connectPanel: some View {
@@ -721,14 +888,18 @@ struct ConnectView: View {
                         VStack(spacing: 0) {
                             ConnectFactRow(
                                 symbol: "terminal",
-                                title: "Herdr",
-                                detail: presentation.status == .notFound ? "Not installed" : "Version 0.7.5",
-                                status: presentation.status == .notFound ? "NOT FOUND" : "FOUND"
+                                title: activeConnection.kind == .local ? "Herdr" : "Remote Herdr",
+                                detail: activeConnection.kind == .local
+                                    ? (presentation.status == .notFound ? "Not installed" : "Version 0.7.5")
+                                    : "\(activeConnection.sshHost ?? "Unknown host") · session \(activeConnection.session ?? "default")",
+                                status: activeConnection.kind == .local
+                                    ? (presentation.status == .notFound ? "NOT FOUND" : "FOUND")
+                                    : (presentation.status == .connected ? "FOUND" : "CHECKING")
                             )
                             Divider().overlay(BessieDesign.border)
                             ConnectFactRow(
                                 symbol: "point.3.connected.trianglepath.dotted",
-                                title: "Local session",
+                                title: activeConnection.kind == .local ? "Local session" : "SSH connection",
                                 detail: statusText,
                                 status: presentation.status == .connected ? "CONNECTED" : "WAITING"
                             )
@@ -749,12 +920,12 @@ struct ConnectView: View {
 
                         HStack(spacing: 8) {
                             if allowsRetry {
-                                Button("Try again", systemImage: "arrow.clockwise") { fleet.retryAll() }
+                                Button("Try again", systemImage: "arrow.clockwise") { retryActiveConnection() }
                                     .buttonStyle(BessiePrimaryButtonStyle())
                             }
                             if presentation.status != .connecting {
                                 DisclosureGroup("How to connect") {
-                                    Text("Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable.")
+                                    Text(connectionHelp)
                                         .font(.system(size: 11))
                                         .foregroundStyle(BessieDesign.subtle)
                                         .padding(.top, 6)
@@ -771,20 +942,8 @@ struct ConnectView: View {
                     .bessieSurface(base: BessieDesign.background, crop: .connect)
                     Spacer(minLength: 20)
                 }
-                .padding(.horizontal, BessieDesign.cardGap)
-                .padding(.bottom, BessieDesign.cardGap - 2)
-
-                HStack(spacing: 16) {
-                    Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)
-                    Text("LOCAL HERDR")
-                    Spacer()
-                    Text(statusText.uppercased())
-                }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(BessieDesign.subtle)
-                .padding(.horizontal, 13)
-                .frame(height: 26)
-                .overlay(alignment: .top) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
+                .padding(.horizontal, density.cardGap)
+                .padding(.bottom, max(2, density.cardGap - 2))
             }
         }
         .tint(BessieDesign.strong)
@@ -813,6 +972,26 @@ struct ConnectView: View {
 
     private var allowsRetry: Bool {
         [.notFound, .stopped, .incompatible, .lost].contains(presentation.status)
+    }
+
+    private var activeConnection: BessieConnectionDefinition {
+        fleet.activeModel?.activeConnection ?? .localBessie
+    }
+
+    private var connectionLabel: ConnectionDisplayLabel {
+        ConnectionDisplayLabel(connection: activeConnection)
+    }
+
+    private var connectionHelp: String {
+        if activeConnection.kind == .ssh {
+            return "Start Herdr session \(activeConnection.session ?? "default") on \(activeConnection.sshHost ?? "the remote Mac"), then try again. Bessie uses your OpenSSH config and leaves remote Herdr running when it disconnects."
+        }
+        return "Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable."
+    }
+
+    private func retryActiveConnection() {
+        guard let id = fleet.activeConnectionID else { return }
+        fleet.retry(connectionID: id)
     }
 
     private var statusText: String {

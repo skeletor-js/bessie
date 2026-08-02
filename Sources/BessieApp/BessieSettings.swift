@@ -172,10 +172,12 @@ enum BessieAppIconController {
 struct BessieSettingsView: View {
     @EnvironmentObject private var model: BessieSettingsModel
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
+    @EnvironmentObject private var fleet: ConnectionFleetViewModel
     @State private var showAddConnection = false
     @State private var connectionName = ""
     @State private var sshHost = ""
     @State private var herdrSession = ""
+    @State private var connectionPendingRemoval: BessieConnectionDefinition?
     let embedded: Bool
     let runtimeDiagnostic: RuntimeDiagnosticSnapshot?
 
@@ -204,11 +206,28 @@ struct BessieSettingsView: View {
                 .frame(width: 720, height: 620)
             }
         }
-        .preferredColorScheme(.dark)
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
         .task { notifications.refreshAuthorization() }
         .sheet(isPresented: $showAddConnection) { addConnectionSheet }
+        .confirmationDialog(
+            "Remove SSH connection?",
+            isPresented: Binding(
+                get: { connectionPendingRemoval != nil },
+                set: { if !$0 { connectionPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let connectionPendingRemoval {
+                Button("Remove \(connectionPendingRemoval.name)", role: .destructive) {
+                    model.removeConnection(connectionPendingRemoval.id)
+                    self.connectionPendingRemoval = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { connectionPendingRemoval = nil }
+        } message: {
+            Text("This disconnects Bessie only. Remote Herdr and its session keep running.")
+        }
     }
 
     private var settingsScroll: some View {
@@ -251,9 +270,32 @@ struct BessieSettingsView: View {
                 }
                 .padding(.top, 10)
 
+                Text("SSH connections use an already-running remote Herdr session. Disconnecting Bessie leaves remote Herdr and its processes running.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(BessieDesign.subtle)
+                    .padding(.top, 9)
+
                 BessieSectionLabel("APPEARANCE")
                     .padding(.top, 28)
                     .padding(.bottom, 7)
+
+                BessieSettingRow(label: "Theme", hint: "System follows your Mac appearance.") {
+                    Picker("Theme", selection: $model.preferences.appearance) {
+                        ForEach(BessieAppearance.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                }
+
+                BessieSettingRow(label: "Density", hint: "Adjusts chrome, rows, and card spacing.") {
+                    Picker("Density", selection: $model.preferences.density) {
+                        ForEach(BessieDensity.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
 
                 BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
                     Picker("App icon", selection: $model.preferences.appIcon) {
@@ -267,6 +309,13 @@ struct BessieSettingsView: View {
                 BessieSectionLabel("COWPRINT")
                     .padding(.top, 28)
                     .padding(.bottom, 7)
+
+                BessieSettingRow(label: "Cowprint texture") {
+                    Toggle("", isOn: $model.preferences.cowprintEnabled)
+                        .labelsHidden()
+                        .accessibilityLabel("Cowprint texture")
+                        .toggleStyle(.switch)
+                }
 
                 BessieSettingRow(label: "Contrast") {
                     Slider(value: $model.preferences.cowPrintIntensity, in: 0.015...0.10)
@@ -315,6 +364,13 @@ struct BessieSettingsView: View {
                 if model.preferences.notifications != .off {
                     BessieSettingRow(label: "Permission") {
                         notificationPermissionControl
+                    }
+                    if let error = notifications.authorizationError {
+                        Text(error)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(BessieDesign.strong)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
                     }
                 }
 
@@ -366,25 +422,46 @@ struct BessieSettingsView: View {
     }
 
     private func connectionRow(_ connection: BessieConnectionDefinition) -> some View {
-        HStack(spacing: 12) {
+        let health = fleet.connectionHealth.first { $0.connectionID == connection.id }
+        let selected = model.selectedConnectionID == connection.id
+        return HStack(spacing: 12) {
             Image(systemName: connection.kind == .local ? "laptopcomputer" : "network")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(BessieDesign.strong)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 3) {
-                Text(connection.name)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(BessieDesign.strong)
-                Text(connection.detail)
+                HStack(spacing: 7) {
+                    Text(ConnectionDisplayLabel(connection: connection).short)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(BessieDesign.strong)
+                    Text(connection.kind == .local ? "LOCAL" : "SSH")
+                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(BessieDesign.subtle)
+                }
+                Text("\(connection.detail) · \(connection.kind == .local ? "Local files" : "Remote files over SSH")")
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(BessieDesign.subtle)
+                    .lineLimit(1)
+                Text("\(health?.phase ?? "Not started") · \(health?.detail ?? "Waiting for connection status")")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(health?.isUsable == true ? BessieDesign.text : BessieDesign.subtle)
+                    .lineLimit(1)
             }
             Spacer()
-            Text("INCLUDED")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(BessieDesign.strong)
+            if connection.kind == .local {
+                Text("INCLUDED")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(BessieDesign.strong)
+            }
+            Button(selected ? "ACTIVE" : "SELECT") { model.selectConnection(connection.id) }
+                .buttonStyle(BessieQuietButtonStyle())
+                .disabled(selected)
+            if health?.canRetry == true {
+                Button("Retry") { fleet.retry(connectionID: connection.id) }
+                    .buttonStyle(BessieQuietButtonStyle())
+            }
             if connection.kind == .ssh {
-                Button { model.removeConnection(connection.id) } label: {
+                Button { connectionPendingRemoval = connection } label: {
                     Image(systemName: "trash")
                         .frame(width: 24, height: 24)
                 }
@@ -394,7 +471,7 @@ struct BessieSettingsView: View {
             }
         }
         .padding(.horizontal, 13)
-        .frame(minHeight: 54)
+        .frame(minHeight: 72)
     }
 
     private var addConnectionSheet: some View {
@@ -433,7 +510,7 @@ struct BessieSettingsView: View {
         .padding(28)
         .frame(width: 460)
         .background(BessieDesign.background)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(model.preferences.appearance.preferredColorScheme)
     }
 
     private func connectionField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
@@ -475,6 +552,7 @@ private struct BessieSettingRow<Control: View>: View {
     let label: String
     let hint: String?
     @ViewBuilder let control: Control
+    @Environment(\.bessieDensity) private var density
 
     init(label: String, hint: String? = nil, @ViewBuilder control: () -> Control) {
         self.label = label
@@ -499,7 +577,7 @@ private struct BessieSettingRow<Control: View>: View {
             Spacer(minLength: 20)
             control
         }
-        .padding(.vertical, 13)
+        .padding(.vertical, density.settingsRowPadding)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
 }
@@ -525,6 +603,14 @@ private struct BessieDiagnosticRow: View {
 
 private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
+}
+
+private extension BessieAppearance {
+    var title: String { switch self { case .system: "System"; case .dark: "Dark"; case .light: "Light" } }
+}
+
+private extension BessieDensity {
+    var title: String { switch self { case .comfortable: "Comfortable"; case .compact: "Compact" } }
 }
 
 private extension BessieAppIcon {

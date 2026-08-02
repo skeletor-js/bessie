@@ -4,7 +4,6 @@ import SwiftUI
 
 @MainActor
 final class BessieKeyboardShortcutCoordinator: ObservableObject {
-    private let router = BessieKeyboardShortcutRouter()
     private var monitor: Any?
     private var handler: ((BessieShortcutCommand) -> Void)?
 
@@ -29,10 +28,10 @@ final class BessieKeyboardShortcutCoordinator: ObservableObject {
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard event.window?.sheetParent == nil else { return event }
-        switch router.handle(Self.stroke(for: event)) {
+        switch BessieKeyboardShortcutRouter.policy(for: Self.stroke(for: event)) {
         case .passthrough:
             return event
-        case .command(let command):
+        case .appCommand(let command):
             handler?(command)
             return nil
         }

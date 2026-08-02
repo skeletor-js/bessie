@@ -51,6 +51,11 @@ final class BessieConnectionTests: XCTestCase {
             sshHost: "hermes",
             session: "default && nope"
         ).validated())
+        XCTAssertThrowsError(try BessieConnectionDefinition(
+            name: "Bad",
+            kind: .ssh,
+            sshHost: "-V"
+        ).validated())
     }
 
     func testConnectionStorePersistsSelectionWithoutCredentials() throws {
@@ -65,6 +70,67 @@ final class BessieConnectionTests: XCTestCase {
         let text = try String(contentsOf: store.url, encoding: .utf8)
         XCTAssertFalse(text.localizedCaseInsensitiveContains("password"))
         XCTAssertFalse(text.localizedCaseInsensitiveContains("private_key"))
+    }
+
+    func testConnectionHealthMapsConnectedLocalPresentation() {
+        let presentation = ConnectPresentation(
+            title: "Connected to Herdr",
+            detail: "2 workspaces · 3 tabs · 4 panes",
+            status: .connected
+        )
+
+        let health = ConnectionHealth(connection: .localBessie, presentation: presentation)
+
+        XCTAssertEqual(health.connectionID, "local-bessie")
+        XCTAssertEqual(health.phase, "Connected to Herdr")
+        XCTAssertTrue(health.isUsable)
+        XCTAssertEqual(health.detail, "2 workspaces · 3 tabs · 4 panes")
+        XCTAssertTrue(health.supportsWorkspaceFS)
+    }
+
+    func testConnectionHealthMapsReconnectAndErrorPresentationsAsUnusable() {
+        let connection = BessieConnectionDefinition(
+            id: "remote-hermes",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        let reconnecting = ConnectionHealth(
+            connection: connection,
+            presentation: ConnectPresentation(
+                title: "Reconnecting to Herdr",
+                detail: "Trying again in 2 seconds.",
+                status: .retrying
+            )
+        )
+        let failed = ConnectionHealth(
+            connection: connection,
+            presentation: ConnectPresentation(
+                title: "Couldn't reconnect",
+                detail: "Your work is still running.",
+                status: .lost
+            )
+        )
+
+        XCTAssertEqual(reconnecting.phase, "Reconnecting to Herdr")
+        XCTAssertFalse(reconnecting.isUsable)
+        XCTAssertFalse(reconnecting.canRetry)
+        XCTAssertEqual(failed.phase, "Couldn't reconnect")
+        XCTAssertFalse(failed.isUsable)
+        XCTAssertTrue(failed.canRetry)
+    }
+
+    func testConnectionHealthLimitsWorkspaceFilesystemToLocalV1() {
+        let remote = BessieConnectionDefinition(
+            id: "remote-hermes",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        let connected = ConnectPresentation(title: "Connected to Herdr", detail: "Ready", status: .connected)
+
+        XCTAssertTrue(ConnectionHealth(connection: .localBessie, presentation: connected).supportsWorkspaceFS)
+        XCTAssertFalse(ConnectionHealth(connection: remote, presentation: connected).supportsWorkspaceFS)
     }
 
     func testRemoteBridgeForwardsBothPublicHerdrSocketsPrivately() throws {
@@ -87,5 +153,22 @@ final class BessieConnectionTests: XCTestCase {
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr.sock:/home/hermes/.config/herdr/herdr.sock"))
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr-client.sock:/home/hermes/.config/herdr/herdr-client.sock"))
         XCTAssertEqual(plan.sshArguments.suffix(2), ["-N", "hermes"])
+    }
+
+    func testRemoteBridgeStartupOnlyRequestsRemoteStatus() throws {
+        let connection = try BessieConnectionDefinition(
+            id: "remote-hermes",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes",
+            session: "bessie"
+        ).validated()
+
+        XCTAssertEqual(RemoteHerdrBridgePlan.remoteStatusCommand(for: connection), "herdr --session bessie status --json")
+        XCTAssertEqual(
+            RemoteHerdrBridgePlan.remoteStatusArguments(for: connection),
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "hermes", "herdr --session bessie status --json"]
+        )
+        XCTAssertFalse(RemoteHerdrBridgePlan.remoteStatusArguments(for: connection).contains { $0.contains("herdr stop") })
     }
 }

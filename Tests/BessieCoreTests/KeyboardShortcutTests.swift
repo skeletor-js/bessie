@@ -9,11 +9,21 @@ final class KeyboardShortcutTests: XCTestCase {
         XCTAssertEqual(router.handle(.init(key: .leftArrow, option: true)), .passthrough)
     }
 
+    func testSystemCommandShortcutsPassThroughToAppKit() {
+        let systemKeys = ["q", "H", "m"]
+        for key in systemKeys {
+            XCTAssertEqual(
+                BessieKeyboardShortcutRouter.policy(for: .init(key: .character(key), command: true)),
+                .passthrough,
+                "Command-\(key.uppercased()) must remain owned by AppKit"
+            )
+        }
+    }
+
     func testCommandBOpensCommandPalette() {
-        let router = BessieKeyboardShortcutRouter()
         XCTAssertEqual(
-            router.handle(.init(key: .character("b"), command: true)),
-            .command(.showCommandPalette)
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("b"), command: true)),
+            .appCommand(.showCommandPalette)
         )
     }
 
@@ -28,11 +38,16 @@ final class KeyboardShortcutTests: XCTestCase {
             (.init(key: .character("D"), command: true, shift: true), .splitPane(.down)),
             (.init(key: .character("b"), command: true, shift: true), .toggleSidebar),
             (.init(key: .character(","), command: true), .showSettings),
+            (.init(key: .character("n"), option: true, command: true), .openNotificationTarget),
         ]
         let router = BessieKeyboardShortcutRouter()
         for (stroke, command) in cases {
             XCTAssertEqual(router.handle(stroke), .command(command))
         }
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("w"), command: true)),
+            .appCommand(.closeTab)
+        )
     }
 
     func testModifiedArrowShortcutsFocusSwapAndResizePanes() {
