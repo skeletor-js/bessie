@@ -20,7 +20,8 @@ struct BessieApp: App {
                 .onChange(of: settings.preferences.appIcon) { _, icon in
                     BessieAppIconController.apply(icon)
                 }
-                .preferredColorScheme(.dark)
+                .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
+                .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .frame(minWidth: 1080, minHeight: 680)
                 .background(BessieDesign.window)
         }
@@ -37,6 +38,8 @@ struct BessieApp: App {
             BessieSettingsView()
                 .environmentObject(settings)
                 .environmentObject(notifications)
+                .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
+                .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
         }
     }
 }
@@ -660,6 +663,7 @@ struct ConnectView: View {
     @StateObject private var terminalRegistry = TerminalControllerRegistry()
     @StateObject private var projects = ProjectsViewModel()
     @EnvironmentObject private var settings: BessieSettingsModel
+    @Environment(\.bessieDensity) private var density
     @State private var setupAutomationStarted = false
 
     private var presentation: ConnectPresentation { fleet.presentation }
@@ -710,7 +714,6 @@ struct ConnectView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { fleet.start(connections: settings.connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL) }
         .onChange(of: settings.connections) { _, connections in
             fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
@@ -829,8 +832,8 @@ struct ConnectView: View {
                     .bessieSurface(base: BessieDesign.background, crop: .connect)
                     Spacer(minLength: 20)
                 }
-                .padding(.horizontal, BessieDesign.cardGap)
-                .padding(.bottom, BessieDesign.cardGap - 2)
+                .padding(.horizontal, density.cardGap)
+                .padding(.bottom, max(2, density.cardGap - 2))
 
                 HStack(spacing: 16) {
                     Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)

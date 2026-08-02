@@ -204,7 +204,6 @@ struct BessieSettingsView: View {
                 .frame(width: 720, height: 620)
             }
         }
-        .preferredColorScheme(.dark)
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
         .task { notifications.refreshAuthorization() }
@@ -255,6 +254,24 @@ struct BessieSettingsView: View {
                     .padding(.top, 28)
                     .padding(.bottom, 7)
 
+                BessieSettingRow(label: "Theme", hint: "System follows your Mac appearance.") {
+                    Picker("Theme", selection: $model.preferences.appearance) {
+                        ForEach(BessieAppearance.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                }
+
+                BessieSettingRow(label: "Density", hint: "Adjusts chrome, rows, and card spacing.") {
+                    Picker("Density", selection: $model.preferences.density) {
+                        ForEach(BessieDensity.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
+
                 BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
                     Picker("App icon", selection: $model.preferences.appIcon) {
                         ForEach(BessieAppIcon.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -267,6 +284,13 @@ struct BessieSettingsView: View {
                 BessieSectionLabel("COWPRINT")
                     .padding(.top, 28)
                     .padding(.bottom, 7)
+
+                BessieSettingRow(label: "Cowprint texture") {
+                    Toggle("", isOn: $model.preferences.cowprintEnabled)
+                        .labelsHidden()
+                        .accessibilityLabel("Cowprint texture")
+                        .toggleStyle(.switch)
+                }
 
                 BessieSettingRow(label: "Contrast") {
                     Slider(value: $model.preferences.cowPrintIntensity, in: 0.015...0.10)
@@ -433,7 +457,7 @@ struct BessieSettingsView: View {
         .padding(28)
         .frame(width: 460)
         .background(BessieDesign.background)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(model.preferences.appearance.preferredColorScheme)
     }
 
     private func connectionField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
@@ -475,6 +499,7 @@ private struct BessieSettingRow<Control: View>: View {
     let label: String
     let hint: String?
     @ViewBuilder let control: Control
+    @Environment(\.bessieDensity) private var density
 
     init(label: String, hint: String? = nil, @ViewBuilder control: () -> Control) {
         self.label = label
@@ -499,7 +524,7 @@ private struct BessieSettingRow<Control: View>: View {
             Spacer(minLength: 20)
             control
         }
-        .padding(.vertical, 13)
+        .padding(.vertical, density.settingsRowPadding)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
 }
@@ -525,6 +550,14 @@ private struct BessieDiagnosticRow: View {
 
 private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
+}
+
+private extension BessieAppearance {
+    var title: String { switch self { case .system: "System"; case .dark: "Dark"; case .light: "Light" } }
+}
+
+private extension BessieDensity {
+    var title: String { switch self { case .comfortable: "Comfortable"; case .compact: "Compact" } }
 }
 
 private extension BessieAppIcon {

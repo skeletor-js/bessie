@@ -1,4 +1,5 @@
 import AppKit
+import BessieCore
 import SwiftUI
 
 enum BessieResources {
@@ -8,34 +9,97 @@ enum BessieResources {
     }
 }
 
-/// Native rendering of the retained Bessie design system. Values mirror the
-/// shipped cowprint/dark/sharp/flat token set rather than macOS adaptive defaults.
+struct BessiePalette {
+    let desk: Color
+    let window: Color
+    let background: Color
+    let rail: Color
+    let panel: Color
+    let inset: Color
+    let code: Color
+    let strong: Color
+    let text: Color
+    let subtle: Color
+    let faint: Color
+    let border: Color
+    let borderStrong: Color
+    let hover: Color
+    let selected: Color
+    let accent: Color
+    let accentSoft: Color
+    let accentForeground: Color
+    let blocked: Color
+    let running: Color
+    let done: Color
+    let idle: Color
+}
+
 enum BessieDesign {
-    static let desk = Color(red: 0.027, green: 0.027, blue: 0.027)
-    static let window = Color(red: 0.020, green: 0.020, blue: 0.020)
-    static let background = Color(red: 0.055, green: 0.055, blue: 0.055)
-    static let rail = Color(red: 0.039, green: 0.039, blue: 0.039)
-    static let panel = Color(red: 0.086, green: 0.086, blue: 0.086)
-    static let inset = Color(red: 0.067, green: 0.067, blue: 0.067)
-    static let code = Color(red: 0.031, green: 0.031, blue: 0.031)
+    static func palette(for scheme: ColorScheme) -> BessiePalette {
+        switch scheme {
+        case .dark:
+            return BessiePalette(
+                desk: Color(red: 0.027, green: 0.027, blue: 0.027),
+                window: Color(red: 0.020, green: 0.020, blue: 0.020),
+                background: Color(red: 0.055, green: 0.055, blue: 0.055),
+                rail: Color(red: 0.039, green: 0.039, blue: 0.039),
+                panel: Color(red: 0.086, green: 0.086, blue: 0.086),
+                inset: Color(red: 0.067, green: 0.067, blue: 0.067),
+                code: Color(red: 0.031, green: 0.031, blue: 0.031),
+                strong: Color(white: 0.961), text: Color(white: 0.714), subtle: Color(white: 0.541), faint: Color(white: 0.373),
+                border: Color.white.opacity(0.10), borderStrong: Color.white.opacity(0.19), hover: Color.white.opacity(0.055), selected: Color.white.opacity(0.10),
+                accent: .white, accentSoft: Color.white.opacity(0.12), accentForeground: .black,
+                blocked: .white, running: Color(white: 0.604), done: Color(white: 0.863), idle: Color(white: 0.373)
+            )
+        case .light:
+            return BessiePalette(
+                desk: Color(red: 0.86, green: 0.84, blue: 0.79),
+                window: Color(red: 0.94, green: 0.92, blue: 0.87),
+                background: Color(red: 0.975, green: 0.965, blue: 0.93),
+                rail: Color(red: 0.91, green: 0.89, blue: 0.84),
+                panel: Color(red: 0.995, green: 0.985, blue: 0.95),
+                inset: Color(red: 0.90, green: 0.88, blue: 0.83),
+                code: Color(red: 0.12, green: 0.115, blue: 0.105),
+                strong: Color(red: 0.075, green: 0.07, blue: 0.06), text: Color(white: 0.24), subtle: Color(white: 0.38), faint: Color(white: 0.53),
+                border: Color.black.opacity(0.13), borderStrong: Color.black.opacity(0.24), hover: Color.black.opacity(0.045), selected: Color.black.opacity(0.09),
+                accent: Color(red: 0.075, green: 0.07, blue: 0.06), accentSoft: Color.black.opacity(0.12), accentForeground: .white,
+                blocked: Color(white: 0.06), running: Color(white: 0.34), done: Color(white: 0.18), idle: Color(white: 0.53)
+            )
+        @unknown default:
+            return palette(for: .dark)
+        }
+    }
 
-    static let strong = Color(white: 0.961)
-    static let text = Color(white: 0.714)
-    static let subtle = Color(white: 0.541)
-    static let faint = Color(white: 0.373)
-    static let border = Color.white.opacity(0.10)
-    static let borderStrong = Color.white.opacity(0.19)
-    static let hover = Color.white.opacity(0.055)
-    static let selected = Color.white.opacity(0.10)
-    static let accent = Color.white
-    static let accentSoft = Color.white.opacity(0.12)
-    static let accentForeground = Color.black
+    private static func adaptive(_ keyPath: KeyPath<BessiePalette, Color>) -> Color {
+        let dark = NSColor(palette(for: .dark)[keyPath: keyPath])
+        let light = NSColor(palette(for: .light)[keyPath: keyPath])
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
 
-    // The cowprint palette communicates state through luminance, never hue.
-    static let blocked = Color.white
-    static let running = Color(white: 0.604)
-    static let done = Color(white: 0.863)
-    static let idle = Color(white: 0.373)
+    static let desk = adaptive(\.desk)
+    static let window = adaptive(\.window)
+    static let background = adaptive(\.background)
+    static let rail = adaptive(\.rail)
+    static let panel = adaptive(\.panel)
+    static let inset = adaptive(\.inset)
+    static let code = adaptive(\.code)
+    static let strong = adaptive(\.strong)
+    static let text = adaptive(\.text)
+    static let subtle = adaptive(\.subtle)
+    static let faint = adaptive(\.faint)
+    static let border = adaptive(\.border)
+    static let borderStrong = adaptive(\.borderStrong)
+    static let hover = adaptive(\.hover)
+    static let selected = adaptive(\.selected)
+    static let accent = adaptive(\.accent)
+    static let accentSoft = adaptive(\.accentSoft)
+    static let accentForeground = adaptive(\.accentForeground)
+    static let blocked = adaptive(\.blocked)
+    static let running = adaptive(\.running)
+    static let done = adaptive(\.done)
+    static let idle = adaptive(\.idle)
 
     static let titlebarHeight: CGFloat = 30
     static let railWidth: CGFloat = 244
@@ -46,6 +110,56 @@ enum BessieDesign {
     static let cardRadius: CGFloat = 4
     static let paneRadius: CGFloat = 3
     static let controlRadius: CGFloat = 3
+}
+
+struct BessieDensityMetrics: Equatable {
+    let rowHeight: CGFloat
+    let cardGap: CGFloat
+    let railWidth: CGFloat
+    let topbarHeight: CGFloat
+    let settingsRowPadding: CGFloat
+    let herdCardHeaderHeight: CGFloat
+    let herdCardFooterHeight: CGFloat
+    let herdCardPadding: CGFloat
+    let attentionGap: CGFloat
+    let attentionPadding: CGFloat
+    let paneHeaderHeight: CGFloat
+    let tabStripHeight: CGFloat
+
+    static func metrics(for density: BessieDensity) -> Self {
+        switch density {
+        case .comfortable:
+            Self(rowHeight: BessieDesign.rowHeight, cardGap: BessieDesign.cardGap,
+                 railWidth: BessieDesign.railWidth, topbarHeight: BessieDesign.topbarHeight, settingsRowPadding: 13,
+                 herdCardHeaderHeight: 38, herdCardFooterHeight: 42, herdCardPadding: 12,
+                 attentionGap: 11, attentionPadding: 15, paneHeaderHeight: 27, tabStripHeight: 36)
+        case .compact:
+            Self(rowHeight: 26, cardGap: 6, railWidth: 220, topbarHeight: 38, settingsRowPadding: 8,
+                 herdCardHeaderHeight: 32, herdCardFooterHeight: 36, herdCardPadding: 9,
+                 attentionGap: 7, attentionPadding: 10, paneHeaderHeight: 23, tabStripHeight: 30)
+        }
+    }
+}
+
+private struct BessieDensityKey: EnvironmentKey {
+    static let defaultValue = BessieDensityMetrics.metrics(for: .comfortable)
+}
+
+extension EnvironmentValues {
+    var bessieDensity: BessieDensityMetrics {
+        get { self[BessieDensityKey.self] }
+        set { self[BessieDensityKey.self] = newValue }
+    }
+}
+
+extension BessieAppearance {
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .dark: .dark
+        case .light: .light
+        }
+    }
 }
 
 struct BessieCowCrop: Equatable {
@@ -79,8 +193,16 @@ struct BessieCowprintTexture: View {
     }()
 
     var body: some View {
+        if !settings.preferences.cowprintEnabled {
+            base
+        } else {
+            animatedTexture
+        }
+    }
+
+    private var animatedTexture: some View {
         let paused = reduceMotion || !settings.preferences.cowPrintMotion
-        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: paused)) { timeline in
+        return TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: paused)) { timeline in
             GeometryReader { proxy in
                 Canvas { context, size in
                     context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(base))
@@ -159,6 +281,7 @@ struct BessieTopBar<Actions: View>: View {
     let crumbs: [String]
     let title: String
     @ViewBuilder let actions: Actions
+    @Environment(\.bessieDensity) private var density
 
     init(crumbs: [String] = [], title: String, @ViewBuilder actions: () -> Actions) {
         self.crumbs = crumbs
@@ -189,7 +312,7 @@ struct BessieTopBar<Actions: View>: View {
         .font(.system(size: 13))
         .padding(.leading, 16)
         .padding(.trailing, 12)
-        .frame(height: BessieDesign.topbarHeight)
+        .frame(height: density.topbarHeight)
         .background(BessieDesign.background)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
