@@ -938,3 +938,13 @@ Verification evidence:
 - URL-returning containment cannot make a later consumer's separate read or mutation race-free against a malicious concurrent directory swap. F1/F2 operation wrappers must revalidate immediately before use; descriptor-relative `openat`-style operations are a later hardening option if that stronger threat model is adopted.
 
 No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, publication, deployment, or installed app was changed by F0.
+
+## 2026-08-02: V1 Slice F1 Follow files complete on VPS
+
+- Added Core-owned watch stretches, recursive 250 ms workspace polling, ignored-directory pruning, coalesced touched-path recency with a 500-path cap, follow-latest selection, and one pinned selection. Initial filesystem state is the stretch baseline and is not reported as touched.
+- Added read-only previews against git HEAD for tracked modifications/deletions and full-file-as-added previews for untracked or non-git files. Git runs use argument arrays with `--`, a bounded timeout, and a 1.5 MB text limit; binary, oversized, missing, escaped, and unavailable paths degrade explicitly.
+- Added the native Agent detail Changes panel with Follow latest and Pin controls, an honest “Workspace changes observed while watching” attribution label, local working-directory lifecycle, same-pane cwd restart handling, and an explicit remote-unsupported state. No editor, save path, remote filesystem transport, or Herdr mutation was added.
+- Added focused Core tests for touch ordering/coalescing/capping, pin behavior, watcher initial suppression and add/modify/delete events, ignored directories, containment, git tracked/deleted/untracked previews, non-git fallback, binary files, and size limits. Added App model tests for same-pane cwd reconfiguration and remote capability gating.
+- `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package anchors, UI copy, and F1 structural anchors passed. Swift is unavailable on this VPS, and the goal contract explicitly prohibited fake or remote Mac verification, so native compilation, Swift test execution, packaging, installation, app relaunch, and screenshot inspection were not run or claimed.
+- Simplification review consolidated relative-path containment, batched touch updates, reduced redundant preview reloads, and rejected oversized files before reading them. Focused code review found one P1 stale-root lifecycle defect; the configuration identity now includes workspace and cwd, with regression coverage. A final independent Swift/concurrency review found no high-confidence blockers.
+- Existing planning and roadmap dirt remained untouched. No push, PR, publication, deployment, Mac sync, app installation, or Herdr/file mutation occurred.

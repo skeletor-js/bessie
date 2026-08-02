@@ -154,15 +154,28 @@ public enum WorkspaceFS {
         relativePath: String
     ) -> Result<URL, WorkspacePathError> {
         let candidate: URL
-        switch resolveContainedPath(root: root, relativePath: relativePath) {
-        case .success(let url):
-            candidate = url
-        case .failure(let error):
-            return .failure(error)
+        if relativePath.isEmpty {
+            candidate = root.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        } else {
+            switch resolveContainedPath(root: root, relativePath: relativePath) {
+            case .success(let url):
+                candidate = url
+            case .failure(let error):
+                return .failure(error)
+            }
         }
         guard FileManager.default.fileExists(atPath: candidate.path) else { return .failure(.notFound) }
         guard FileManager.default.isReadableFile(atPath: candidate.path) else { return .failure(.unreadable) }
         return .success(candidate)
+    }
+
+    /// Resolves a contained path without requiring it to exist, so deleted watcher paths can
+    /// be validated before presentation or use as a process argument.
+    public static func resolvePath(
+        root: WorkspaceFileRoot,
+        relativePath: String
+    ) -> Result<URL, WorkspacePathError> {
+        resolveContainedPath(root: root, relativePath: relativePath)
     }
 
     public static func isIgnoredRelativePath(_ path: String) -> Bool {
@@ -171,6 +184,14 @@ public enum WorkspaceFS {
             .replacingOccurrences(of: "\\", with: "/")
             .split(separator: "/", omittingEmptySubsequences: true)
             .contains { ignoredDirectoryNames.contains(String($0)) }
+    }
+
+    public static func relativePath(of candidate: URL, under root: URL) -> String? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let candidateComponents = candidate.standardizedFileURL.pathComponents
+        guard candidateComponents.count > rootComponents.count,
+              candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else { return nil }
+        return candidateComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     public static func fileMeta(

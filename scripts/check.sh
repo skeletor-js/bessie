@@ -13,6 +13,13 @@ grep -Fq 'case notChecked' Sources/BessieCore/ConnectPresentation.swift
 grep -Fq 'public struct HerdrSessionProjection' Sources/BessieCore/SessionProjection.swift
 grep -Fq 'public enum WorkspaceFS' Sources/BessieCore/WorkspaceFS.swift
 grep -Fq 'testResolveFileRejectsSymlinkEscapeButAllowsContainedSymlink' Tests/BessieCoreTests/WorkspaceFSTests.swift
+grep -Fq 'public actor WorkspaceFileWatcher' Sources/BessieCore/FollowWatch.swift
+grep -Fq 'public struct GitDiffService' Sources/BessieCore/GitDiffService.swift
+grep -Fq 'struct FollowFilesSurface' Sources/BessieApp/FollowFilesSurface.swift
+grep -Fq 'Workspace changes observed while watching' Sources/BessieApp/FollowFilesSurface.swift
+grep -Fq 'testWatcherSuppressesInitialSnapshotAndReportsAddModifyDelete' Tests/BessieCoreTests/FollowWatchTests.swift
+grep -Fq 'testGitHEADPreviewIncludesTrackedModifiedDeletedAndUntrackedFiles' Tests/BessieCoreTests/GitDiffServiceTests.swift
+grep -Fq 'testConfigureRestartsTheStretchWhenTheSamePaneChangesDirectory' Tests/BessieAppModelTests/FollowFilesViewModelTests.swift
 grep -Fq 'case setSplitRatio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'layout.set_split_ratio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'BessieProductShell(' Sources/BessieApp/BessieApp.swift

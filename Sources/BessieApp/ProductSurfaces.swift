@@ -878,6 +878,11 @@ private struct HerdSurface: View {
 }
 
 private struct AgentDetailSurface: View {
+    private enum WorkbenchSection: String, CaseIterable {
+        case details = "Details"
+        case changes = "Changes"
+    }
+
     @ObservedObject var model: ConnectionViewModel
     let projection: HerdrSessionProjection
     let endpoint: HerdrTerminalEndpoint
@@ -888,6 +893,8 @@ private struct AgentDetailSurface: View {
     @State private var prompt = ""
     @State private var editor: ProductEditor?
     @Environment(\.bessieDensity) private var density
+    @State private var workbenchSection: WorkbenchSection = .changes
+    @StateObject private var followFiles = FollowFilesViewModel()
 
     private var pane: PaneProjection? {
         projection.panes.first { $0.id == selectedPaneID } ?? projection.focusedPane ?? projection.panes.first
@@ -895,6 +902,9 @@ private struct AgentDetailSurface: View {
     private var workspace: WorkspaceProjection? { projection.workspaces.first { $0.id == pane?.workspaceID } }
     private var tab: TabProjection? { projection.tabs.first { $0.id == pane?.tabID } }
     private var controller: PaneTerminalController? { pane.flatMap { registry.controllers[$0.id] } }
+    private var followContextSignature: String {
+        "\(model.activeConnection.id)::\(pane?.id ?? "-")::\(pane?.cwd ?? "-")"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -961,19 +971,28 @@ private struct AgentDetailSurface: View {
                 ProductEmptyState(symbol: "terminal", title: "No agent selected", detail: "Choose an agent from The herd.", action: nil)
             }
         }
-        .task(id: pane?.id) {
+        .task(id: followContextSignature) {
             registry.synchronize(visiblePaneIDs: Set(pane.map { [$0.id] } ?? []), endpoint: endpoint)
+            if let pane {
+                followFiles.configure(connection: model.activeConnection, projection: projection, paneID: pane.id)
+            } else {
+                followFiles.stop()
+            }
         }
         .onAppear { selectedPaneID = pane?.id }
+        .onDisappear { followFiles.stop() }
         .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
     }
 
     private func agentWorkbench(_ pane: PaneProjection) -> some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Details")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(BessieDesign.strong)
+                Picker("Workbench", selection: $workbenchSection) {
+                    ForEach(WorkbenchSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 180)
                 Spacer()
             }
             .padding(.horizontal, 14)
@@ -981,17 +1000,22 @@ private struct AgentDetailSurface: View {
             .background(BessieDesign.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    workbenchRow("NAME", pane.label ?? pane.title ?? pane.agent ?? "Untitled pane")
-                    workbenchRow("TYPE", pane.agent.map { "Agent · \($0)" } ?? "Shell")
-                    workbenchRow("STATE", AgentSemanticState(herdrValue: pane.agentStatus).title)
-                    workbenchRow("WORKSPACE", workspace?.label ?? "Unavailable")
-                    workbenchRow("TAB", tab?.label ?? "Unavailable")
-                    Spacer(minLength: 0)
+            switch workbenchSection {
+            case .details:
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        workbenchRow("NAME", pane.label ?? pane.title ?? pane.agent ?? "Untitled pane")
+                        workbenchRow("TYPE", pane.agent.map { "Agent · \($0)" } ?? "Shell")
+                        workbenchRow("STATE", AgentSemanticState(herdrValue: pane.agentStatus).title)
+                        workbenchRow("WORKSPACE", workspace?.label ?? "Unavailable")
+                        workbenchRow("TAB", tab?.label ?? "Unavailable")
+                        Spacer(minLength: 0)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            case .changes:
+                FollowFilesSurface(model: followFiles)
             }
         }
         .background(BessieDesign.panel)
