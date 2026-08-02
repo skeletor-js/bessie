@@ -7,7 +7,7 @@ public struct WorkspaceFileRoot: Equatable, Sendable {
     public let gitTopLevel: URL?
     public let resolution: RootResolution
 
-    public init(
+    init(
         connectionID: String,
         workspaceID: String,
         rootURL: URL,
@@ -24,6 +24,7 @@ public struct WorkspaceFileRoot: Equatable, Sendable {
 
 public enum RootResolution: String, Equatable, Sendable {
     case herdrCwd
+    case selectedPaneCwd
     case agentWorkingDir
     case unavailableRemote
     case missing
@@ -81,6 +82,10 @@ public enum WorkspaceFS {
         guard let projection else { return .failure(.missingRoot) }
 
         let selectedPane = paneID.flatMap { id in projection.panes.first { $0.id == id } }
+        if paneID != nil, selectedPane == nil { return .failure(.missingRoot) }
+        if let workspaceID, let selectedPane, selectedPane.workspaceID != workspaceID {
+            return .failure(.missingRoot)
+        }
         guard let resolvedWorkspaceID = workspaceID
             ?? selectedPane?.workspaceID
             ?? projection.focusedWorkspace?.id
@@ -114,22 +119,47 @@ public enum WorkspaceFS {
             workspaceID: resolvedWorkspaceID,
             rootURL: rootURL,
             gitTopLevel: Self.findGitTopLevel(from: rootURL),
-            resolution: .herdrCwd
+            resolution: consensusCWD == nil ? .selectedPaneCwd : .herdrCwd
         ))
+    }
+
+    public static func resolveContainedPath(
+        root: WorkspaceFileRoot,
+        relativePath: String
+    ) -> Result<URL, WorkspacePathError> {
+        guard !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
+
+        let pinnedRoot = root.rootURL.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: pinnedRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return .failure(.notFound) }
+        guard pinnedRoot.resolvingSymlinksInPath().pathComponents == pinnedRoot.pathComponents else {
+            return .failure(.pathEscape)
+        }
+
+        switch Self.resolveComponents(
+            from: pinnedRoot,
+            components: Self.pathComponents(relativePath)
+        ) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let resolvedCandidate):
+            guard Self.contains(resolvedCandidate, in: pinnedRoot) else { return .failure(.pathEscape) }
+            return .success(resolvedCandidate)
+        }
     }
 
     public static func resolveFile(
         root: WorkspaceFileRoot,
         relativePath: String
     ) -> Result<URL, WorkspacePathError> {
-        guard !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
-
-        let canonicalRoot = root.rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let candidate = canonicalRoot
-            .appendingPathComponent(relativePath)
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-        guard Self.contains(candidate, in: canonicalRoot) else { return .failure(.pathEscape) }
+        let candidate: URL
+        switch resolveContainedPath(root: root, relativePath: relativePath) {
+        case .success(let url):
+            candidate = url
+        case .failure(let error):
+            return .failure(error)
+        }
         guard FileManager.default.fileExists(atPath: candidate.path) else { return .failure(.notFound) }
         guard FileManager.default.isReadableFile(atPath: candidate.path) else { return .failure(.unreadable) }
         return .success(candidate)
@@ -150,7 +180,7 @@ public enum WorkspaceFS {
     ) -> Result<FileContentMeta, WorkspacePathError> {
         do {
             let url = try resolveFile(root: root, relativePath: relativePath).get()
-            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
             if values.isDirectory == true {
                 return .success(FileContentMeta(
                     relativePath: relativePath,
@@ -159,6 +189,7 @@ public enum WorkspaceFS {
                     kind: .directory
                 ))
             }
+            guard values.isRegularFile == true else { return .failure(.unreadable) }
 
             guard let byteSize = values.fileSize else { return .failure(.notFound) }
             if let maximumByteSize, byteSize > maximumByteSize { return .failure(.tooLarge) }
@@ -178,7 +209,65 @@ public enum WorkspaceFS {
     }
 
     private static func isAbsolutePath(_ path: String) -> Bool {
-        NSString(string: path).isAbsolutePath
+        path.hasPrefix("/")
+    }
+
+    private static func pathComponents(_ path: String) -> [String] {
+        path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    private static func resolveComponents(
+        from baseURL: URL,
+        components: [String]
+    ) -> Result<URL, WorkspacePathError> {
+        var current = baseURL
+        var remaining = components
+        var symlinkExpansions = 0
+
+        while !remaining.isEmpty {
+            let component = remaining.removeFirst()
+            if component.isEmpty || component == "." { continue }
+            if component == ".." {
+                current.deleteLastPathComponent()
+                continue
+            }
+
+            let next = current.appendingPathComponent(component)
+            let attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try FileManager.default.attributesOfItem(atPath: next.path)
+            } catch {
+                guard Self.isMissingFileError(error) else { return .failure(.unreadable) }
+                current = next
+                continue
+            }
+
+            guard attributes[.type] as? FileAttributeType == .typeSymbolicLink else {
+                current = next
+                continue
+            }
+            guard symlinkExpansions < 40,
+                  let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: next.path)
+            else { return .failure(.unreadable) }
+            symlinkExpansions += 1
+            if Self.isAbsolutePath(destination) {
+                current = URL(fileURLWithPath: "/", isDirectory: true)
+            }
+            remaining = Self.pathComponents(destination) + remaining
+        }
+
+        return .success(current.standardizedFileURL)
+    }
+
+    private static func isMissingFileError(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain,
+           error.code == CocoaError.Code.fileReadNoSuchFile.rawValue
+            || error.code == CocoaError.Code.fileNoSuchFile.rawValue {
+            return true
+        }
+        let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        return underlying?.domain == NSPOSIXErrorDomain && underlying?.code == 2
     }
 
     private static func contains(_ candidate: URL, in root: URL) -> Bool {
@@ -202,10 +291,8 @@ public enum WorkspaceFS {
 
     private static func previewKind(url: URL, contentType: String?) throws -> FilePreviewKind {
         switch contentType {
-        case "text/markdown": return .markdown
         case let type? where type.hasPrefix("image/"): return .image
         case let type? where type.hasPrefix("video/"): return .video
-        case let type? where type.hasPrefix("text/"): return .text
         default: break
         }
 
@@ -213,7 +300,7 @@ public enum WorkspaceFS {
         defer { try? handle.close() }
         let sample = try handle.read(upToCount: 8_192) ?? Data()
         guard !sample.contains(0), String(data: sample, encoding: .utf8) != nil else { return .binary }
-        return .text
+        return contentType == "text/markdown" ? .markdown : .text
     }
 
     private static func contentType(forExtension pathExtension: String) -> String? {

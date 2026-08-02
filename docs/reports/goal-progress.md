@@ -888,3 +888,24 @@ Blocker closed after Amp paused only for missing launch-review visual evidence:
 - Ordinary sessions untouched; staging empty; no commit/push/publish/notarize.
 
 Native Projects Milestones 0–6 are accepted for V1 product scope. Public notarization remains deferred.
+
+## 2026-08-02: V1 Slice F0 Workspace FS substrate complete
+
+Status: complete for the Core-only F0 acceptance contract. No watcher, Git diff service, file-operation UI, or SwiftUI surface was added.
+
+- Added `WorkspaceFS.swift` with local-only root resolution from authoritative Herdr pane CWDs, explicit workspace-consensus versus selected-pane provenance, fail-closed stale/contradictory pane selection, readable-directory validation, and optional Git top-level discovery without changing the browse root.
+- Added component-wise POSIX symlink resolution for existing files and contained missing destinations. Traversal, sibling-prefix paths, direct/nested symlink escapes, stale roots replaced by outside symlinks, and remote connections fail closed. `WorkspaceFileRoot` cannot be constructed by external consumers outside the resolver.
+- Added shared heavy-directory ignores for `.git`, `node_modules`, `.build`, and `DerivedData`, plus bounded metadata classification for directory, markdown, text, image, video, and binary content. Text-like extensions still pass the UTF-8/NUL heuristic; non-regular filesystem entries are not sampled.
+- Added `WorkspaceFSTests.swift` with 14 focused tests covering remote unsupported, consensus and selected-pane roots, invalid selections, Git discovery, traversal and sibling-prefix rejection, contained and escaping symlinks, nested missing-target escapes, root replacement, POSIX tilde targets, ignore rules, metadata, binary markdown, and size limits.
+- Failure-first Mac evidence: before production code existed, the focused test target failed compilation because `WorkspaceFS` and `WorkspaceFileRoot` were absent. The first implementation then passed 9 focused tests. Independent review found stale-pane fallback, missing-destination containment, provenance loss, externally constructible roots, extension-only text classification, non-regular file handling, nested symlink targets, and stale-root rebinding; each in-scope finding was repaired and covered by focused tests.
+
+Verification evidence:
+
+- Final `./scripts/check.sh`: exit 0; runtime lock/compatibility/notice/package, UI-copy, shell, package, and F0 static anchors passed.
+- Final focused isolated Mac command `xcrun swift test --filter WorkspaceFSTests`: **14 tests, 0 failures**.
+- Full isolated Mac `xcrun swift test`: **182 tests, 0 failures, 4 expected live-Herdr skips**. The final error-classification hardening was then recompiled and covered by the 14-test focused rerun.
+- Focused `git diff --check` for the F0 source, tests, progress report, and check script: exit 0. Repository-wide `git diff --check` remains blocked by pre-existing trailing whitespace in unrelated dirty roadmap files; those files were not modified by F0.
+- `./scripts/mac-verify.sh`, package installation, and relaunch were not run because the shared Mac mirror currently contains concurrent E/F2 slice files not present in this worktree, including an incomplete `AttentionList`/`HerdList` dependency set. Running the shared verifier would overwrite or mix unrelated work. F0 compilation and tests instead ran from verifier-owned temporary Mac directories that were removed afterward.
+- URL-returning containment cannot make a later consumer's separate read or mutation race-free against a malicious concurrent directory swap. F1/F2 operation wrappers must revalidate immediately before use; descriptor-relative `openat`-style operations are a later hardening option if that stronger threat model is adopted.
+
+No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, publication, deployment, or installed app was changed by F0.

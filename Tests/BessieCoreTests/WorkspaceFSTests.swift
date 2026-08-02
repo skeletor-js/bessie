@@ -41,7 +41,31 @@ final class WorkspaceFSTests: XCTestCase {
             ).get()
 
             XCTAssertEqual(root.rootURL, second.resolvingSymlinksInPath())
-            XCTAssertEqual(root.resolution, .herdrCwd)
+            XCTAssertEqual(root.resolution, .selectedPaneCwd)
+        }
+    }
+
+    func testResolveRootRejectsStaleOrContradictoryPaneSelection() throws {
+        try withTemporaryDirectory { directory in
+            let projection = try Self.projection(cwds: [directory.path])
+
+            XCTAssertEqual(
+                WorkspaceFS.resolveRoot(
+                    connection: .localBessie,
+                    projection: projection,
+                    paneID: "missing-pane"
+                ),
+                .failure(.missingRoot)
+            )
+            XCTAssertEqual(
+                WorkspaceFS.resolveRoot(
+                    connection: .localBessie,
+                    projection: projection,
+                    paneID: "pane-1",
+                    workspaceID: "different-workspace"
+                ),
+                .failure(.missingRoot)
+            )
         }
     }
 
@@ -146,6 +170,92 @@ final class WorkspaceFSTests: XCTestCase {
         }
     }
 
+    func testResolveContainedPathAllowsMissingLeafButRejectsMissingLeafBelowEscapingSymlink() throws {
+        try withTemporaryDirectory { directory in
+            let rootURL = directory.appendingPathComponent("root", isDirectory: true)
+            let outside = directory.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: rootURL.appendingPathComponent("nested"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(
+                at: rootURL.appendingPathComponent("escape"),
+                withDestinationURL: outside
+            )
+            let root = Self.root(rootURL)
+
+            XCTAssertEqual(
+                try WorkspaceFS.resolveContainedPath(root: root, relativePath: "nested/new-file.md").get(),
+                rootURL.appendingPathComponent("nested/new-file.md")
+            )
+            XCTAssertEqual(
+                WorkspaceFS.resolveContainedPath(root: root, relativePath: "escape/new-file.md"),
+                .failure(.pathEscape)
+            )
+        }
+    }
+
+    func testResolveContainedPathRejectsNestedSymlinkTargetWithMissingSuffix() throws {
+        try withTemporaryDirectory { directory in
+            let rootURL = directory.appendingPathComponent("root", isDirectory: true)
+            let outside = directory.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(
+                at: rootURL.appendingPathComponent("bridge"),
+                withDestinationURL: outside
+            )
+            try FileManager.default.createSymbolicLink(
+                atPath: rootURL.appendingPathComponent("redirect").path,
+                withDestinationPath: "bridge/missing"
+            )
+
+            XCTAssertEqual(
+                WorkspaceFS.resolveContainedPath(
+                    root: Self.root(rootURL),
+                    relativePath: "redirect/new-file.md"
+                ),
+                .failure(.pathEscape)
+            )
+        }
+    }
+
+    func testResolveContainedPathTreatsTildeSymlinkTargetAsRelativePOSIXPath() throws {
+        try withTemporaryDirectory { directory in
+            let rootURL = directory.appendingPathComponent("root", isDirectory: true)
+            let tildeDirectory = rootURL.appendingPathComponent("~", isDirectory: true)
+            try FileManager.default.createDirectory(at: tildeDirectory, withIntermediateDirectories: true)
+            let file = tildeDirectory.appendingPathComponent("inside.txt")
+            try Data("inside".utf8).write(to: file)
+            try FileManager.default.createSymbolicLink(
+                atPath: rootURL.appendingPathComponent("link.txt").path,
+                withDestinationPath: "~/inside.txt"
+            )
+
+            XCTAssertEqual(
+                try WorkspaceFS.resolveFile(root: Self.root(rootURL), relativePath: "link.txt").get(),
+                file
+            )
+        }
+    }
+
+    func testResolveContainedPathRejectsRootReplacedByOutsideSymlink() throws {
+        try withTemporaryDirectory { directory in
+            let rootURL = directory.appendingPathComponent("root", isDirectory: true)
+            let movedRoot = directory.appendingPathComponent("moved-root", isDirectory: true)
+            let outside = directory.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try Data("outside".utf8).write(to: outside.appendingPathComponent("file.txt"))
+            let root = Self.root(rootURL)
+            try FileManager.default.moveItem(at: rootURL, to: movedRoot)
+            try FileManager.default.createSymbolicLink(at: rootURL, withDestinationURL: outside)
+
+            XCTAssertEqual(
+                WorkspaceFS.resolveContainedPath(root: root, relativePath: "file.txt"),
+                .failure(.pathEscape)
+            )
+        }
+    }
+
     func testSharedIgnoreRulesMatchDirectoryComponentsOnly() {
         for path in [
             ".git/config",
@@ -174,11 +284,13 @@ final class WorkspaceFSTests: XCTestCase {
             let video = directory.appendingPathComponent("clip.mp4")
             let text = directory.appendingPathComponent("notes.unknown")
             let binary = directory.appendingPathComponent("payload.unknown")
+            let binaryMarkdown = directory.appendingPathComponent("binary.md")
             try Data("# Bessie".utf8).write(to: markdown)
             try Data([0x89, 0x50, 0x4e, 0x47]).write(to: image)
             try Data([0, 0, 0, 0x18]).write(to: video)
             try Data("plain UTF-8 text".utf8).write(to: text)
             try Data([0x41, 0, 0x42]).write(to: binary)
+            try Data([0x41, 0, 0x42]).write(to: binaryMarkdown)
             let root = Self.root(directory)
 
             let markdownMeta = try WorkspaceFS.fileMeta(root: root, relativePath: "README.md").get()
@@ -189,6 +301,7 @@ final class WorkspaceFSTests: XCTestCase {
             XCTAssertEqual(try WorkspaceFS.fileMeta(root: root, relativePath: "clip.mp4").get().kind, .video)
             XCTAssertEqual(try WorkspaceFS.fileMeta(root: root, relativePath: "notes.unknown").get().kind, .text)
             XCTAssertEqual(try WorkspaceFS.fileMeta(root: root, relativePath: "payload.unknown").get().kind, .binary)
+            XCTAssertEqual(try WorkspaceFS.fileMeta(root: root, relativePath: "binary.md").get().kind, .binary)
             XCTAssertEqual(try WorkspaceFS.fileMeta(root: root, relativePath: "").get().kind, .directory)
         }
     }
