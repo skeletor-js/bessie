@@ -154,17 +154,14 @@ public actor WorkspaceFileWatcher {
     private nonisolated static func snapshot(root: WorkspaceFileRoot) -> [String: Signature] {
         if let remote = root.remote {
             do {
-                let files = try SSHRemoteFileClient(access: remote).snapshotSignatures(
+                let files = try SSHRemoteFileClient(access: remote).snapshotFiles(
                     root: root.absoluteRootPath,
-                    ignoreNames: Array(WorkspaceFS.ignoredDirectoryNames)
+                    ignore: WorkspaceFS.ignoredDirectoryNames
                 )
                 var result: [String: Signature] = [:]
                 for (path, meta) in files {
                     guard !WorkspaceFS.isIgnoredRelativePath(path) else { continue }
-                    result[path] = Signature(
-                        modifiedAt: meta.mtime.map { Date(timeIntervalSince1970: $0) },
-                        size: meta.size
-                    )
+                    result[path] = Signature(modifiedAt: meta.mtime, size: meta.size)
                 }
                 return result
             } catch {
