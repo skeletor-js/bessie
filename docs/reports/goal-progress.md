@@ -974,3 +974,9 @@ No UI, dependency, watcher, Herdr runtime, ordinary Herdr session, push, PR, pub
 - `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package anchors, UI copy, and F1 structural anchors passed. Swift is unavailable on this VPS, and the goal contract explicitly prohibited fake or remote Mac verification, so native compilation, Swift test execution, packaging, installation, app relaunch, and screenshot inspection were not run or claimed.
 - Simplification review consolidated relative-path containment, batched touch updates, reduced redundant preview reloads, and rejected oversized files before reading them. Focused code review found one P1 stale-root lifecycle defect; the configuration identity now includes workspace and cwd, with regression coverage. A final independent Swift/concurrency review found no high-confidence blockers.
 - Existing planning and roadmap dirt remained untouched. No push, PR, publication, deployment, Mac sync, app installation, or Herdr/file mutation occurred.
+
+## 2026-08-02: Agent Intent Bus U1 registry complete
+
+- Added the versioned `BessieCore` intent registry, typed owner/risk metadata, JSON Schema parameter descriptions, and all nine pilot definitions. Herdr-scoped routes require `connection_id`; Bessie Project reads are explicitly `offline_ok`; `workspace.close` is marked destructive.
+- Failure-first Mac run `xcrun swift test --filter AgentIntentRegistryTests` failed because the registry and catalog types did not exist. After implementation, the focused suite passed **4 tests with 0 failures**, covering Codable round-trip, exact pilot membership, unique MCP-safe names, required metadata, and exported JSON Schema field names.
+- `./scripts/check.sh`: exit 0. Swift is unavailable on the VPS; focused Swift compilation and tests ran on `jordan-macbook`. No app lifecycle, socket, CLI, MCP, skill, Herdr session, push, PR, publication, deployment, or notarization work occurred in U1.
