@@ -1,0 +1,6 @@
+DONE_SLICE_F2
+
+Implementation commits: 28572f6, 217c5cb
+VPS check: passed
+Clean Mac Swift suite: 183 tests, 0 failures, 4 live checks skipped without an isolated socket
+Full shared-mirror mac-verify: blocked before F2 packaging by unrelated Slice J compile drift

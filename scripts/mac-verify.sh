@@ -819,6 +819,28 @@ projects_height=$(sips -g pixelHeight "$projects_snapshot_path" | awk '/pixelHei
 xcrun swift scripts/verify-design-snapshot.swift "$projects_snapshot_path"
 grep -Fq "Window snapshot path=$projects_snapshot_path" "$state_log"
 
+# Capture the local workspace file browser. The focused verification workspace
+# uses the repository root as its cwd, so this exercises a real WorkspaceFS root.
+stop_app
+files_snapshot_path="$mac_dir/dist/Bessie-files.png"
+rm -f "$files_snapshot_path"
+snapshot_path=$files_snapshot_path
+design_preview=files
+launch_app
+for _ in {1..80}; do
+    [[ -s "$files_snapshot_path" ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ -s "$files_snapshot_path" ]]
+file "$files_snapshot_path" | grep -Fq 'PNG image data'
+files_width=$(sips -g pixelWidth "$files_snapshot_path" | awk '/pixelWidth/ {print $2}')
+files_height=$(sips -g pixelHeight "$files_snapshot_path" | awk '/pixelHeight/ {print $2}')
+[[ "$files_width" -ge 760 && "$files_height" -ge 520 ]]
+[[ $(stat -f %z "$files_snapshot_path") -gt 20000 ]]
+xcrun swift scripts/verify-design-snapshot.swift "$files_snapshot_path"
+grep -Fq "Window snapshot path=$files_snapshot_path" "$state_log"
+
 # Capture the reviewed draft produced from the authoritative current workspace.
 stop_app
 project_capture_snapshot_path="$mac_dir/dist/Bessie-project-capture.png"
