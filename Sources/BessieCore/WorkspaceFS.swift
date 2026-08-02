@@ -7,7 +7,7 @@ public struct WorkspaceFileRoot: Equatable, Sendable {
     public let gitTopLevel: URL?
     public let resolution: RootResolution
 
-    init(
+    public init(
         connectionID: String,
         workspaceID: String,
         rootURL: URL,
