@@ -26,15 +26,16 @@ final class FollowFilesViewModel: ObservableObject {
     func configure(
         connection: BessieConnectionDefinition,
         projection: HerdrSessionProjection,
-        paneID: String
+        paneID: String,
+        remoteFileAccess: SSHRemoteFileAccess? = nil
     ) {
         let pane = projection.panes.first { $0.id == paneID }
-        let nextContextID = "\(connection.id)::\(paneID)::\(pane?.workspaceID ?? "-")::\(pane?.cwd ?? "-")"
+        let nextContextID = "\(connection.id)::\(paneID)::\(pane?.workspaceID ?? "-")::\(pane?.cwd ?? "-")::\(remoteFileAccess?.controlPath ?? "local")"
         guard nextContextID != contextID else { return }
         stop()
         contextID = nextContextID
 
-        guard connection.kind == .local else {
+        if connection.kind == .ssh, remoteFileAccess == nil {
             availability = .remoteUnsupported
             return
         }
@@ -43,7 +44,8 @@ final class FollowFilesViewModel: ObservableObject {
             connection: connection,
             projection: projection,
             paneID: paneID,
-            workspaceID: pane?.workspaceID
+            workspaceID: pane?.workspaceID,
+            remoteAccess: remoteFileAccess
         ) {
         case .failure(let error):
             availability = .unavailable(Self.message(for: error))
@@ -140,7 +142,7 @@ final class FollowFilesViewModel: ObservableObject {
         case .missingRoot: "No local working directory is available for this pane."
         case .notDirectory: "The pane working directory is no longer available."
         case .unreadable: "Bessie cannot read this working directory."
-        case .remoteUnsupported: "Follow files is local-only in V1."
+        case .remoteUnsupported: "Reconnect the SSH tunnel to follow remote files."
         case .pathEscape, .tooLarge, .notFound: "The workspace files are unavailable."
         }
     }

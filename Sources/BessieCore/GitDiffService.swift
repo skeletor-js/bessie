@@ -38,6 +38,10 @@ public struct GitDiffService: Sendable {
     }
 
     public func preview(root: WorkspaceFileRoot, relativePath: String) -> DiffPreview {
+        if let remote = root.remote {
+            return previewRemote(root: root, remote: remote, relativePath: relativePath)
+        }
+
         let target: URL
         switch WorkspaceFS.resolvePath(root: root, relativePath: relativePath) {
         case let .success(url): target = url
@@ -126,4 +130,72 @@ public struct GitDiffService: Sendable {
         let data = (try? Data(contentsOf: outputURL)) ?? Data()
         return (!timedOut && process.terminationStatus == 0, timedOut, data)
     }
+    private func previewRemote(root: WorkspaceFileRoot, remote: SSHRemoteFileAccess, relativePath: String) -> DiffPreview {
+        let client = SSHRemoteFileClient(access: remote)
+        guard case .success(let abs) = WorkspaceFS.absolutePath(root: root, relativePath: relativePath) else {
+            return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Path is outside the workspace")
+        }
+        do {
+            let st = try client.stat(abs)
+            guard st.exists else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File is unavailable")
+            }
+            guard let gitTop = root.gitTopLevel?.path else {
+                return fullRemotePreview(client: client, absolutePath: abs, relativePath: relativePath, banner: "No git baseline")
+            }
+            let gitPath: String
+            if abs == gitTop {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Git baseline is unavailable")
+            }
+            if abs.hasPrefix(gitTop + "/") {
+                gitPath = String(abs.dropFirst(gitTop.count + 1))
+            } else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Git baseline is unavailable")
+            }
+            let status = try client.runGit(arguments: ["-C", gitTop, "status", "--porcelain=v1", "--untracked-files=all", "--", gitPath], maximumBytes: maximumTextBytes)
+            guard status.status == 0, let statusText = String(data: status.data, encoding: .utf8) else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Git baseline is unavailable")
+            }
+            guard !statusText.isEmpty else {
+                return DiffPreview(relativePath: relativePath, kind: .text, text: "", banner: "No changes from git HEAD")
+            }
+            if statusText.hasPrefix("??") {
+                return fullRemotePreview(client: client, absolutePath: abs, relativePath: relativePath, banner: "Untracked file; shown as added")
+            }
+            let diff = try client.runGit(arguments: ["-C", gitTop, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", gitPath], maximumBytes: maximumTextBytes)
+            guard diff.status == 0 else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Git diff is unavailable")
+            }
+            guard diff.data.count <= maximumTextBytes else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Diff exceeds the text preview limit")
+            }
+            guard let text = String(data: diff.data, encoding: .utf8) else {
+                return DiffPreview(relativePath: relativePath, kind: .binary, banner: "Binary file")
+            }
+            if text.contains("Binary files ") || text.contains("GIT binary patch") {
+                return DiffPreview(relativePath: relativePath, kind: .binary, banner: "Binary file")
+            }
+            return DiffPreview(relativePath: relativePath, kind: .text, text: text, banner: "Compared with git HEAD (remote)")
+        } catch {
+            return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Remote git preview failed")
+        }
+    }
+
+    private func fullRemotePreview(client: SSHRemoteFileClient, absolutePath: String, relativePath: String, banner: String) -> DiffPreview {
+        do {
+            let st = try client.stat(absolutePath)
+            guard st.byteSize <= maximumTextBytes else {
+                return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File exceeds the text preview limit")
+            }
+            let data = try client.readFile(absolutePath, maximumByteSize: maximumTextBytes)
+            guard !data.contains(0), let content = String(data: data, encoding: .utf8) else {
+                return DiffPreview(relativePath: relativePath, kind: .binary, banner: "Binary file")
+            }
+            let added = content.split(separator: "\n", omittingEmptySubsequences: false).map { "+\($0)" }.joined(separator: "\n")
+            return DiffPreview(relativePath: relativePath, kind: .text, text: "--- /dev/null\n+++ \(relativePath)\n\(added)", banner: banner)
+        } catch {
+            return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File is unavailable")
+        }
+    }
+
 }

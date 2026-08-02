@@ -12,8 +12,8 @@ struct FollowFilesSurface: View {
             case .remoteUnsupported:
                 message(
                     symbol: "externaldrive.badge.xmark",
-                    title: "Follow files is local-only",
-                    detail: "This agent is on a remote connection. Bessie does not pretend remote files are local."
+                    title: "Remote files need an active SSH tunnel",
+                    detail: "Reconnect this SSH Herdr session, then open Follow files again."
                 )
             case .unavailable(let detail):
                 message(symbol: "folder.badge.questionmark", title: "Files unavailable", detail: detail)

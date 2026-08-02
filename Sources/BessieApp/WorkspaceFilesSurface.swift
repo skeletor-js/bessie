@@ -69,11 +69,11 @@ final class WorkspaceFilesViewModel: ObservableObject {
                             document: try WorkspaceFileOps.loadText(root: root, relativePath: item.relativePath)
                         )
                     case .image:
-                        return .image(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                        return .image(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
                     case .video:
-                        return .video(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                        return .video(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
                     default:
-                        return .unsupported(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                        return .unsupported(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
                     }
                 }.value
                 try Task.checkCancellation()
@@ -146,16 +146,31 @@ struct WorkspaceFilesSurface: View {
     let projection: HerdrSessionProjection
     let selectedWorkspaceID: String?
     let selectedPaneID: String?
+    var remoteFileAccess: SSHRemoteFileAccess? = nil
 
     var body: some View {
-        switch WorkspaceFS.resolveRoot(connection: connection, projection: projection, paneID: selectedPaneID, workspaceID: selectedWorkspaceID) {
+        switch WorkspaceFS.resolveRoot(
+            connection: connection,
+            projection: projection,
+            paneID: selectedPaneID,
+            workspaceID: selectedWorkspaceID,
+            remoteAccess: remoteFileAccess
+        ) {
         case .failure(.remoteUnsupported):
-            ContentUnavailableView("Files aren’t available for remote connections", systemImage: "network.slash", description: Text("V1 file browsing works only with a local Herdr workspace."))
+            ContentUnavailableView(
+                "Remote files need an active SSH tunnel",
+                systemImage: "network.slash",
+                description: Text("Reconnect this SSH Herdr session, then open Files again.")
+            )
         case .failure:
-            ContentUnavailableView("No local workspace folder", systemImage: "folder.badge.questionmark", description: Text("Select a pane with an available working directory."))
+            ContentUnavailableView(
+                "No workspace folder",
+                systemImage: "folder.badge.questionmark",
+                description: Text("Select a pane with an available working directory.")
+            )
         case .success(let root):
             WorkspaceFilesBrowser(root: root)
-                .id("\(root.connectionID):\(root.workspaceID):\(root.rootURL.path)")
+                .id("\(root.connectionID):\(root.workspaceID):\(root.rootURL.path):\(root.isRemote ? "remote" : "local")")
         }
     }
 }

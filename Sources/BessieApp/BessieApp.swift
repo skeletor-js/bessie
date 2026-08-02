@@ -57,6 +57,7 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var actionInFlight = false
     @Published private(set) var activeConnection: BessieConnectionDefinition = .localBessie
     @Published private(set) var projectMaterializationConnection: BessieProjectMaterializationConnection?
+    @Published private(set) var remoteFileAccess: SSHRemoteFileAccess?
     private var connectionTask: Task<Void, Never>?
     private var connectionRunner: HerdrConnectionRunner?
     private var remoteBridge: RemoteHerdrBridge?
@@ -100,12 +101,14 @@ final class ConnectionViewModel: ObservableObject {
                     self.remoteBridge = bridge
                     let socketPath = try await Task.detached { try bridge.start() }.value
                     guard !Task.isCancelled, self.connectionToken == token else { bridge.stop(); return }
+                    self.remoteFileAccess = bridge.fileAccess
                     environment["BESSIE_HERDR_SOCKET_PATH"] = socketPath
                     environment["BESSIE_HERDR_AUTOSTART"] = "0"
                 } catch {
                     guard self.connectionToken == token else { return }
                     self.remoteBridge?.stop()
                     self.remoteBridge = nil
+                    self.remoteFileAccess = nil
                     self.presentation = ConnectPresentation(
                         title: "Couldn't connect to \(connection.name)",
                         detail: error.localizedDescription,
@@ -215,6 +218,7 @@ final class ConnectionViewModel: ObservableObject {
         connectionRunner = nil
         remoteBridge?.stop()
         remoteBridge = nil
+        remoteFileAccess = nil
         projection = nil
         terminalEndpoint = nil
         actionClient = nil

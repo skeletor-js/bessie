@@ -65,6 +65,17 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
     private var tunnelProcess: Process?
     private var localDirectory: URL?
 
+    /// Active multiplexed SSH file access while the tunnel is up.
+    public var fileAccess: SSHRemoteFileAccess? {
+        lock.withLock {
+            guard let directory = localDirectory,
+                  let host = connection.sshHost else { return nil }
+            let control = directory.appendingPathComponent("ssh-control.sock").path
+            guard fileManager.fileExists(atPath: control) else { return nil }
+            return SSHRemoteFileAccess(host: host, controlPath: control, sshExecutablePath: sshPath)
+        }
+    }
+
     public init(
         connection: BessieConnectionDefinition,
         sshPath: String = "/usr/bin/ssh",

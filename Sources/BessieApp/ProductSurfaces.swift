@@ -298,7 +298,8 @@ struct BessieProductShell: View {
                 connection: model.activeConnection,
                 projection: projection,
                 selectedWorkspaceID: selectedWorkspaceID,
-                selectedPaneID: selectedPaneID
+                selectedPaneID: selectedPaneID,
+                remoteFileAccess: model.remoteFileAccess
             )
         case .attention:
             AttentionSurface(items: attentionItems, connectionIssues: fleet.connectionIssues, open: openRoutedPane)
@@ -953,7 +954,7 @@ private struct AgentDetailSurface: View {
                 }
             }
 
-            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner() }
+            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner(hasFileAccess: model.remoteFileAccess != nil) }
 
             if let pane {
                 HStack(spacing: density.cardGap) {
@@ -1009,7 +1010,12 @@ private struct AgentDetailSurface: View {
         .task(id: followContextSignature) {
             registry.synchronize(visiblePaneIDs: Set(pane.map { [$0.id] } ?? []), endpoint: endpoint)
             if let pane {
-                followFiles.configure(connection: model.activeConnection, projection: projection, paneID: pane.id)
+                followFiles.configure(
+                    connection: model.activeConnection,
+                    projection: projection,
+                    paneID: pane.id,
+                    remoteFileAccess: model.remoteFileAccess
+                )
             } else {
                 followFiles.stop()
             }
@@ -1282,7 +1288,7 @@ private struct WorkspaceSurface: View {
                 .accessibilityLabel("Tab actions")
             }
 
-            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner() }
+            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner(hasFileAccess: model.remoteFileAccess != nil) }
 
             HStack(spacing: 2) {
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, item in
@@ -1419,11 +1425,14 @@ private struct WorkspaceSurface: View {
 }
 
 private struct RemoteWorkspaceFilesBanner: View {
+    let hasFileAccess: Bool
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "info.circle")
-            Text("Remote file browsing and previews are unavailable in V1. Remote terminals remain available.")
-                .lineLimit(1)
+            Image(systemName: hasFileAccess ? "network" : "exclamationmark.triangle")
+            Text(hasFileAccess
+                 ? "Remote workspace files over SSH — browse, preview, and edit on the remote host."
+                 : "SSH tunnel is not ready for remote files yet. Terminals may still work.")
+                .lineLimit(2)
             Spacer(minLength: 0)
         }
         .font(.system(size: 10.5))

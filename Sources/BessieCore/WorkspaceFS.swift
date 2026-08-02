@@ -6,19 +6,26 @@ public struct WorkspaceFileRoot: Equatable, Sendable {
     public let rootURL: URL
     public let gitTopLevel: URL?
     public let resolution: RootResolution
+    /// When set, `rootURL` is a remote POSIX path carrier; I/O goes through SSH.
+    public let remote: SSHRemoteFileAccess?
+
+    public var isRemote: Bool { remote != nil }
+    public var absoluteRootPath: String { rootURL.path }
 
     public init(
         connectionID: String,
         workspaceID: String,
         rootURL: URL,
         gitTopLevel: URL?,
-        resolution: RootResolution
+        resolution: RootResolution,
+        remote: SSHRemoteFileAccess? = nil
     ) {
         self.connectionID = connectionID
         self.workspaceID = workspaceID
         self.rootURL = rootURL
         self.gitTopLevel = gitTopLevel
         self.resolution = resolution
+        self.remote = remote
     }
 }
 
@@ -76,9 +83,10 @@ public enum WorkspaceFS {
         connection: BessieConnectionDefinition,
         projection: HerdrSessionProjection?,
         paneID: String? = nil,
-        workspaceID: String? = nil
+        workspaceID: String? = nil,
+        remoteAccess: SSHRemoteFileAccess? = nil
     ) -> Result<WorkspaceFileRoot, WorkspacePathError> {
-        guard connection.kind == .local else { return .failure(.remoteUnsupported) }
+        if connection.kind == .ssh, remoteAccess == nil { return .failure(.remoteUnsupported) }
         guard let projection else { return .failure(.missingRoot) }
 
         let selectedPane = paneID.flatMap { id in projection.panes.first { $0.id == id } }
@@ -106,6 +114,31 @@ public enum WorkspaceFS {
         }
         guard let candidate = consensusCWD ?? selectedCWD else { return .failure(.missingRoot) }
 
+        let resolution: RootResolution = consensusCWD == nil ? .selectedPaneCwd : .herdrCwd
+
+        if let remoteAccess {
+            let client = SSHRemoteFileClient(access: remoteAccess)
+            do {
+                let st = try client.stat(candidate)
+                guard st.exists else { return .failure(.notDirectory) }
+                guard st.isDirectory else { return .failure(.notDirectory) }
+                let git = try client.findGitTopLevel(from: candidate)
+                let rootURL = URL(fileURLWithPath: candidate, isDirectory: true)
+                return .success(WorkspaceFileRoot(
+                    connectionID: connection.id,
+                    workspaceID: resolvedWorkspaceID,
+                    rootURL: rootURL,
+                    gitTopLevel: git.map { URL(fileURLWithPath: $0, isDirectory: true) },
+                    resolution: resolution,
+                    remote: remoteAccess
+                ))
+            } catch let error as WorkspacePathError {
+                return .failure(error)
+            } catch {
+                return .failure(.unreadable)
+            }
+        }
+
         let rootURL = URL(fileURLWithPath: candidate, isDirectory: true)
             .standardizedFileURL
             .resolvingSymlinksInPath()
@@ -119,7 +152,8 @@ public enum WorkspaceFS {
             workspaceID: resolvedWorkspaceID,
             rootURL: rootURL,
             gitTopLevel: Self.findGitTopLevel(from: rootURL),
-            resolution: consensusCWD == nil ? .selectedPaneCwd : .herdrCwd
+            resolution: resolution,
+            remote: nil
         ))
     }
 
@@ -128,6 +162,12 @@ public enum WorkspaceFS {
         relativePath: String
     ) -> Result<URL, WorkspacePathError> {
         guard !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
+        if root.remote != nil {
+            switch absolutePath(root: root, relativePath: relativePath) {
+            case .failure(let error): return .failure(error)
+            case .success(let abs): return .success(URL(fileURLWithPath: abs))
+            }
+        }
 
         let pinnedRoot = root.rootURL.standardizedFileURL
         var isDirectory: ObjCBool = false
@@ -153,6 +193,21 @@ public enum WorkspaceFS {
         root: WorkspaceFileRoot,
         relativePath: String
     ) -> Result<URL, WorkspacePathError> {
+        if let remote = root.remote {
+            switch absolutePath(root: root, relativePath: relativePath) {
+            case .failure(let error): return .failure(error)
+            case .success(let abs):
+                do {
+                    let st = try SSHRemoteFileClient(access: remote).stat(abs)
+                    guard st.exists else { return .failure(.notFound) }
+                    return .success(URL(fileURLWithPath: abs, isDirectory: st.isDirectory))
+                } catch let error as WorkspacePathError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.unreadable)
+                }
+            }
+        }
         let candidate: URL
         if relativePath.isEmpty {
             candidate = root.rootURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -186,6 +241,35 @@ public enum WorkspaceFS {
             .contains { ignoredDirectoryNames.contains(String($0)) }
     }
 
+
+    public static func absolutePath(root: WorkspaceFileRoot, relativePath: String) -> Result<String, WorkspacePathError> {
+        guard !Self.isAbsolutePath(relativePath) else { return .failure(.pathEscape) }
+        if relativePath.isEmpty { return .success(root.absoluteRootPath) }
+        let joined = (root.absoluteRootPath as NSString).appendingPathComponent(relativePath)
+        let standardized = URL(fileURLWithPath: joined).standardizedFileURL.path
+        let rootPath = URL(fileURLWithPath: root.absoluteRootPath).standardizedFileURL.path
+        let rootParts = rootPath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let candParts = standardized.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard candParts.count >= rootParts.count,
+              candParts.prefix(rootParts.count).elementsEqual(rootParts) else {
+            return .failure(.pathEscape)
+        }
+        return .success(standardized)
+    }
+
+    public static func materializeLocalURL(root: WorkspaceFileRoot, relativePath: String, maximumByteSize: Int = 40 * 1_024 * 1_024) -> Result<URL, WorkspacePathError> {
+        if let remote = root.remote {
+            switch absolutePath(root: root, relativePath: relativePath) {
+            case .failure(let error): return .failure(error)
+            case .success(let abs):
+                do { return .success(try SSHRemoteFileClient(access: remote).downloadToTemporaryFile(abs, maximumByteSize: maximumByteSize)) }
+                catch let error as WorkspacePathError { return .failure(error) }
+                catch { return .failure(.unreadable) }
+            }
+        }
+        return resolveFile(root: root, relativePath: relativePath)
+    }
+
     public static func relativePath(of candidate: URL, under root: URL) -> String? {
         let rootComponents = root.standardizedFileURL.pathComponents
         let candidateComponents = candidate.standardizedFileURL.pathComponents
@@ -200,6 +284,29 @@ public enum WorkspaceFS {
         maximumByteSize: Int? = nil
     ) -> Result<FileContentMeta, WorkspacePathError> {
         do {
+            if let remote = root.remote {
+                let abs = try absolutePath(root: root, relativePath: relativePath).get()
+                let st = try SSHRemoteFileClient(access: remote).stat(abs)
+                guard st.exists else { return .failure(.notFound) }
+                if st.isDirectory {
+                    return .success(FileContentMeta(relativePath: relativePath, byteSize: 0, contentType: nil, kind: .directory))
+                }
+                guard st.isRegularFile else { return .failure(.unreadable) }
+                if let maximumByteSize, st.byteSize > maximumByteSize { return .failure(.tooLarge) }
+                let ext = URL(fileURLWithPath: abs).pathExtension.lowercased()
+                let contentType = Self.contentType(forExtension: ext)
+                let sampleLimit = min(st.byteSize, 8_192)
+                let sample = sampleLimit > 0
+                    ? try SSHRemoteFileClient(access: remote).readFile(abs, maximumByteSize: sampleLimit)
+                    : Data()
+                let kind: FilePreviewKind
+                if let contentType, contentType.hasPrefix("image/") { kind = .image }
+                else if let contentType, contentType.hasPrefix("video/") { kind = .video }
+                else if sample.contains(0) || String(data: sample, encoding: .utf8) == nil { kind = .binary }
+                else { kind = contentType == "text/markdown" ? .markdown : .text }
+                return .success(FileContentMeta(relativePath: relativePath, byteSize: st.byteSize, contentType: contentType, kind: kind))
+            }
+
             let url = try resolveFile(root: root, relativePath: relativePath).get()
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
             if values.isDirectory == true {
