@@ -183,6 +183,19 @@ struct BessieProductShell: View {
             routePendingNotification()
         }
         .onDisappear { shortcuts.stop() }
+        .onChange(of: model.activeConnection.id) { _, _ in
+            selectedPaneID = nil
+            if settings.preferences.startupBehavior == .lastWorkspace,
+               let last = settings.lastWorkspaceID(for: model.activeConnection.id),
+               projection.workspaces.contains(where: { $0.id == last }) {
+                selectedWorkspaceID = last
+                destination = .workspace
+            } else {
+                selectedWorkspaceID = projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
+                destination = .workspaces
+            }
+            routePendingNotification()
+        }
         .onChange(of: projection.workspaces.count) { _, count in
             if count > 0,
                ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_TRIGGER"] == "live-two-pane" {
@@ -929,7 +942,7 @@ private struct AgentDetailSurface: View {
     var body: some View {
         VStack(spacing: 0) {
             BessieTopBar(
-                crumbs: [workspace?.label, tab?.label].compactMap { $0 },
+                crumbs: [ConnectionDisplayLabel(connection: model.activeConnection).short, workspace?.label, tab?.label].compactMap { $0 },
                 title: pane?.agent ?? pane?.label ?? pane?.title ?? "Pane"
             ) {
                 if let pane {
@@ -939,6 +952,8 @@ private struct AgentDetailSurface: View {
                         .buttonStyle(BessiePrimaryButtonStyle())
                 }
             }
+
+            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner() }
 
             if let pane {
                 HStack(spacing: density.cardGap) {
@@ -1220,7 +1235,7 @@ private struct WorkspaceSurface: View {
     var body: some View {
         VStack(spacing: 0) {
             BessieTopBar(
-                crumbs: [workspace?.label].compactMap { $0 },
+                crumbs: [ConnectionDisplayLabel(connection: model.activeConnection).short, workspace?.label].compactMap { $0 },
                 title: tab?.label ?? "Workspace"
             ) {
                 if model.actionInFlight { ProgressView().controlSize(.small) }
@@ -1266,6 +1281,8 @@ private struct WorkspaceSurface: View {
                 .fixedSize()
                 .accessibilityLabel("Tab actions")
             }
+
+            if model.activeConnection.kind == .ssh { RemoteWorkspaceFilesBanner() }
 
             HStack(spacing: 2) {
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, item in
@@ -1398,6 +1415,23 @@ private struct WorkspaceSurface: View {
         else { return false }
         model.perform(action)
         return true
+    }
+}
+
+private struct RemoteWorkspaceFilesBanner: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle")
+            Text("Remote file browsing and previews are unavailable in V1. Remote terminals remain available.")
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(BessieDesign.subtle)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 30)
+        .background(BessieDesign.inset)
+        .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
 }
 

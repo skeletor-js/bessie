@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct RemoteHerdrBridgePlan: Equatable, Sendable {
@@ -36,6 +37,21 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
             "-L", "\(localSocketPath):\(remoteSocketPath)",
             "-L", "\(localClientSocketPath):\(remoteClientSocketPath)",
             "-N", host,
+        ]
+    }
+
+    public static func remoteStatusCommand(for connection: BessieConnectionDefinition) -> String {
+        let session = connection.session.map { " --session \($0)" } ?? ""
+        return "herdr\(session) status --json"
+    }
+
+    public static func remoteStatusArguments(for connection: BessieConnectionDefinition) -> [String] {
+        guard let host = connection.sshHost else { return [] }
+        return [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+            host,
+            remoteStatusCommand(for: connection),
         ]
     }
 }
@@ -126,7 +142,7 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         if let process = state.0, process.isRunning {
             process.terminate()
             for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
-            if process.isRunning { process.interrupt() }
+            if process.isRunning { Self.killAndReap(process) }
         }
         if let directory = state.1 { try? fileManager.removeItem(at: directory) }
     }
@@ -146,32 +162,36 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
-        process.waitUntilExit()
+        for _ in 0..<40 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { Self.killAndReap(process) }
     }
 
     private func remoteStatus() throws -> RemoteStatus {
-        let data = try runRemote(command: remoteHerdrCommand(action: "status --json"), timeout: 12)
+        let data = try runRemote(
+            arguments: RemoteHerdrBridgePlan.remoteStatusArguments(for: connection),
+            timeout: 12
+        )
         do { return try JSONDecoder().decode(RemoteStatusEnvelope.self, from: data).server }
         catch { throw BessieConnectionError.remoteHerdrUnavailable("Invalid status response: \(error.localizedDescription)") }
     }
 
-    private func remoteHerdrCommand(action: String) -> String {
-        let session = connection.session.map { " --session \($0)" } ?? ""
-        return "herdr\(session) \(action)"
-    }
-
-    private func runRemote(command: String, timeout: TimeInterval) throws -> Data {
-        guard let host = connection.sshHost else { throw BessieConnectionError.invalidSSHHost }
+    private func runRemote(arguments: [String], timeout: TimeInterval) throws -> Data {
+        guard !arguments.isEmpty else { throw BessieConnectionError.invalidSSHHost }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sshPath)
-        process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, command]
+        process.arguments = arguments
         let output = Pipe(); let errors = Pipe()
         process.standardOutput = output; process.standardError = errors
         do { try process.run() }
         catch { throw BessieConnectionError.sshFailed(error.localizedDescription) }
         let deadline = Date(timeIntervalSinceNow: timeout)
         while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { Self.killAndReap(process) }
+            throw BessieConnectionError.sshFailed("Timed out waiting for SSH.")
+        }
         let stdout = output.fileHandleForReading.readDataToEndOfFile()
         let stderr = errors.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0 else {
@@ -179,6 +199,12 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
             throw BessieConnectionError.sshFailed(reason?.isEmpty == false ? reason! : "SSH exited \(process.terminationStatus).")
         }
         return stdout
+    }
+
+    private static func killAndReap(_ process: Process) {
+        guard process.isRunning else { return }
+        kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
     }
 }
 

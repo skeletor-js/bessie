@@ -10,10 +10,11 @@ struct BessieApp: App {
     @NSApplicationDelegateAdaptor(BessieAppDelegate.self) private var appDelegate
     @StateObject private var settings = BessieSettingsModel()
     @StateObject private var notifications = BessieNotificationCoordinator()
+    @StateObject private var fleet = ConnectionFleetViewModel()
 
     var body: some Scene {
         WindowGroup {
-            ConnectView()
+            ConnectView(fleet: fleet)
                 .environmentObject(settings)
                 .environmentObject(notifications)
                 .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
@@ -40,6 +41,7 @@ struct BessieApp: App {
                 .environmentObject(notifications)
                 .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
+                .environmentObject(fleet)
         }
     }
 }
@@ -95,13 +97,15 @@ final class ConnectionViewModel: ObservableObject {
             case .ssh:
                 do {
                     let bridge = try RemoteHerdrBridge(connection: connection)
+                    self.remoteBridge = bridge
                     let socketPath = try await Task.detached { try bridge.start() }.value
                     guard !Task.isCancelled, self.connectionToken == token else { bridge.stop(); return }
-                    self.remoteBridge = bridge
                     environment["BESSIE_HERDR_SOCKET_PATH"] = socketPath
                     environment["BESSIE_HERDR_AUTOSTART"] = "0"
                 } catch {
                     guard self.connectionToken == token else { return }
+                    self.remoteBridge?.stop()
+                    self.remoteBridge = nil
                     self.presentation = ConnectPresentation(
                         title: "Couldn't connect to \(connection.name)",
                         detail: error.localizedDescription,
@@ -211,6 +215,12 @@ final class ConnectionViewModel: ObservableObject {
         connectionRunner = nil
         remoteBridge?.stop()
         remoteBridge = nil
+        projection = nil
+        terminalEndpoint = nil
+        actionClient = nil
+        catalogSocketPath = nil
+        catalogLoaded = false
+        agentCatalog = AgentCatalog(items: [])
         projectMaterializationConnection = nil
     }
 
@@ -555,6 +565,7 @@ final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var attentionAgents: [ConnectedAgentProjection] = []
     @Published private(set) var connectedCount = 0
     @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
+    @Published private(set) var connectionHealth: [ConnectionHealth] = []
 
     private var models: [String: ConnectionViewModel] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
@@ -562,8 +573,14 @@ final class ConnectionFleetViewModel: ObservableObject {
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
 
-    func start(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
+    func start(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        runtimeSelection: HerdrRuntimeSelection,
+        bundledRuntimeURL: URL?
+    ) {
         sync(connections: connections, runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
+        _ = activate(connectionID: selectedConnectionID)
     }
 
     func sync(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
@@ -572,6 +589,9 @@ final class ConnectionFleetViewModel: ObservableObject {
             models[id]?.stop()
             models[id] = nil
             subscriptions[id] = nil
+        }
+        if let activeConnectionID, !desired.contains(activeConnectionID) {
+            activeModel = nil
         }
         for connection in connections where models[connection.id] == nil {
             let model = ConnectionViewModel(runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
@@ -605,6 +625,10 @@ final class ConnectionFleetViewModel: ObservableObject {
         for model in models.values { model.retry() }
     }
 
+    func retry(connectionID: String) {
+        models[connectionID]?.retry()
+    }
+
     func stop() {
         for model in models.values { model.stop() }
         models.removeAll()
@@ -613,13 +637,14 @@ final class ConnectionFleetViewModel: ObservableObject {
         attentionAgents = []
         connectedCount = 0
         connectionIssues = []
+        connectionHealth = []
         activeModel = nil
     }
 
     private func refresh() {
         let connected = models.values.filter { $0.projection != nil && $0.terminalEndpoint != nil }
         connectedCount = connected.count
-        if activeModel?.projection == nil, let replacement = connected.first {
+        if activeModel == nil, let replacement = connected.first {
             activeModel = replacement
         }
         agents = connected.flatMap { model -> [ConnectedAgentProjection] in
@@ -644,6 +669,14 @@ final class ConnectionFleetViewModel: ObservableObject {
                 )
             }
         }
+        connectionHealth = models.values.map {
+            ConnectionHealth(connection: $0.activeConnection, presentation: $0.presentation)
+        }.sorted { lhs, rhs in
+            let lhsLabel = models[lhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? lhs.connectionID
+            let rhsLabel = models[rhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? rhs.connectionID
+            let comparison = lhsLabel.localizedCaseInsensitiveCompare(rhsLabel)
+            return comparison == .orderedSame ? lhs.connectionID < rhs.connectionID : comparison == .orderedAscending
+        }
         connectionIssues = models.values.compactMap { model in
             guard model.presentation.status != .connected else { return nil }
             return FleetConnectionIssue(
@@ -659,7 +692,7 @@ final class ConnectionFleetViewModel: ObservableObject {
 }
 
 struct ConnectView: View {
-    @StateObject private var fleet = ConnectionFleetViewModel()
+    @ObservedObject var fleet: ConnectionFleetViewModel
     @StateObject private var terminalRegistry = TerminalControllerRegistry()
     @StateObject private var projects = ProjectsViewModel()
     @EnvironmentObject private var settings: BessieSettingsModel
@@ -713,22 +746,41 @@ struct ConnectView: View {
                 }
             } else {
                 if let diagnostic = fleet.activeModel?.runtimeDiagnostic, diagnostic.finding != nil {
-                    TroubleView(diagnostic: diagnostic) { fleet.retryAll() }
+                    TroubleView(diagnostic: diagnostic) { retryActiveConnection() }
                 } else {
                     connectPanel
                 }
             }
         }
-        .task { fleet.start(connections: settings.connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL) }
+        .environmentObject(fleet)
+        .task {
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
+        }
         .onChange(of: settings.connections) { _, connections in
             fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
-            fleet.start(connections: settings.connections, runtimeSelection: selection, bundledRuntimeURL: Self.bundledRuntimeURL)
+            fleet.start(
+                connections: settings.connections,
+                selectedConnectionID: settings.selectedConnectionID,
+                runtimeSelection: selection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
         }
-        .onChange(of: fleet.activeConnectionID) { _, _ in
+        .onChange(of: settings.selectedConnectionID) { _, id in
+            _ = fleet.activate(connectionID: id)
+        }
+        .onChange(of: fleet.activeConnectionID) { _, id in
             terminalRegistry.releaseAll()
+            if let id, settings.selectedConnectionID != id {
+                settings.selectConnection(id)
+            }
         }
         .task(id: notificationActivationSignature) {
             guard let target = notifications.pendingTarget else { return }
@@ -791,14 +843,18 @@ struct ConnectView: View {
                         VStack(spacing: 0) {
                             ConnectFactRow(
                                 symbol: "terminal",
-                                title: "Herdr",
-                                detail: presentation.status == .notFound ? "Not installed" : "Version 0.7.5",
-                                status: presentation.status == .notFound ? "NOT FOUND" : "FOUND"
+                                title: activeConnection.kind == .local ? "Herdr" : "Remote Herdr",
+                                detail: activeConnection.kind == .local
+                                    ? (presentation.status == .notFound ? "Not installed" : "Version 0.7.5")
+                                    : "\(activeConnection.sshHost ?? "Unknown host") · session \(activeConnection.session ?? "default")",
+                                status: activeConnection.kind == .local
+                                    ? (presentation.status == .notFound ? "NOT FOUND" : "FOUND")
+                                    : (presentation.status == .connected ? "FOUND" : "CHECKING")
                             )
                             Divider().overlay(BessieDesign.border)
                             ConnectFactRow(
                                 symbol: "point.3.connected.trianglepath.dotted",
-                                title: "Local session",
+                                title: activeConnection.kind == .local ? "Local session" : "SSH connection",
                                 detail: statusText,
                                 status: presentation.status == .connected ? "CONNECTED" : "WAITING"
                             )
@@ -819,12 +875,12 @@ struct ConnectView: View {
 
                         HStack(spacing: 8) {
                             if allowsRetry {
-                                Button("Try again", systemImage: "arrow.clockwise") { fleet.retryAll() }
+                                Button("Try again", systemImage: "arrow.clockwise") { retryActiveConnection() }
                                     .buttonStyle(BessiePrimaryButtonStyle())
                             }
                             if presentation.status != .connecting {
                                 DisclosureGroup("How to connect") {
-                                    Text("Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable.")
+                                    Text(connectionHelp)
                                         .font(.system(size: 11))
                                         .foregroundStyle(BessieDesign.subtle)
                                         .padding(.top, 6)
@@ -846,7 +902,7 @@ struct ConnectView: View {
 
                 HStack(spacing: 16) {
                     Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)
-                    Text("LOCAL HERDR")
+                    Text(activeConnection.kind == .local ? "LOCAL HERDR" : "SSH · \(connectionLabel.short.uppercased())")
                     Spacer()
                     Text(statusText.uppercased())
                 }
@@ -883,6 +939,26 @@ struct ConnectView: View {
 
     private var allowsRetry: Bool {
         [.notFound, .stopped, .incompatible, .lost].contains(presentation.status)
+    }
+
+    private var activeConnection: BessieConnectionDefinition {
+        fleet.activeModel?.activeConnection ?? .localBessie
+    }
+
+    private var connectionLabel: ConnectionDisplayLabel {
+        ConnectionDisplayLabel(connection: activeConnection)
+    }
+
+    private var connectionHelp: String {
+        if activeConnection.kind == .ssh {
+            return "Start Herdr session \(activeConnection.session ?? "default") on \(activeConnection.sshHost ?? "the remote Mac"), then try again. Bessie uses your OpenSSH config and leaves remote Herdr running when it disconnects."
+        }
+        return "Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable."
+    }
+
+    private func retryActiveConnection() {
+        guard let id = fleet.activeConnectionID else { return }
+        fleet.retry(connectionID: id)
     }
 
     private var statusText: String {
