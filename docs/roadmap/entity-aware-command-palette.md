@@ -1,9 +1,10 @@
 # Entity-aware command palette
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Command palette  
-**Implementation approval:** Not granted by this document
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Command palette
+**Implementation approval:** Not granted
+**Deferred reason:** Jordan occam-loop — defer until navigation friction demands it.
 
 ## Outcome
 

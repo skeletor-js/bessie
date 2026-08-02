@@ -1,9 +1,10 @@
 # Layout presets and workspace navigation
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Workspace  
-**Implementation approval:** Not granted by this document
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Workspace
+**Implementation approval:** Not granted
+**Deferred reason:** Jordan occam-loop — Projects already capture layouts; presets are convenience.
 
 ## Outcome
 

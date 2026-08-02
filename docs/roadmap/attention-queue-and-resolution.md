@@ -1,9 +1,9 @@
 # Attention queue and resolution
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Attention  
-**Implementation approval:** Not granted by this document
+**Status:** Approved
+**Roadmap horizon:** V1 (Occam: Needs-you + Open pane only)
+**Product area:** Attention
+**Implementation approval:** Granted (Occam-locked 2026-08-02)
 
 ## Outcome
 

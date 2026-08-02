@@ -1,11 +1,12 @@
 # Follow files and agent changes
 
-**Status:** Proposed  
-**Roadmap horizon:** Post-V1, after the focused Herdr GUI and Native Projects pass hands-on acceptance  
-**Product area:** Agent detail and workspace supervision  
-**Implementation approval:** Not granted by this document  
+**Status:** Approved
+**Roadmap horizon:** V1 (expanded 2026-08-02)
+**Product area:** Agent detail and workspace supervision
+**Implementation approval:** Granted by Jordan on 2026-08-02 as part of the expanded V1 release contract
 **Related plans:**
-- [`workspace-files-review-and-editing.md`](workspace-files-review-and-editing.md) — broader files/diff/edit program; this plan is the preferred first product slice
+- [`in-app-file-viewer-editor.md`](in-app-file-viewer-editor.md) — user-driven browse/open/edit; ships in the same V1 expansion
+- [`workspace-files-review-and-editing.md`](workspace-files-review-and-editing.md) — broader files/diff/edit umbrella beyond V1
 - [`review-and-land.md`](review-and-land.md) — stage/commit/PR/land remain separate and later
 - Plugin demand signal: herdr-file-viewer, herdr-reviewr (community), 2026-08-01 research
 

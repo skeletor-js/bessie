@@ -1,10 +1,12 @@
 # Workspace files, review, and lightweight editing
 
-**Status:** Proposed  
-**Roadmap horizon:** Post-V1, after the focused Herdr GUI passes hands-on acceptance  
-**Product area:** Workspace and agent detail  
-**Implementation approval:** Not granted by this document  
-**Preferred first slice:** [`follow-files-and-agent-changes.md`](follow-files-and-agent-changes.md) (Proposed, 2026-08-01)
+**Status:** Exploring (umbrella)
+**Roadmap horizon:** V1 ships a bounded slice; fuller program remains post-V1
+**Product area:** Workspace and agent detail
+**Implementation approval:** V1 viewer/editor slice approved 2026-08-02 via [`in-app-file-viewer-editor.md`](in-app-file-viewer-editor.md); broader milestones in this umbrella are not fully approved
+**V1 product slices:**
+- [`follow-files-and-agent-changes.md`](follow-files-and-agent-changes.md) — agent touch list + diff-first follow (Approved, V1)
+- [`in-app-file-viewer-editor.md`](in-app-file-viewer-editor.md) — browse/open/read/bounded edit (Approved, V1)
 
 ## Outcome
 

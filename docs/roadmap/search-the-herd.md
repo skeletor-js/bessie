@@ -1,9 +1,10 @@
 # Search the Herd
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Cross-agent search  
-**Implementation approval:** Not granted by this document
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Cross-agent search
+**Implementation approval:** Not granted
+**Deferred reason:** Jordan — greenfield scrollback risk; park for post-V1.
 
 ## Outcome
 

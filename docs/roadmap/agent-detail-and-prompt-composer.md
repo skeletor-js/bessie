@@ -1,9 +1,10 @@
 # Agent detail and prompt composer
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Agent detail  
+**Status:** Deferred
+**Roadmap horizon:** Deferred (2026-08-02)
+**Product area:** Agent detail
 **Implementation approval:** Not granted by this document
+**Deferred reason:** Jordan 2026-08-02 — on the fence; park until V1 core is excellent.
 
 ## Outcome
 

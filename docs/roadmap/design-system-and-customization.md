@@ -1,9 +1,9 @@
 # Design-system capabilities and customization
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
-**Product area:** Appearance, interaction, and settings  
-**Implementation approval:** Not granted by this document
+**Status:** Approved
+**Roadmap horizon:** V1 (Dark/Light, density, cowprint on/off)
+**Product area:** Appearance, interaction, and settings
+**Implementation approval:** Granted (Occam-locked 2026-08-02)
 
 ## Outcome
 
