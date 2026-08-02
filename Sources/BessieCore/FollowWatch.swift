@@ -57,7 +57,7 @@ public struct FollowWatchStretch: Equatable, Sendable {
 public struct FollowTouchState: Equatable, Sendable {
     public private(set) var touchedPaths: [TouchedPath] = []
     public private(set) var pinnedPath: String?
-    public var followEnabled: Bool
+    public private(set) var followEnabled: Bool
     public private(set) var selectedPath: String?
     public let maximumCount: Int
 
@@ -67,12 +67,20 @@ public struct FollowTouchState: Equatable, Sendable {
     }
 
     public mutating func record(_ change: WorkspaceFileChange) {
-        touchedPaths.removeAll { $0.relativePath == change.relativePath }
-        touchedPaths.append(TouchedPath(
-            relativePath: change.relativePath,
-            lastTouchedAt: change.touchedAt,
-            changeKind: change.kind
-        ))
+        record(contentsOf: [change])
+    }
+
+    public mutating func record(contentsOf changes: [WorkspaceFileChange]) {
+        guard !changes.isEmpty else { return }
+        let changedPaths = Set(changes.map(\.relativePath))
+        touchedPaths.removeAll { changedPaths.contains($0.relativePath) }
+        touchedPaths.append(contentsOf: changes.map {
+            TouchedPath(
+                relativePath: $0.relativePath,
+                lastTouchedAt: $0.touchedAt,
+                changeKind: $0.kind
+            )
+        })
         touchedPaths.sort {
             if $0.lastTouchedAt == $1.lastTouchedAt { return $0.relativePath < $1.relativePath }
             return $0.lastTouchedAt > $1.lastTouchedAt
@@ -80,7 +88,7 @@ public struct FollowTouchState: Equatable, Sendable {
         if touchedPaths.count > maximumCount {
             touchedPaths.removeLast(touchedPaths.count - maximumCount)
         }
-        if followEnabled, pinnedPath == nil { selectedPath = change.relativePath }
+        if followEnabled, pinnedPath == nil { selectedPath = touchedPaths.first?.relativePath }
     }
 
     public mutating func pin(_ relativePath: String?) {
@@ -153,16 +161,14 @@ public actor WorkspaceFileWatcher {
         ) else { return [:] }
 
         var result: [String: Signature] = [:]
-        let rootPath = root.rootURL.standardizedFileURL.path
         while let url = enumerator.nextObject() as? URL {
-            let relativePath = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
+            guard let relativePath = WorkspaceFS.relativePath(of: url, under: root.rootURL),
+                  let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             if WorkspaceFS.isIgnoredRelativePath(relativePath) {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                    enumerator.skipDescendants()
-                }
+                if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
-            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+            guard values.isRegularFile == true else { continue }
             guard case .success = WorkspaceFS.resolvePath(root: root, relativePath: relativePath) else { continue }
             result[relativePath] = Signature(modifiedAt: values.contentModificationDate, size: values.fileSize)
         }

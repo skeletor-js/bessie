@@ -28,7 +28,8 @@ final class FollowFilesViewModel: ObservableObject {
         projection: HerdrSessionProjection,
         paneID: String
     ) {
-        let nextContextID = "\(connection.id)::\(paneID)"
+        let pane = projection.panes.first { $0.id == paneID }
+        let nextContextID = "\(connection.id)::\(paneID)::\(pane?.workspaceID ?? "-")::\(pane?.cwd ?? "-")"
         guard nextContextID != contextID else { return }
         stop()
         contextID = nextContextID
@@ -38,7 +39,6 @@ final class FollowFilesViewModel: ObservableObject {
             return
         }
 
-        let pane = projection.panes.first { $0.id == paneID }
         switch WorkspaceFS.resolveRoot(
             connection: connection,
             projection: projection,
@@ -97,8 +97,12 @@ final class FollowFilesViewModel: ObservableObject {
             let batches = await watcher.start()
             for await batch in batches {
                 guard !Task.isCancelled, let self, self.generation == generation else { return }
-                for change in batch { self.touchState.record(change) }
-                self.loadSelectedPreview()
+                let selectedPath = self.touchState.selectedPath
+                self.touchState.record(contentsOf: batch)
+                if selectedPath != self.touchState.selectedPath
+                    || batch.contains(where: { $0.relativePath == self.touchState.selectedPath }) {
+                    self.loadSelectedPreview()
+                }
             }
         }
     }

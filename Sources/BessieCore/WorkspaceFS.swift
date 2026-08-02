@@ -163,6 +163,14 @@ public enum WorkspaceFS {
             .contains { ignoredDirectoryNames.contains(String($0)) }
     }
 
+    public static func relativePath(of candidate: URL, under root: URL) -> String? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let candidateComponents = candidate.standardizedFileURL.pathComponents
+        guard candidateComponents.count > rootComponents.count,
+              candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else { return nil }
+        return candidateComponents.dropFirst(rootComponents.count).joined(separator: "/")
+    }
+
     public static func fileMeta(
         root: WorkspaceFileRoot,
         relativePath: String,

@@ -29,6 +29,19 @@ final class FollowWatchTests: XCTestCase {
         XCTAssertEqual(state.touchedPaths.first?.lastTouchedAt, Date(timeIntervalSince1970: 2))
     }
 
+    func testBatchRecordingSelectsTheFirstPathInRecencyOrder() {
+        let touchedAt = Date(timeIntervalSince1970: 1)
+        var state = FollowTouchState()
+
+        state.record(contentsOf: [
+            .init(relativePath: "z.txt", touchedAt: touchedAt, kind: .modified),
+            .init(relativePath: "a.txt", touchedAt: touchedAt, kind: .modified),
+        ])
+
+        XCTAssertEqual(state.touchedPaths.map(\.relativePath), ["a.txt", "z.txt"])
+        XCTAssertEqual(state.selectedPath, "a.txt")
+    }
+
     func testWatcherSuppressesInitialSnapshotAndReportsAddModifyDelete() async throws {
         try await withTemporaryDirectory { directory in
             let existing = directory.appendingPathComponent("existing.txt")

@@ -49,7 +49,7 @@ public struct GitDiffService: Sendable {
             return fullFilePreview(target: target, relativePath: relativePath, banner: "No git baseline")
         }
         let gitRoot = gitTopLevel.standardizedFileURL.resolvingSymlinksInPath()
-        guard let gitPath = relativePath(of: target, under: gitRoot) else {
+        guard let gitPath = WorkspaceFS.relativePath(of: target, under: gitRoot) else {
             return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "Git baseline is unavailable")
         }
 
@@ -81,8 +81,12 @@ public struct GitDiffService: Sendable {
     }
 
     private func fullFilePreview(target: URL, relativePath: String, banner: String) -> DiffPreview {
-        guard FileManager.default.fileExists(atPath: target.path) else {
+        guard let values = try? target.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else {
             return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File is unavailable")
+        }
+        guard fileSize <= maximumTextBytes else {
+            return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File exceeds the text preview limit")
         }
         guard let data = try? Data(contentsOf: target, options: [.mappedIfSafe]) else {
             return DiffPreview(relativePath: relativePath, kind: .unavailable, banner: "File is unavailable")
@@ -95,14 +99,6 @@ public struct GitDiffService: Sendable {
         }
         let added = content.split(separator: "\n", omittingEmptySubsequences: false).map { "+\($0)" }.joined(separator: "\n")
         return DiffPreview(relativePath: relativePath, kind: .text, text: "--- /dev/null\n+++ \(relativePath)\n\(added)", banner: banner)
-    }
-
-    private func relativePath(of target: URL, under root: URL) -> String? {
-        let rootComponents = root.pathComponents
-        let targetComponents = target.pathComponents
-        guard targetComponents.count > rootComponents.count,
-              targetComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else { return nil }
-        return targetComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     private func runGit(_ arguments: [String]) -> (succeeded: Bool, timedOut: Bool, data: Data) {
