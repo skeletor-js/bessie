@@ -11,6 +11,8 @@ grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift
 grep -Fq 'case notChecked' Sources/BessieCore/ConnectPresentation.swift
 grep -Fq 'public struct HerdrSessionProjection' Sources/BessieCore/SessionProjection.swift
+grep -Fq 'public enum WorkspaceFS' Sources/BessieCore/WorkspaceFS.swift
+grep -Fq 'testResolveFileRejectsSymlinkEscapeButAllowsContainedSymlink' Tests/BessieCoreTests/WorkspaceFSTests.swift
 grep -Fq 'case setSplitRatio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'layout.set_split_ratio' Sources/BessieCore/HerdrActions.swift
 grep -Fq 'BessieProductShell(' Sources/BessieApp/BessieApp.swift
