@@ -5,9 +5,10 @@ import SwiftUI
 
 @MainActor
 final class WorkspaceFilesViewModel: ObservableObject {
-    enum Selection: Equatable {
+    enum Selection: Equatable, Sendable {
         case none
-        case text(WorkspaceTextDocument, markdown: Bool)
+        case markdown(path: String, document: WorkspaceTextDocument)
+        case text(path: String, document: WorkspaceTextDocument)
         case image(URL)
         case video(URL)
         case unsupported(URL)
@@ -19,57 +20,123 @@ final class WorkspaceFilesViewModel: ObservableObject {
     @Published var selectedPath: String?
     @Published var errorMessage: String?
     let root: WorkspaceFileRoot
+    private var loadTask: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
 
     init(root: WorkspaceFileRoot) { self.root = root }
 
     func load(_ path: String = "") {
+        loadTask?.cancel()
         let root = self.root
-        Task {
+        loadTask = Task {
             do {
                 let values = try await Task.detached { try WorkspaceFileOps.list(root: root, relativeDirectory: path) }.value
+                try Task.checkCancellation()
                 directory = path
                 items = values
-            } catch { errorMessage = error.localizedDescription }
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     func open(_ item: WorkspaceBrowserItem) {
-        if item.isDirectory { selectedPath = nil; selection = .none; load(item.relativePath); return }
-        selectedPath = item.relativePath
-        let root = self.root
-        Task {
-            do {
-                let meta = try await Task.detached { try WorkspaceFS.fileMeta(root: root, relativePath: item.relativePath).get() }.value
-                let url = try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get()
-                switch meta.kind {
-                case .markdown, .text:
-                    let document = try await Task.detached { try WorkspaceFileOps.loadText(root: root, relativePath: item.relativePath) }.value
-                    selection = .text(document, markdown: meta.kind == .markdown)
-                case .image: selection = .image(url)
-                case .video: selection = .video(url)
-                default: selection = .unsupported(url)
-                }
-            } catch { errorMessage = error.localizedDescription }
+        selectionTask?.cancel()
+        if item.isDirectory {
+            selectedPath = nil
+            selection = .none
+            load(item.relativePath)
+            return
         }
+        selectedPath = item.relativePath
+        selection = .none
+        let root = self.root
+        selectionTask = Task {
+            do {
+                let nextSelection = try await Task.detached { () -> Selection in
+                    let meta = try WorkspaceFS.fileMeta(root: root, relativePath: item.relativePath).get()
+                    switch meta.kind {
+                    case .markdown:
+                        return .markdown(
+                            path: item.relativePath,
+                            document: try WorkspaceFileOps.loadText(root: root, relativePath: item.relativePath)
+                        )
+                    case .text:
+                        return .text(
+                            path: item.relativePath,
+                            document: try WorkspaceFileOps.loadText(root: root, relativePath: item.relativePath)
+                        )
+                    case .image:
+                        return .image(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                    case .video:
+                        return .video(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                    default:
+                        return .unsupported(try WorkspaceFS.resolveFile(root: root, relativePath: item.relativePath).get())
+                    }
+                }.value
+                try Task.checkCancellation()
+                guard selectedPath == item.relativePath else { return }
+                selection = nextSelection
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func saveSelectedMarkdown(
+        relativePath: String,
+        text: String,
+        expected revision: WorkspaceFileRevision,
+        allowOverwrite: Bool
+    ) async throws -> WorkspaceFileRevision {
+        let root = self.root
+        return try await Task.detached {
+            try WorkspaceFileOps.saveMarkdown(
+                root: root,
+                relativePath: relativePath,
+                text: text,
+                expected: revision,
+                allowOverwrite: allowOverwrite
+            )
+        }.value
+    }
+
+    func reloadSelection() {
+        guard let selectedPath,
+              let item = items.first(where: { $0.relativePath == selectedPath })
+        else { return }
+        open(item)
     }
 
     func moveSelected(to destination: String) async throws {
         guard let selectedPath else { return }
         let root = self.root
         try await Task.detached { try WorkspaceFileOps.move(root: root, from: selectedPath, to: destination) }.value
-        self.selectedPath = nil
-        selection = .none
+        if self.selectedPath == selectedPath {
+            self.selectedPath = nil
+            selection = .none
+        }
         load(directory)
     }
 
     func deleteSelected() async throws {
         guard let selectedPath else { return }
-        try WorkspaceFileOps.delete(root: root, relativePath: selectedPath) { url in
-            var resultingURL: NSURL?
-            try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+        let root = self.root
+        try await Task.detached {
+            try WorkspaceFileOps.delete(
+                root: root,
+                relativePath: selectedPath,
+                trash: BessieProjectStore.moveToTrash
+            )
+        }.value
+        if self.selectedPath == selectedPath {
+            self.selectedPath = nil
+            selection = .none
         }
-        self.selectedPath = nil
-        selection = .none
         load(directory)
     }
 }
@@ -118,8 +185,6 @@ private struct WorkspaceFilesBrowser: View {
                 List(model.items, selection: $model.selectedPath) { item in
                     Label(item.name, systemImage: item.isDirectory ? "folder" : "doc")
                         .tag(item.relativePath)
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.open(item) }
                 }
                 .frame(minWidth: 240, idealWidth: 300)
                 preview
@@ -127,6 +192,12 @@ private struct WorkspaceFilesBrowser: View {
             }
         }
         .task { model.load() }
+        .onChange(of: model.selectedPath) { _, path in
+            guard let path,
+                  let item = model.items.first(where: { $0.relativePath == path })
+            else { return }
+            model.open(item)
+        }
         .sheet(isPresented: $showMove) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Rename or move").font(.headline)
@@ -147,18 +218,23 @@ private struct WorkspaceFilesBrowser: View {
     @ViewBuilder private var preview: some View {
         switch model.selection {
         case .none: ContentUnavailableView("Select a file", systemImage: "doc.text.magnifyingglass")
-        case .text(let document, let markdown):
-            if markdown {
-                MarkdownFileEditor(document: document, save: { text, revision, overwrite in
-                    guard let path = model.selectedPath else { throw WorkspacePathError.notFound }
-                    let root = model.root
-                    return try await Task.detached { try WorkspaceFileOps.saveMarkdown(root: root, relativePath: path, text: text, expected: revision, allowOverwrite: overwrite) }.value
-                }, reload: { if let item = model.items.first(where: { $0.relativePath == model.selectedPath }) { model.open(item) } })
-                .id(document.revision.modificationDate)
-            } else {
-                ScrollView { Text(document.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(16) }
-                    .overlay(alignment: .topTrailing) { Text("Read only").font(.caption).padding(8).background(BessieDesign.inset) }
-            }
+        case .markdown(let path, let document):
+            MarkdownFileEditor(
+                document: document,
+                save: { text, revision, overwrite in
+                    try await model.saveSelectedMarkdown(
+                        relativePath: path,
+                        text: text,
+                        expected: revision,
+                        allowOverwrite: overwrite
+                    )
+                },
+                reload: model.reloadSelection
+            )
+            .id("\(path):\(document.revision.contentFingerprint)")
+        case .text(_, let document):
+            ScrollView { Text(document.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(16) }
+                .overlay(alignment: .topTrailing) { Text("Read only").font(.caption).padding(8).background(BessieDesign.inset) }
         case .image(let url):
             if let image = NSImage(contentsOf: url) { Image(nsImage: image).resizable().scaledToFit().padding(18) }
             else { fallback(url, message: "This image couldn’t be previewed.") }

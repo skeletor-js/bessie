@@ -53,6 +53,26 @@ final class WorkspaceFileOpsTests: XCTestCase {
         }
     }
 
+    func testMutationsRejectContainedSymbolicLinks() throws {
+        try withRoot { root in
+            let target = root.rootURL.appendingPathComponent("target.md")
+            let link = root.rootURL.appendingPathComponent("link.md")
+            try Data("target".utf8).write(to: target)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+            let item = try XCTUnwrap(WorkspaceFileOps.list(root: root).first { $0.name == "link.md" })
+            XCTAssertTrue(item.isSymbolicLink)
+            XCTAssertThrowsError(try WorkspaceFileOps.move(root: root, from: "link.md", to: "renamed.md")) {
+                XCTAssertEqual($0 as? WorkspaceFileOperationError, .symbolicLinkUnsupported)
+            }
+            XCTAssertThrowsError(try WorkspaceFileOps.delete(root: root, relativePath: "link.md") { _ in }) {
+                XCTAssertEqual($0 as? WorkspaceFileOperationError, .symbolicLinkUnsupported)
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: link.path))
+        }
+    }
+
     private func withRoot(_ body: (WorkspaceFileRoot) throws -> Void) throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("bessie-file-ops-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

@@ -4,12 +4,14 @@ public struct WorkspaceBrowserItem: Identifiable, Equatable, Sendable {
     public let relativePath: String
     public let name: String
     public let isDirectory: Bool
+    public let isSymbolicLink: Bool
     public var id: String { relativePath }
 
-    public init(relativePath: String, name: String, isDirectory: Bool) {
+    public init(relativePath: String, name: String, isDirectory: Bool, isSymbolicLink: Bool = false) {
         self.relativePath = relativePath
         self.name = name
         self.isDirectory = isDirectory
+        self.isSymbolicLink = isSymbolicLink
     }
 }
 
@@ -27,7 +29,9 @@ public struct WorkspaceTextDocument: Equatable, Sendable {
 public enum WorkspaceFileOperationError: Error, Equatable, Sendable {
     case staleRevision
     case invalidUTF8
+    case notMarkdown
     case destinationExists
+    case symbolicLinkUnsupported
 }
 
 public enum WorkspaceFileOps {
@@ -51,8 +55,14 @@ public enum WorkspaceFileOps {
             guard !WorkspaceFS.isIgnoredRelativePath(relativePath) else { return nil }
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             // Never browse through directory symlinks; file resolution still safely handles file links.
-            let isDirectory = values.isDirectory == true && values.isSymbolicLink != true
-            return WorkspaceBrowserItem(relativePath: relativePath, name: url.lastPathComponent, isDirectory: isDirectory)
+            let isSymbolicLink = values.isSymbolicLink == true
+            let isDirectory = values.isDirectory == true && !isSymbolicLink
+            return WorkspaceBrowserItem(
+                relativePath: relativePath,
+                name: url.lastPathComponent,
+                isDirectory: isDirectory,
+                isSymbolicLink: isSymbolicLink
+            )
         }
         .sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
@@ -68,11 +78,12 @@ public enum WorkspaceFileOps {
         maximumByteSize: Int = defaultTextByteLimit
     ) throws -> WorkspaceTextDocument {
         let url = try WorkspaceFS.resolveFile(root: root, relativePath: relativePath).get()
-        let revision = try self.revision(of: url)
-        guard revision.byteSize <= maximumByteSize else { throw WorkspacePathError.tooLarge }
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard let byteSize = values.fileSize else { throw WorkspacePathError.notFound }
+        guard byteSize <= maximumByteSize else { throw WorkspacePathError.tooLarge }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) else { throw WorkspaceFileOperationError.invalidUTF8 }
-        return WorkspaceTextDocument(text: text, revision: revision)
+        return WorkspaceTextDocument(text: text, revision: try revision(of: url, data: data))
     }
 
     @discardableResult
@@ -83,8 +94,9 @@ public enum WorkspaceFileOps {
         expected: WorkspaceFileRevision,
         allowOverwrite: Bool = false
     ) throws -> WorkspaceFileRevision {
+        try rejectSymbolicLink(root: root, relativePath: relativePath)
         guard try WorkspaceFS.fileMeta(root: root, relativePath: relativePath).get().kind == .markdown else {
-            throw WorkspaceFileOperationError.invalidUTF8
+            throw WorkspaceFileOperationError.notMarkdown
         }
         let url = try WorkspaceFS.resolveFile(root: root, relativePath: relativePath).get()
         if !allowOverwrite, try revision(of: url) != expected { throw WorkspaceFileOperationError.staleRevision }
@@ -98,6 +110,7 @@ public enum WorkspaceFileOps {
         to destinationPath: String,
         fileManager: FileManager = .default
     ) throws {
+        try rejectSymbolicLink(root: root, relativePath: sourcePath)
         let source = try WorkspaceFS.resolveFile(root: root, relativePath: sourcePath).get()
         let destination = try destinationURL(root: root, relativePath: destinationPath)
         guard !fileManager.fileExists(atPath: destination.path) else { throw WorkspaceFileOperationError.destinationExists }
@@ -109,6 +122,7 @@ public enum WorkspaceFileOps {
         relativePath: String,
         trash: (URL) throws -> Void
     ) throws {
+        try rejectSymbolicLink(root: root, relativePath: relativePath)
         let url = try WorkspaceFS.resolveFile(root: root, relativePath: relativePath).get()
         guard url != root.rootURL.resolvingSymlinksInPath() else { throw WorkspacePathError.pathEscape }
         try trash(url)
@@ -130,10 +144,27 @@ public enum WorkspaceFileOps {
         return candidate
     }
 
+    private static func rejectSymbolicLink(root: WorkspaceFileRoot, relativePath: String) throws {
+        guard !NSString(string: relativePath).isAbsolutePath else { throw WorkspacePathError.pathEscape }
+        let rootURL = root.rootURL.standardizedFileURL
+        let lexicalURL = rootURL.appendingPathComponent(relativePath).standardizedFileURL
+        let rootComponents = rootURL.pathComponents
+        guard lexicalURL.pathComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else {
+            throw WorkspacePathError.pathEscape
+        }
+        if try lexicalURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
+            throw WorkspaceFileOperationError.symbolicLinkUnsupported
+        }
+    }
+
     private static func revision(of url: URL) throws -> WorkspaceFileRevision {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        return try revision(of: url, data: data)
+    }
+
+    private static func revision(of url: URL, data: Data) throws -> WorkspaceFileRevision {
         let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
         guard let date = values.contentModificationDate, let size = values.fileSize else { throw WorkspacePathError.notFound }
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
         let fingerprint = data.reduce(UInt64(1_469_598_103_934_665_603)) { partial, byte in
             (partial ^ UInt64(byte)) &* 1_099_511_628_211
         }

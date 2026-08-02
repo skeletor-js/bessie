@@ -2,7 +2,6 @@ import BessieCore
 import SwiftUI
 
 struct MarkdownFileEditor: View {
-    let document: WorkspaceTextDocument
     let save: (String, WorkspaceFileRevision, Bool) async throws -> WorkspaceFileRevision
     let reload: () -> Void
     @State private var text: String
@@ -18,7 +17,6 @@ struct MarkdownFileEditor: View {
         save: @escaping (String, WorkspaceFileRevision, Bool) async throws -> WorkspaceFileRevision,
         reload: @escaping () -> Void
     ) {
-        self.document = document
         self.save = save
         self.reload = reload
         _text = State(initialValue: document.text)
@@ -66,11 +64,13 @@ struct MarkdownFileEditor: View {
     }
 
     private func performSave(overwrite: Bool) {
+        let draft = text
+        let expectedRevision = revision
         saving = true
         Task {
             do {
-                revision = try await save(text, revision, overwrite)
-                savedText = text
+                revision = try await save(draft, expectedRevision, overwrite)
+                savedText = draft
             }
             catch WorkspaceFileOperationError.staleRevision { conflict = true }
             catch { self.error = error.localizedDescription }

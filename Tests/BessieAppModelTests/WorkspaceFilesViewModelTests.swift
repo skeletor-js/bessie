@@ -17,7 +17,7 @@ final class WorkspaceFilesViewModelTests: XCTestCase {
         await eventually { model.items.count == 1 }
         model.open(try XCTUnwrap(model.items.first))
         await eventually {
-            if case .text(_, markdown: false) = model.selection { return true }
+            if case .text(path: "notes.txt", document: _) = model.selection { return true }
             return false
         }
     }
