@@ -168,16 +168,22 @@ struct BessieTopBar<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            ForEach(Array(crumbs.enumerated()), id: \.offset) { index, crumb in
-                if index > 0 { Text("/").foregroundStyle(BessieDesign.faint) }
-                Text(crumb).foregroundStyle(BessieDesign.subtle)
+            HStack(spacing: 7) {
+                ForEach(Array(crumbs.enumerated()), id: \.offset) { index, crumb in
+                    if index > 0 { Text("/").foregroundStyle(BessieDesign.faint) }
+                    Text(crumb).foregroundStyle(BessieDesign.subtle)
+                }
+                if !crumbs.isEmpty { Text("/").foregroundStyle(BessieDesign.faint) }
+                Text(title)
+                    .fontWeight(.medium)
+                    .foregroundStyle(BessieDesign.strong)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
             }
-            if !crumbs.isEmpty { Text("/").foregroundStyle(BessieDesign.faint) }
-            Text(title)
-                .fontWeight(.medium)
-                .foregroundStyle(BessieDesign.strong)
-                .lineLimit(1)
-            Spacer(minLength: 12)
+            .contentShape(Rectangle())
+            .overlay { BessieWindowDragRegion() }
+            .accessibilityHint("Double-click to zoom the window")
+
             HStack(spacing: 5) { actions }
         }
         .font(.system(size: 13))
@@ -186,6 +192,23 @@ struct BessieTopBar<Actions: View>: View {
         .frame(height: BessieDesign.topbarHeight)
         .background(BessieDesign.background)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
+    }
+}
+
+private struct BessieWindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { DragRegionView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class DragRegionView: NSView {
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                window?.performZoom(nil)
+            } else {
+                window?.performDrag(with: event)
+            }
+        }
     }
 }
 

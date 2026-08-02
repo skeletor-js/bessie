@@ -1,3 +1,4 @@
+import AppKit
 import BessieCore
 import Combine
 import Foundation
@@ -6,6 +7,7 @@ import SwiftUI
 
 @main
 struct BessieApp: App {
+    @NSApplicationDelegateAdaptor(BessieAppDelegate.self) private var appDelegate
     @StateObject private var settings = BessieSettingsModel()
     @StateObject private var notifications = BessieNotificationCoordinator()
 
@@ -24,6 +26,12 @@ struct BessieApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 740)
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                    .keyboardShortcut("q", modifiers: .command)
+            }
+        }
 
         Settings {
             BessieSettingsView()
@@ -680,11 +688,18 @@ struct ConnectView: View {
             }
         }
         .onDisappear {
-            projects.updateConnection(nil, snapshot: nil)
-            terminalRegistry.releaseAll()
-            fleet.stop()
+            shutdownForAppExit()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            shutdownForAppExit()
         }
         .background(BessieWindowSnapshotProbe())
+    }
+
+    private func shutdownForAppExit() {
+        projects.updateConnection(nil, snapshot: nil)
+        terminalRegistry.releaseAll()
+        fleet.stop()
     }
 
     private var connectPanel: some View {

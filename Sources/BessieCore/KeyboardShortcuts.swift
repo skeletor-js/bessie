@@ -61,6 +61,11 @@ public enum BessieShortcutHandling: Equatable, Sendable {
     case command(BessieShortcutCommand)
 }
 
+public enum BessieKeyPolicy: Equatable, Sendable {
+    case passthrough
+    case appCommand(BessieShortcutCommand)
+}
+
 public struct BessieCommandDefinition: Equatable, Sendable {
     public let title: String
     public let detail: String
@@ -93,7 +98,30 @@ public struct BessieCommandDefinition: Equatable, Sendable {
 public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
     public init() {}
 
+    /// AppKit retains ownership of standard application chords. Bessie only
+    /// consumes the product commands listed below; terminal input gets every
+    /// other stroke.
+    public static func policy(for stroke: BessieShortcutStroke) -> BessieKeyPolicy {
+        if stroke.command, !stroke.control, !stroke.option, !stroke.shift,
+           case .character(let raw) = stroke.key,
+           ["q", "h", "m", "`"].contains(raw.lowercased()) {
+            return .passthrough
+        }
+
+        switch BessieKeyboardShortcutRouter().handleProductCommand(stroke) {
+        case .passthrough: return .passthrough
+        case .command(let command): return .appCommand(command)
+        }
+    }
+
     public func handle(_ stroke: BessieShortcutStroke) -> BessieShortcutHandling {
+        switch Self.policy(for: stroke) {
+        case .passthrough: return .passthrough
+        case .appCommand(let command): return .command(command)
+        }
+    }
+
+    private func handleProductCommand(_ stroke: BessieShortcutStroke) -> BessieShortcutHandling {
         guard stroke.command else { return .passthrough }
 
         if case .character(let raw) = stroke.key {
