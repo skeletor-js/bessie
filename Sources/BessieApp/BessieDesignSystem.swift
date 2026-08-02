@@ -71,9 +71,10 @@ enum BessieDesign {
     }
 
     private static func adaptive(_ keyPath: KeyPath<BessiePalette, Color>) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let scheme: ColorScheme = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
-            return NSColor(palette(for: scheme)[keyPath: keyPath])
+        let dark = NSColor(palette(for: .dark)[keyPath: keyPath])
+        let light = NSColor(palette(for: .light)[keyPath: keyPath])
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
         })
     }
 
@@ -119,18 +120,23 @@ struct BessieDensityMetrics: Equatable {
     let settingsRowPadding: CGFloat
     let herdCardHeaderHeight: CGFloat
     let herdCardFooterHeight: CGFloat
+    let herdCardPadding: CGFloat
     let attentionGap: CGFloat
     let attentionPadding: CGFloat
     let paneHeaderHeight: CGFloat
+    let tabStripHeight: CGFloat
 
     static func metrics(for density: BessieDensity) -> Self {
         switch density {
         case .comfortable:
-            Self(rowHeight: 30, cardGap: 9, railWidth: 244, topbarHeight: 46, settingsRowPadding: 13,
-                 herdCardHeaderHeight: 38, herdCardFooterHeight: 42, attentionGap: 11, attentionPadding: 15, paneHeaderHeight: 27)
+            Self(rowHeight: BessieDesign.rowHeight, cardGap: BessieDesign.cardGap,
+                 railWidth: BessieDesign.railWidth, topbarHeight: BessieDesign.topbarHeight, settingsRowPadding: 13,
+                 herdCardHeaderHeight: 38, herdCardFooterHeight: 42, herdCardPadding: 12,
+                 attentionGap: 11, attentionPadding: 15, paneHeaderHeight: 27, tabStripHeight: 36)
         case .compact:
             Self(rowHeight: 26, cardGap: 6, railWidth: 220, topbarHeight: 38, settingsRowPadding: 8,
-                 herdCardHeaderHeight: 32, herdCardFooterHeight: 36, attentionGap: 7, attentionPadding: 10, paneHeaderHeight: 23)
+                 herdCardHeaderHeight: 32, herdCardFooterHeight: 36, herdCardPadding: 9,
+                 attentionGap: 7, attentionPadding: 10, paneHeaderHeight: 23, tabStripHeight: 30)
         }
     }
 }

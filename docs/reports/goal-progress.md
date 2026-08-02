@@ -888,3 +888,22 @@ Blocker closed after Amp paused only for missing launch-review visual evidence:
 - Ordinary sessions untouched; staging empty; no commit/push/publish/notarize.
 
 Native Projects Milestones 0–6 are accepted for V1 product scope. Public notarization remains deferred.
+
+## V1 Slice I — Appearance
+
+Status: complete. Bessie now honors System, Dark, and Light appearance preferences instead of forcing dark; exposes Comfortable and Compact density; and lets users disable cowprint texture without discarding contrast or motion preferences.
+
+- Added legacy-safe persisted defaults for density (`comfortable`) and cowprint texture (`on`), with round-trip and sparse legacy decode coverage.
+- Added a warm light semantic palette while retaining the existing dark palette. SwiftUI chrome follows the selected or system color scheme live; the libghostty terminal surface remains explicitly dark and independent of chrome appearance.
+- Density metrics now drive shell gaps, rail width and rows, top bars, Herd cards, Attention rows, Settings rows, workspace tab chrome, and pane headers.
+- Settings exposes Theme, Density, and Cowprint texture controls. No token editor or terminal theme marketplace was added.
+- `mac-verify.sh` now uses a deterministic dark fixture, permits marked isolated temporary mirrors for concurrent worktrees, canonicalizes temporary paths, and serializes Mac verification/install work with a host-wide lock.
+
+Verification evidence:
+
+- `./scripts/check.sh`: passed.
+- Native focused preference test: **1 test, 0 failures**.
+- Native release build of `BessieApp`: passed after the final review fixes.
+- A prior full native run on the Slice I source completed **177 tests with 0 failures**; later isolated full runs repeatedly hit the pre-existing flaky `testProjectsMilestoneZeroContractAgainstIsolatedHerdr` live decode failure, unrelated to appearance. One isolated run completed **168 tests with 0 failures** before stopping at temporary-path canonicalization, which is now fixed.
+- Light + Compact + cowprint-off Settings proof: 1180×740 PNG, SHA-256 `ace26ddca75678f1852cb1cbb0dbde62959b567f6f04ab607a9c30ca74eafa01`. Visual inspection confirmed readable warm light chrome, selected Light/Compact controls, cowprint texture off, no visible texture, and no clipping or overlap.
+- Packaged-install replacement was not repeated after the final review fixes because another `/Applications/Bessie.app` process was active from concurrent Bessie work; the existing app was not interrupted or overwritten.

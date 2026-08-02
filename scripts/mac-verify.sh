@@ -7,16 +7,23 @@ mac_dir=${BESSIE_MAC_DIR:-/Users/jordanstella/GitHub/bessie}
 agent_kind=${BESSIE_AGENT_KIND:-codex}
 codesign_identity=${BESSIE_CODESIGN_IDENTITY:--}
 mirror_marker='source=/home/hermes/code/bessie'
+verification_lock=/tmp/bessie-mac-verify.lock
 
 case "$agent_kind" in
     pi|claude|codex|gemini|amp|grok|hermes) ;;
     *) echo "Refusing unsupported live verification agent: $agent_kind" >&2; exit 1 ;;
 esac
 
-if [[ "$mac_dir" != /Users/jordanstella/GitHub/bessie ]]; then
-    echo "Refusing unapproved Mac mirror path: $mac_dir" >&2
+case "$mac_dir" in
+    /Users/jordanstella/GitHub/bessie|/tmp/bessie-verify-*) ;;
+    *) echo "Refusing unapproved Mac mirror path: $mac_dir" >&2; exit 1 ;;
+esac
+
+if ! ssh "$mac_host" mkdir "$verification_lock"; then
+    echo "Another Bessie Mac verification is already running: $verification_lock" >&2
     exit 1
 fi
+trap 'ssh "$mac_host" rmdir "$verification_lock" 2>/dev/null || true' EXIT
 
 ssh "$mac_host" bash -s -- "$mac_dir" "$mirror_marker" <<'REMOTE'
 set -euo pipefail
@@ -61,6 +68,7 @@ mac_dir=$1
 requested_agent_kind=$2
 codesign_identity=$3
 export BESSIE_CODESIGN_IDENTITY="$codesign_identity"
+mac_dir=$(cd "$mac_dir" && pwd -P)
 cd "$mac_dir"
 
 login_path=$(zsh -lic 'printf "%s\n" "$PATH"' 2>/dev/null | tail -n 1)
@@ -505,7 +513,7 @@ grep -Fq 'GhosttyTerminal03AppB4View' "$herdr_dir/runtime/bessie-symbols.txt"
 
 : > "$state_log"
 : > "$app_log"
-printf '%s\n' '{"preferences":{"appIcon":"light"}}' > "$presentation_path"
+printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"}}' > "$presentation_path"
 rm -f "$snapshot_path"
 launch_app
 

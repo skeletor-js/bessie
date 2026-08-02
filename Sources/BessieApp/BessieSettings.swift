@@ -204,8 +204,6 @@ struct BessieSettingsView: View {
                 .frame(width: 720, height: 620)
             }
         }
-        .environment(\.bessieDensity, .metrics(for: model.preferences.density))
-        .preferredColorScheme(model.preferences.appearance.preferredColorScheme)
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
         .task { notifications.refreshAuthorization() }

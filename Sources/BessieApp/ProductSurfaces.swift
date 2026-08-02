@@ -314,7 +314,7 @@ struct BessieProductShell: View {
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(BessieDesign.text)
                 .padding(.horizontal, 9)
-                .frame(height: 30)
+                .frame(height: density.rowHeight)
                 .background(BessieDesign.inset)
                 .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
             }
@@ -817,7 +817,7 @@ private struct HerdSurface: View {
                     Spacer().frame(minHeight: 48)
                 }
             }
-            .padding(density.attentionPadding)
+            .padding(density.herdCardPadding)
 
             HStack(spacing: 7) {
                 Spacer()
@@ -1154,6 +1154,7 @@ private struct WorkspaceSurface: View {
     @State private var editor: ProductEditor?
     @State private var pendingClose: PendingClose?
     @State private var showNewProcess = false
+    @Environment(\.bessieDensity) private var density
 
     private var workspace: WorkspaceProjection? {
         projection.workspaces.first { $0.id == selectedWorkspaceID } ?? projection.focusedWorkspace ?? projection.workspaces.first
@@ -1231,7 +1232,7 @@ private struct WorkspaceSurface: View {
                         }
                         .font(.system(size: 11, weight: item.id == tab?.id ? .medium : .regular))
                         .padding(.horizontal, 11)
-                        .frame(height: 36)
+                        .frame(height: density.tabStripHeight)
                         .foregroundStyle(item.id == tab?.id ? BessieDesign.strong : BessieDesign.text)
                         .background(item.id == tab?.id ? BessieDesign.selected : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
@@ -1269,7 +1270,7 @@ private struct WorkspaceSurface: View {
                     .padding(.trailing, 11)
             }
             .padding(.horizontal, 9)
-            .frame(height: 36)
+            .frame(height: density.tabStripHeight)
             .background(BessieDesign.background)
             .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
 

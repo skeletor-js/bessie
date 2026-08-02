@@ -180,6 +180,7 @@ struct GhosttyPaneSurface: NSViewRepresentable {
 
     func makeNSView(context: Context) -> BessieTerminalView {
         let view = BessieTerminalView(frame: .zero)
+        view.appearance = NSAppearance(named: .darkAqua)
         view.controller = controller.ghosttyController
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(controller.session), fontSize: Float(fontSize))
         view.configuredFontSize = fontSize
