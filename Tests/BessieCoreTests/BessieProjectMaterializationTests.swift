@@ -32,6 +32,35 @@ final class BessieProjectMaterializationTests: XCTestCase {
         }
     }
 
+    func testFolderAvailabilityAndPaneReferencesAreValidatedBeforeAnyHerdrMutation() throws {
+        try withTemporaryDirectory { directory in
+            let api = MaterializationAPI()
+            let missingFolderID = UUID()
+            let project = BessieProject(
+                name: "Folder validation",
+                folders: [
+                    .init(name: "Primary", path: directory.path, isPrimary: true),
+                ],
+                tabs: [.init(name: "Main", panes: [
+                    .init(folderID: missingFolderID, placement: .root),
+                ])]
+            )
+
+            XCTAssertThrowsError(try BessieProjectMaterializer(
+                api: api,
+                connectionStatus: { _ in .current }
+            ).materialize(project, on: localConnection())) { error in
+                guard case .validation(let issues) = failure(error).ownerError else {
+                    return XCTFail("expected folder validation failure, got \(failure(error).ownerError)")
+                }
+                XCTAssertTrue(issues.contains {
+                    $0.code == .paneFolderMissing && $0.folderID == missingFolderID
+                })
+            }
+            XCTAssertTrue(api.requests.isEmpty)
+        }
+    }
+
     func testCancellationBeforeWorkspaceCreationMakesNoRequest() throws {
         try withTemporaryDirectory { directory in
             let api = MaterializationAPI()
@@ -62,7 +91,7 @@ final class BessieProjectMaterializationTests: XCTestCase {
             XCTAssertTrue(wrongSocketAPI.requests.isEmpty)
 
             let changedIdentityAPI = MaterializationAPI(
-                identity: .init(version: "0.7.4", protocolVersion: 17)
+                identity: .init(version: "0.7.4", protocolVersion: 19)
             )
             XCTAssertThrowsError(try BessieProjectMaterializer(
                 api: changedIdentityAPI, connectionStatus: { _ in .current }
@@ -154,6 +183,81 @@ final class BessieProjectMaterializationTests: XCTestCase {
             let lastTopologyIndex = try XCTUnwrap(methods.lastIndex(where: { ["workspace.create", "tab.create", "pane.split", "tab.rename", "pane.rename"].contains($0) }))
             XCTAssertGreaterThan(firstCommandIndex, lastTopologyIndex)
             XCTAssertFalse(api.requests.contains { $0.method.contains("close") })
+        }
+    }
+
+    func testMaterializesAndVerifiesExactFolderCWDForWorkspaceTabAndSplitPane() throws {
+        try withTemporaryDirectory { directory in
+            let additional = directory.appendingPathComponent("Additional", isDirectory: true)
+            try FileManager.default.createDirectory(at: additional, withIntermediateDirectories: true)
+            let primaryID = UUID(), additionalID = UUID()
+            let firstRoot = UUID(), split = UUID(), secondRoot = UUID()
+            let project = BessieProject(
+                name: "Two folders",
+                folders: [
+                    .init(id: primaryID, name: "Primary", path: directory.path, isPrimary: true),
+                    .init(id: additionalID, name: "Additional", path: additional.path),
+                ],
+                tabs: [
+                    .init(name: "Primary tab", panes: [
+                        .init(id: firstRoot, placement: .root),
+                        .init(
+                            id: split,
+                            folderID: additionalID,
+                            placement: .split(fromPaneID: firstRoot, direction: .right, ratio: 0.5)
+                        ),
+                    ]),
+                    .init(name: "Additional tab", panes: [
+                        .init(id: secondRoot, folderID: additionalID, placement: .root),
+                    ]),
+                ]
+            )
+            let normalized = try project.normalized()
+            let primaryCWD = try XCTUnwrap(normalized.workingDirectory(for: normalized.tabs[0].panes[0]))
+            let additionalCWD = try XCTUnwrap(normalized.workingDirectory(for: normalized.tabs[0].panes[1]))
+            let api = MaterializationAPI(
+                results: [
+                    workspaceResult("w1", "t1", "p1"),
+                    infoResult(type: "tab_info", key: "tab", idKey: "tab_id", id: "t1"),
+                    tabResult("t2", "p3"),
+                    paneResult("p2"),
+                ],
+                snapshots: snapshotsForMaterialization(
+                    directory: primaryCWD,
+                    project: normalized,
+                    workspaceID: "w1",
+                    runtimeTabs: ["t1", "t2"],
+                    runtimePanes: ["p1", "p2", "p3"],
+                    paneDirectories: [primaryCWD, additionalCWD, additionalCWD]
+                )
+            )
+
+            let result = try BessieProjectMaterializer(
+                api: api,
+                connectionStatus: { _ in .current }
+            ).materialize(project, on: localConnection())
+
+            XCTAssertEqual(
+                api.requests.first(where: { $0.method == "workspace.create" })?.params["cwd"],
+                .string(primaryCWD)
+            )
+            XCTAssertEqual(
+                api.requests.first(where: { $0.method == "tab.create" })?.params["cwd"],
+                .string(additionalCWD)
+            )
+            XCTAssertEqual(
+                api.requests.first(where: { $0.method == "pane.split" })?.params["cwd"],
+                .string(additionalCWD)
+            )
+            XCTAssertTrue(result.verificationFacts.contains(
+                .pane(recipePaneID: firstRoot, runtimePaneID: "p1", runtimeTabID: "t1", cwd: primaryCWD)
+            ))
+            XCTAssertTrue(result.verificationFacts.contains(
+                .pane(recipePaneID: split, runtimePaneID: "p2", runtimeTabID: "t1", cwd: additionalCWD)
+            ))
+            XCTAssertTrue(result.verificationFacts.contains(
+                .pane(recipePaneID: secondRoot, runtimePaneID: "p3", runtimeTabID: "t2", cwd: additionalCWD)
+            ))
         }
     }
 
@@ -850,7 +954,7 @@ private final class MaterializationAPI: BessieProjectMaterializationAPI, @unchec
         afterRequest: ((Request) -> Void)? = nil,
         afterSnapshot: ((Int) -> Void)? = nil,
         socketPath: String = "/tmp/bessie-materializer-fixture.sock",
-        identity: HerdrServerIdentity = .init(version: "0.7.5", protocolVersion: 17)
+        identity: HerdrServerIdentity = .init(version: "0.8.0", protocolVersion: 19)
     ) {
         self.results = results
         self.snapshots = snapshots
@@ -910,7 +1014,7 @@ private extension BessieProjectMaterializationTests {
 
     func localConnection(
         kind: BessieConnectionKind = .local,
-        identity: HerdrServerIdentity = .init(version: "0.7.5", protocolVersion: 17),
+        identity: HerdrServerIdentity = .init(version: "0.8.0", protocolVersion: 19),
         generation: UUID = UUID()
     ) -> BessieProjectMaterializationConnection {
         .init(
@@ -981,6 +1085,7 @@ private func snapshotsForMaterialization(
     workspaceID: String = "runtime-workspace",
     runtimeTabs: [String],
     runtimePanes: [String],
+    paneDirectories: [String]? = nil,
     finalCopies: Int = 10
 ) -> [HerdrSnapshot] {
     var runningPaneOffset = 0
@@ -1018,6 +1123,7 @@ private func snapshotsForMaterialization(
             }
             return (id, workspaceID, runtimeTabs.last!, nil)
         },
+        paneDirectories: paneDirectories,
         layouts: layouts
     )
     return Array(repeating: complete, count: finalCopies)
@@ -1029,6 +1135,7 @@ private func snapshot(
     workspaceLabel: String,
     tabs: [(String, String, String)],
     panes: [(String, String, String, String?)],
+    paneDirectories: [String]? = nil,
     layouts suppliedLayouts: [JSONValue]? = nil
 ) -> HerdrSnapshot {
     let layouts = suppliedLayouts ?? tabs.map { tab -> JSONValue in
@@ -1043,17 +1150,18 @@ private func snapshot(
         )
     }
     return HerdrSnapshot(
-        version: "0.7.5",
-        protocolVersion: 17,
+        version: "0.8.0",
+        protocolVersion: 19,
         focusedWorkspaceID: workspaceID,
         focusedTabID: tabs.first?.0,
         focusedPaneID: panes.first?.0,
         workspaces: [.object(["workspace_id": .string(workspaceID), "label": .string(workspaceLabel)])],
         tabs: tabs.map { .object(["tab_id": .string($0.0), "workspace_id": .string($0.1), "label": .string($0.2)]) },
-        panes: panes.map { pane in
+        panes: panes.enumerated().map { index, pane in
             .object([
                 "pane_id": .string(pane.0), "workspace_id": .string(pane.1), "tab_id": .string(pane.2),
-                "label": pane.3.map(JSONValue.string) ?? .null, "cwd": .string(directory),
+                "label": pane.3.map(JSONValue.string) ?? .null,
+                "cwd": .string(paneDirectories?[index] ?? directory),
             ])
         },
         layouts: layouts,

@@ -1,5 +1,22 @@
 import Foundation
 
+private final class SSHOutputCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ data: Data) {
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 /// Multiplexed OpenSSH access reusing Bessie ControlMaster tunnel.
 /// Shell-only remote helper (no Python requirement).
 public struct SSHRemoteFileAccess: Equatable, Sendable, Hashable {
@@ -11,6 +28,15 @@ public struct SSHRemoteFileAccess: Equatable, Sendable, Hashable {
         self.host = host
         self.controlPath = controlPath
         self.sshExecutablePath = sshExecutablePath
+    }
+
+    public var commandArguments: [String] {
+        SSHHostKeyPolicy.requiredArguments + [
+            "-S", controlPath,
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+            host,
+        ]
     }
 }
 
@@ -41,6 +67,20 @@ public struct SSHRemoteFileClient: Sendable {
     public func homeDirectory() throws -> String {
         let out = try runRemote("printf '%s\\n' \"$HOME\"").trimmingCharacters(in: .whitespacesAndNewlines)
         guard out.hasPrefix("/") else { throw WorkspacePathError.unreadable }
+        return out
+    }
+
+    public func canonicalPath(_ absolutePath: String) throws -> String {
+        let q = shQuote(absolutePath)
+        let script =
+            "p=" + q + "; " +
+            "if [ ! -e \"$p\" ] && [ ! -L \"$p\" ]; then echo __ERR_NOT_FOUND; exit 0; fi; " +
+            "realpath \"$p\" 2>/dev/null || readlink -f \"$p\" 2>/dev/null || echo __ERR_UNREADABLE"
+        let out = try runRemote(script).trimmingCharacters(in: .whitespacesAndNewlines)
+        if out == "__ERR_NOT_FOUND" { throw WorkspacePathError.notFound }
+        guard out.hasPrefix("/"), !out.contains("__ERR_UNREADABLE") else {
+            throw WorkspacePathError.unreadable
+        }
         return out
     }
 
@@ -93,14 +133,41 @@ public struct SSHRemoteFileClient: Sendable {
     }
 
     public func readFile(_ absolutePath: String, maximumByteSize: Int) throws -> Data {
-        let st = try stat(absolutePath)
-        guard st.exists else { throw WorkspacePathError.notFound }
-        guard st.isRegularFile else { throw WorkspacePathError.notFound }
-        guard st.byteSize <= maximumByteSize else { throw WorkspacePathError.tooLarge }
         let q = shQuote(absolutePath)
-        let script = "p=" + q + "; (base64 < \"$p\" 2>/dev/null || base64 < \"$p\")"
+        let script =
+            "p=" + q + "; " +
+            "if [ ! -f \"$p\" ]; then echo __ERR_NOT_FOUND; exit 0; fi; " +
+            "head -c " + String(maximumByteSize + 1) + " \"$p\" | (base64 2>/dev/null || base64)"
         let b64 = try runRemote(script).filter { !$0.isWhitespace }
+        if b64 == "__ERR_NOT_FOUND" { throw WorkspacePathError.notFound }
         guard let data = Data(base64Encoded: b64) else { throw WorkspacePathError.unreadable }
+        guard data.count <= maximumByteSize else { throw WorkspacePathError.tooLarge }
+        return data
+    }
+
+    public func readContainedFile(
+        rootPath: String,
+        relativePath: String,
+        maximumByteSize: Int
+    ) throws -> Data {
+        guard !relativePath.hasPrefix("/") else { throw WorkspacePathError.pathEscape }
+        let script =
+            "root=" + shQuote(rootPath) + "; rel=" + shQuote(relativePath) + "; " +
+            "root=$(realpath \"$root\" 2>/dev/null || readlink -f \"$root\" 2>/dev/null) || { echo __ERR_UNREADABLE; exit 0; }; " +
+            "candidate=$(realpath \"$root/$rel\" 2>/dev/null || readlink -f \"$root/$rel\" 2>/dev/null) || { echo __ERR_NOT_FOUND; exit 0; }; " +
+            "case \"$candidate\" in \"$root\"|\"$root\"/*) ;; *) echo __ERR_ESCAPE; exit 0 ;; esac; " +
+            "if [ ! -f \"$candidate\" ]; then echo __ERR_NOT_FOUND; exit 0; fi; " +
+            "exec 3< \"$candidate\" || { echo __ERR_UNREADABLE; exit 0; }; " +
+            "head -c " + String(maximumByteSize + 1) + " <&3 | (base64 2>/dev/null || base64)"
+        let output = try runRemote(script).filter { !$0.isWhitespace }
+        switch output {
+        case "__ERR_ESCAPE": throw WorkspacePathError.pathEscape
+        case "__ERR_NOT_FOUND": throw WorkspacePathError.notFound
+        case "__ERR_UNREADABLE": throw WorkspacePathError.unreadable
+        default: break
+        }
+        guard let data = Data(base64Encoded: output) else { throw WorkspacePathError.unreadable }
+        guard data.count <= maximumByteSize else { throw WorkspacePathError.tooLarge }
         return data
     }
 
@@ -191,23 +258,25 @@ public struct SSHRemoteFileClient: Sendable {
     public func downloadToTemporaryFile(_ absolutePath: String, maximumByteSize: Int = 40 * 1_024 * 1_024) throws -> URL {
         let data = try readFile(absolutePath, maximumByteSize: maximumByteSize)
         let ext = URL(fileURLWithPath: absolutePath).pathExtension
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bessie-remote-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-remote-media-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let url = directory
+            .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext.isEmpty ? "bin" : ext)
         try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
     }
 
     private func runRemote(_ script: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: access.sshExecutablePath)
-        process.arguments = [
-            "-S", access.controlPath,
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=8",
-            access.host,
-            "/bin/sh", "-s",
-        ]
+        process.arguments = access.commandArguments + ["/bin/sh", "-s"]
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -216,6 +285,14 @@ public struct SSHRemoteFileClient: Sendable {
         process.standardError = stderr
         do { try process.run() }
         catch { throw BessieConnectionError.sshFailed(error.localizedDescription) }
+        let stdoutCapture = SSHOutputCapture()
+        let stderrCapture = SSHOutputCapture()
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            stdoutCapture.append(handle.availableData)
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            stderrCapture.append(handle.availableData)
+        }
         let body = script.hasSuffix("\n") ? script : script + "\n"
         if let data = body.data(using: .utf8) { stdin.fileHandleForWriting.write(data) }
         try? stdin.fileHandleForWriting.close()
@@ -226,8 +303,12 @@ public struct SSHRemoteFileClient: Sendable {
             process.waitUntilExit()
             throw BessieConnectionError.sshFailed("Timed out waiting for remote file operation.")
         }
-        let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+        stdoutCapture.append(stdout.fileHandleForReading.readDataToEndOfFile())
+        stderrCapture.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        let out = stdoutCapture.data
+        let err = stderrCapture.data
         guard process.terminationStatus == 0 else {
             let reason = String(data: err, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw BessieConnectionError.sshFailed(reason?.isEmpty == false ? reason! : "Remote file command failed (\(process.terminationStatus)).")

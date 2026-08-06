@@ -118,9 +118,10 @@ public struct BessieNotificationPlanner: Sendable {
         guard seeded else { return [] }
 
         return panes.compactMap { pane in
-            guard previousStates[pane.paneID] != pane.state,
+            let previous = previousStates[pane.paneID]
+            guard previous != pane.state,
                   pane.paneID != activePaneID,
-                  policy.allows(pane.state)
+                  policy.shouldNotify(transitioningTo: pane.state, from: previous)
             else { return nil }
 
             let title: String
@@ -129,6 +130,9 @@ public struct BessieNotificationPlanner: Sendable {
                 title = "\(pane.identity) needs you"
             case .done:
                 title = "\(pane.identity) is done"
+            case .idle:
+                // Settled completion for agents (e.g. Hermes) that land on idle, not done.
+                title = "\(pane.identity) is settled"
             default:
                 return nil
             }
@@ -144,12 +148,25 @@ public struct BessieNotificationPlanner: Sendable {
 }
 
 private extension BessieNotifications {
-    func allows(_ state: AgentSemanticState) -> Bool {
-        switch (self, state) {
-        case (.blockedOnly, .blocked), (.blockedAndDone, .blocked), (.blockedAndDone, .done):
-            true
-        default:
-            false
+    /// `blockedAndDone` ("Needs me and settled") treats UI Settled as `done` **or** `idle`.
+    /// Settled toasts only fire when leaving an active state (`working` / `blocked`), so
+    /// idle↔done churn inside Settled does not spam.
+    func shouldNotify(transitioningTo state: AgentSemanticState, from previous: AgentSemanticState?) -> Bool {
+        switch self {
+        case .off:
+            return false
+        case .blockedOnly:
+            return state == .blocked
+        case .blockedAndDone:
+            switch state {
+            case .blocked:
+                return true
+            case .done, .idle:
+                guard let previous else { return false }
+                return previous == .working || previous == .blocked
+            default:
+                return false
+            }
         }
     }
 }

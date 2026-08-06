@@ -1,9 +1,15 @@
 # Cost and usage
 
-**Status:** Exploring  
-**Roadmap horizon:** Post-V1  
+**Status:** Permanently deferred  
+**Roadmap horizon:** Not planned  
 **Product area:** Usage telemetry  
-**Implementation approval:** Not granted by this document
+**Implementation approval:** Permanently withheld by product decision (2026-08-04)  
+**Plan:** [`docs/plans/2026-08-04-003-feat-cost-and-usage-screen-plan.md`](../plans/2026-08-04-003-feat-cost-and-usage-screen-plan.md)  
+**Research:** [`docs/research/2026-08-04-cost-and-usage-codexbar-scope.md`](../research/2026-08-04-cost-and-usage-codexbar-scope.md)
+
+## Decision
+
+Cost and usage is not part of Bessie's planned product roadmap. Do not schedule, prototype, feature-flag, or implement the local-estimate precursor or the fuller telemetry concept. This document, its plan, and its research remain only as retained rationale; re-entry requires Jordan to explicitly reverse this decision.
 
 ## Outcome
 
@@ -13,14 +19,23 @@ Show trustworthy agent and provider usage context without pretending Bessie is t
 
 The mockup contains token, cost, elapsed-time, provider, ceiling, forecast, and export views.
 
-## First useful slice
+## Retained concept (not planned)
 
-- Define trusted per-agent/backend usage ingestion.
-- Show today/week/month input and output totals.
-- Break down by agent and workspace.
+The previously proposed precursor was:
+
+- Feature-flagged Cost & usage / local-estimates screen with honest empty, partial, and stale states.
+- Codex + Claude **local session** token totals on **this Mac only**, with source + confidence + pricing-coverage labels.
+- API list-rate **estimated** cost only — never invoice or quota claims.
+- Borrow CodexBar scanner/confidence ideas under MIT; do **not** vendor CodexBar or lead with OAuth quota scraping.
+
+**Previously envisioned full slice (not planned; would have required U01):**
+
+- Trusted per-agent/backend usage ingestion (Herdr/companion correlation IDs).
+- Today/week/month totals joined to agents and workspaces (including remote).
+- Provider-reported quota windows only after defensible per-provider contracts.
 - Label provider-reported, estimated, and unavailable values distinctly.
 
-## Possible later scope
+## Previously considered later scope
 
 - Tool-call and active/blocked/idle context.
 - User-defined ceiling and forecast.
@@ -43,6 +58,6 @@ Bessie must preserve Herdr as the authority for sessions, panes, processes, agen
 - Which providers expose sufficiently reliable data?
 - Should ceilings be advisory only, or ever affect agent behavior?
 
-## Graduation criteria
+## Re-entry criteria
 
-Before this idea becomes **Proposed**, validate the first useful slice against the current Herdr contracts, identify local and remote behavior, define failure and empty states, and split any high-risk side effects into separately approved milestones.
+There is no ordinary graduation path. Only an explicit product decision from Jordan can return cost and usage to exploration.

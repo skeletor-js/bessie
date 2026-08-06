@@ -404,7 +404,7 @@ public struct BessieProjectMaterializer: Sendable {
             attempt = .project(normalizedProject.id)
             progress()
             let createdWorkspace = try HerdrWorkspaceCreationResult(result: mutationRequest("workspace.create", [
-                "cwd": .string(normalizedProject.workingDirectory),
+                "cwd": .string(normalizedProject.workingDirectory(for: firstRoot)!),
                 "label": .string(normalizedProject.name),
                 "focus": .bool(true),
             ]))
@@ -438,7 +438,7 @@ public struct BessieProjectMaterializer: Sendable {
                 progress()
                 let createdTab = try HerdrTabCreationResult(result: mutationRequest("tab.create", [
                     "workspace_id": .string(createdWorkspace.workspaceID),
-                    "cwd": .string(normalizedProject.workingDirectory),
+                    "cwd": .string(normalizedProject.workingDirectory(for: root)!),
                     "label": .string(tab.name),
                     "focus": .bool(false),
                 ]))
@@ -471,7 +471,7 @@ public struct BessieProjectMaterializer: Sendable {
                         "target_pane_id": .string(parentRuntimeID),
                         "direction": .string(direction.rawValue),
                         "ratio": .number(ratio),
-                        "cwd": .string(normalizedProject.workingDirectory),
+                        "cwd": .string(normalizedProject.workingDirectory(for: pane)!),
                         "focus": .bool(false),
                     ]))
                     guard !paneIDs.values.contains(createdPane.paneID) else {
@@ -697,10 +697,11 @@ public struct BessieProjectMaterializer: Sendable {
                     continue
                 }
                 let canonicalCWD = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
-                if canonicalCWD != project.workingDirectory {
+                let expectedCWD = project.workingDirectory(for: pane)!
+                if canonicalCWD != expectedCWD {
                     issues.append(.paneCWDMismatch(
                         recipePaneID: pane.id, runtimePaneID: runtimePaneID,
-                        expected: project.workingDirectory, actual: canonicalCWD
+                        expected: expectedCWD, actual: canonicalCWD
                     ))
                 }
                 if verifyMetadata, runtimePane.optionalString("label") != pane.label {

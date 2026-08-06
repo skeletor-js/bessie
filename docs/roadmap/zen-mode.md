@@ -1,10 +1,10 @@
 # Zen mode
 
-**Status:** Deferred
-**Roadmap horizon:** Deferred (2026-08-02)
+**Status:** Approved for bounded V1 remediation
+**Roadmap horizon:** V1 (promoted by Jordan 2026-08-02)
 **Product area:** Workspace focus
-**Implementation approval:** Not granted by this document
-**Deferred reason:** Jordan 2026-08-02 — not needed for V1.
+**Implementation approval:** Granted as part of hands-on acceptance remediation
+**Execution:** [`../plans/2026-08-03-v1-acceptance-remediation.md`](../plans/2026-08-03-v1-acceptance-remediation.md) §8.3
 
 ## Outcome
 
@@ -14,12 +14,13 @@ Offer a nearly chrome-free real terminal while preserving awareness of the rest 
 
 Pane zoom exists, but the design proposes a distinct focus presentation with a tiny herd spine and cross-agent cues.
 
-## First useful slice
+## Bounded V1 slice
 
-- Hide nonessential chrome around the selected libghostty pane.
-- Show a minimal status line and herd-state dots.
-- Add exit, next-agent, and next-attention shortcuts.
-- Route completion cues without stealing terminal focus.
+- Hide nonessential chrome around the selected real libghostty pane.
+- Show a minimal connection/herd spine and blocked cue.
+- Add exit, previous/next-agent, and next-attention commands.
+- Route completion/blocked cues without stealing terminal focus.
+- Preserve connection-loss and ownership-conflict recovery.
 
 ## Possible later scope
 
@@ -42,6 +43,6 @@ Bessie must preserve Herdr as the authority for sessions, panes, processes, agen
 - Is Zen a stronger zoom state or an independent workspace mode?
 - Which status facts are essential enough to remain visible?
 
-## Graduation criteria
+## V1 acceptance
 
-Before this idea becomes **Proposed**, validate the first useful slice against the current Herdr contracts, identify local and remote behavior, define failure and empty states, and split any high-risk side effects into separately approved milestones.
+Zen is presentation only: it creates no Herdr objects, changes no durable topology, never substitutes a terminal, and exits predictably through visible and keyboard paths. Live tests must cover focus, reconnect, blocked cues, shortcuts, and ordinary Herdr state before/after entry.

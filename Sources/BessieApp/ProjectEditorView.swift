@@ -4,7 +4,6 @@ import SwiftUI
 
 struct ProjectEditorView: View {
     @ObservedObject var model: ProjectsViewModel
-    @Environment(\.dismiss) private var dismiss
     @State private var selectedTabID: UUID?
     @State private var selectedPaneID: UUID?
 
@@ -19,29 +18,29 @@ struct ProjectEditorView: View {
     var body: some View {
         let validationMessages = model.validationMessages
         VStack(spacing: 0) {
-            BessieTopBar(title: draft?.revision == nil ? "Create Project" : "Edit Project") {
-                Button("Cancel") { model.discardDraft(); dismiss() }
+            BessieTopBar(title: draft?.revision == nil ? "Create project" : "Edit project") {
+                Button("Cancel") { model.discardDraft() }
                     .keyboardShortcut(.cancelAction)
                     .buttonStyle(BessieSecondaryButtonStyle())
-                Button("Save") {
-                    if model.saveDraft() { dismiss() }
-                }
+                Button("Save project") { _ = model.saveDraft() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(BessiePrimaryButtonStyle())
                 .disabled(!validationMessages.isEmpty)
             }
 
-            HSplitView {
-                projectForm
-                    .frame(minWidth: 285, idealWidth: 320, maxWidth: 380)
+            HStack(spacing: 0) {
+                ScrollView {
+                    projectForm
+                }
+                    .frame(width: 286)
                 layoutEditor
-                    .frame(minWidth: 480)
+                    .frame(maxWidth: .infinity)
             }
 
             if !validationMessages.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(Set(validationMessages)).sorted(), id: \.self) { message in
-                        Label(message, systemImage: "exclamationmark.triangle")
+                        Text(message)
                     }
                 }
                 .font(.system(size: 10.5))
@@ -54,9 +53,9 @@ struct ProjectEditorView: View {
                 .accessibilityLabel("Project validation errors")
             }
         }
-        .frame(minWidth: 940, idealWidth: 1040, minHeight: 650, idealHeight: 720)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(BessieDesign.background)
-        .background(BessieWindowSnapshotProbe(role: "sheet"))
+        .background(BessieWindowSnapshotProbe())
         .onAppear { selectInitialItems() }
         .onChange(of: model.draft?.tabs.map(\.id)) { _, _ in selectInitialItems() }
         .alert("Project could not be saved", isPresented: errorPresented) {
@@ -65,34 +64,34 @@ struct ProjectEditorView: View {
     }
 
     private var projectForm: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                BessieSectionLabel("PROJECT")
-                BessieLabeledInput(label: "Name") {
+        VStack(alignment: .leading, spacing: 12) {
+                BessieLabeledInput(label: "Project name") {
                     TextField("Project name", text: draftBinding(\.name, default: ""))
                         .bessieInput()
                 }
-                BessieLabeledInput(label: "Description") {
-                    TextField("What this project is for", text: draftBinding(\.projectDescription, default: ""), axis: .vertical)
-                        .lineLimit(2...4)
-                        .bessieInput()
-                }
-                BessieLabeledInput(label: "Group", hint: "Optional") {
-                    TextField("Team or category", text: groupBinding)
-                        .bessieInput()
-                }
-                BessieLabeledInput(label: "Folder") {
-                    HStack(spacing: 6) {
-                        TextField("/absolute/path", text: draftBinding(\.workingDirectory, default: ""))
-                            .bessieInput()
-                        Button("Choose…", action: chooseFolder)
-                            .buttonStyle(BessieSecondaryButtonStyle())
-                            .accessibilityHint("Choose an absolute working directory")
+                BessieLabeledInput(label: "Workspace") {
+                    Button(action: chooseFolders) {
+                        Text(draft?.project.primaryFolder?.path ?? "Choose workspace…")
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .buttonStyle(BessieSecondaryButtonStyle())
                 }
+                BessieLabeledInput(label: "Herd", hint: "local or remote") {
+                    HStack {
+                        Text("local").font(.system(size: 11.5, design: .monospaced))
+                        Spacer()
+                        BessieIconView(icon: .caretDown, size: 11)
+                    }
+                    .padding(.horizontal, 9).frame(height: 30)
+                    .background(BessieDesign.inset)
+                    .overlay { RoundedRectangle(cornerRadius: BessieDesign.controlRadius).stroke(BessieDesign.border) }
+                }
+                Divider().overlay(BessieDesign.border)
 
-                BessieSectionLabel("TABS")
-                    .padding(.top, 4)
+                BessieSectionLabel("Tabs")
                 VStack(spacing: 5) {
                     ForEach(draft?.tabs ?? []) { tab in
                         HStack(spacing: 5) {
@@ -101,7 +100,7 @@ struct ProjectEditorView: View {
                                 selectedPaneID = tab.panes.first?.id
                             } label: {
                                 HStack {
-                                    Image(systemName: "rectangle.stack")
+                                    BessieIconView(icon: .browser, size: 14)
                                     Text(tab.name).lineLimit(1)
                                     Spacer()
                                     Text("\(tab.panes.count)")
@@ -110,30 +109,39 @@ struct ProjectEditorView: View {
                                 }
                                 .padding(.horizontal, 8)
                                 .frame(height: 29)
-                                .background(selectedTab?.id == tab.id ? BessieDesign.selected : Color.clear)
+                                .background(selectedTab?.id == tab.id ? BessieDesign.selected : BessieSemanticColor.clear)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            Menu {
-                                Button("Move up") { model.moveTab(tab.id, by: -1) }
-                                Button("Move down") { model.moveTab(tab.id, by: 1) }
-                                Button("Duplicate") { model.duplicateTab(tab.id) }
+                            BessieActionPopover(label: "Actions for tab \(tab.name)") { dismiss in
+                                BessiePopoverActionRow(title: "Move up", symbol: "arrow.up") {
+                                    dismiss(); model.moveTab(tab.id, by: -1)
+                                }
+                                BessiePopoverActionRow(title: "Move down", symbol: "arrow.down") {
+                                    dismiss(); model.moveTab(tab.id, by: 1)
+                                }
+                                BessiePopoverActionRow(title: "Duplicate", symbol: "plus.square.on.square") {
+                                    dismiss(); model.duplicateTab(tab.id)
+                                }
                                 Divider()
-                                Button("Remove", role: .destructive) { model.removeTab(tab.id) }
-                                    .disabled((draft?.tabs.count ?? 0) <= 1)
-                            } label: {
-                                Image(systemName: "ellipsis").frame(width: 24, height: 24)
+                                BessiePopoverActionRow(
+                                    title: "Remove",
+                                    symbol: "trash",
+                                    destructive: true,
+                                    disabled: (draft?.tabs.count ?? 0) <= 1
+                                ) {
+                                    dismiss(); model.removeTab(tab.id)
+                                }
                             }
-                            .menuStyle(.borderlessButton)
-                            .accessibilityLabel("Actions for tab \(tab.name)")
                         }
                     }
                 }
-                Button("Add tab") { model.addTab() }
+                Button { model.addTab() } label: {
+                    HStack(spacing: 6) { BessieIconView(icon: .plus, size: 12); Text("Add tab") }
+                }
                     .buttonStyle(BessieSecondaryButtonStyle())
-            }
-            .padding(18)
         }
+        .padding(16)
         .background(BessieDesign.rail)
     }
 
@@ -141,29 +149,40 @@ struct ProjectEditorView: View {
         VStack(spacing: 0) {
             if let tab = selectedTab {
                 HStack(spacing: 8) {
-                    TextField("Tab name", text: tabNameBinding(tab.id))
-                        .bessieInput()
-                        .frame(maxWidth: 260)
+                    Text(tab.name).font(.system(size: 12.5, weight: .medium))
+                    Text("drag a divider to change the split")
+                        .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(BessieDesign.faint)
                     Spacer()
-                    Button("Split right") { splitSelected(.right) }
+                    Button { splitSelected(.right) } label: {
+                        HStack(spacing: 6) { BessieIconView(icon: .squareSplitHorizontal, size: 13); Text("Split right") }
+                    }
                         .buttonStyle(BessieSecondaryButtonStyle())
-                    Button("Split down") { splitSelected(.down) }
+                    Button { splitSelected(.down) } label: {
+                        HStack(spacing: 6) { BessieIconView(icon: .squareSplitVertical, size: 13); Text("Split down") }
+                    }
                         .buttonStyle(BessieSecondaryButtonStyle())
                 }
-                .padding(12)
-                .background(BessieDesign.panel)
+                .padding(.bottom, 12)
 
-                HSplitView {
-                    VStack(spacing: 0) {
-                        ProjectLayoutPreview(tab: tab, selectedPaneID: selectedPane?.id)
-                            .padding(12)
-                        Divider().overlay(BessieDesign.border)
+                HStack(spacing: 0) {
+                    VStack(spacing: 12) {
+                        ProjectLayoutPreview(
+                            project: draft?.project,
+                            tab: tab,
+                            selectedPaneID: selectedPane?.id,
+                            onSelectPane: { selectedPaneID = $0 },
+                            onChangeRatio: { paneID, ratio in
+                                model.updatePaneRatio(tabID: tab.id, paneID: paneID, ratio: ratio)
+                            },
+                            onAddPane: { splitSelected(.right) }
+                        )
                         commandPreview(tab)
-                            .frame(minHeight: 120, maxHeight: 180)
+                            .frame(height: 135)
                     }
 
                     paneInspector(tab)
-                        .frame(minWidth: 245, idealWidth: 275, maxWidth: 330)
+                        .frame(width: 270)
+                        .padding(.leading, 16)
                 }
             } else {
                 Text("Add a tab to begin.")
@@ -171,55 +190,50 @@ struct ProjectEditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .padding(16)
         .background(BessieDesign.background)
     }
 
     private func paneInspector(_ tab: BessieProjectTab) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                BessieSectionLabel("PANES")
-                ForEach(tab.panes) { pane in
-                    Button {
-                        selectedPaneID = pane.id
-                    } label: {
-                        HStack {
-                            Image(systemName: pane.id == selectedPane?.id ? "rectangle.inset.filled" : "rectangle")
-                            Text(pane.label ?? "Shell").lineLimit(1)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 28)
-                        .background(pane.id == selectedPane?.id ? BessieDesign.selected : Color.clear)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
                 if let pane = selectedPane {
-                    Divider().overlay(BessieDesign.border)
-                    BessieLabeledInput(label: "Pane label", hint: "Optional") {
+                    BessieSectionLabel("Pane \((tab.panes.firstIndex(where: { $0.id == pane.id }) ?? 0) + 1)")
+                    BessieLabeledInput(label: "Name", hint: "what the sidebar shows if the agent sets no session title") {
                         TextField("Shell", text: paneLabelBinding(tabID: tab.id, pane: pane))
                             .bessieInput()
                     }
-                    BessieLabeledInput(label: "Startup command", hint: "Reviewed text only. One exact line; no secrets or environment fields.") {
+                    BessieLabeledInput(label: "Runs", hint: "one exact line · no secrets") {
                         TextField("Optional command", text: paneCommandBinding(tabID: tab.id, pane: pane))
                             .bessieInput()
+                    }
+                    BessieLabeledInput(label: "Initial folder") {
+                        Picker("Initial folder", selection: paneFolderBinding(tabID: tab.id, pane: pane)) {
+                            Text("Use project primary — \(draft?.project.primaryFolder?.name ?? "Folder")")
+                                .tag(UUID?.none)
+                            ForEach(draft?.folders ?? []) { folder in
+                                Text(folder.isPrimary ? "\(folder.name) (currently primary)" : folder.name)
+                                    .tag(Optional(folder.id))
+                            }
+                        }
+                        .labelsHidden()
                     }
                     if case .split(_, let direction, let ratio) = pane.placement {
                         BessieLabeledInput(label: "Split ratio", hint: "\(direction == .right ? "Left" : "Top") pane: \(Int(ratio * 100))%") {
                             Slider(value: paneRatioBinding(tabID: tab.id, pane: pane), in: 0.1...0.9, step: 0.05)
                         }
                     }
-                    Button("Remove pane", role: .destructive) {
+                    Spacer(minLength: 0)
+                    Button(role: .destructive) {
                         model.removePane(tabID: tab.id, paneID: pane.id)
                         selectedPaneID = model.draft?.tabs.first(where: { $0.id == tab.id })?.panes.first?.id
-                    }
+                    } label: { HStack(spacing: 6) { BessieIconView(icon: .x, size: 12); Text("Remove pane") } }
                     .buttonStyle(BessieSecondaryButtonStyle())
                     .disabled(!model.canRemovePane(tabID: tab.id, paneID: pane.id))
                     .help("Only leaf panes can be removed; remove their child splits first.")
                 }
             }
-            .padding(14)
+            .padding(.leading, 16)
         }
         .background(BessieDesign.rail)
     }
@@ -227,16 +241,17 @@ struct ProjectEditorView: View {
     private func commandPreview(_ tab: BessieProjectTab) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                BessieSectionLabel("EXACT COMMAND PREVIEW")
-                ForEach(tab.panes) { pane in
-                    HStack(alignment: .top, spacing: 10) {
-                        Text(pane.label ?? "Shell")
-                            .frame(width: 100, alignment: .leading)
-                            .foregroundStyle(BessieDesign.subtle)
-                        Text(pane.commandDisplay(fallback: "Shell only"))
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
+                BessieSectionLabel("What Bessie will run")
+                Text("cd \(draft?.project.workingDirectory ?? "Unavailable")")
+                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(BessieDesign.faint)
+                ForEach(Array(tab.panes.enumerated()), id: \.element.id) { index, pane in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(index + 1)").foregroundStyle(BessieDesign.subtle)
+                            Text(pane.label ?? "Shell").frame(width: 70, alignment: .leading)
+                            Text(pane.commandDisplay(fallback: "Shell only"))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
                 }
             }
             .padding(12)
@@ -260,15 +275,15 @@ struct ProjectEditorView: View {
         if !tab.panes.contains(where: { $0.id == selectedPaneID }) { selectedPaneID = tab.panes.first?.id }
     }
 
-    private func chooseFolder() {
+    private func chooseFolders() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Project Folder"
+        panel.title = "Add Project Folders"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canCreateDirectories = true
-        if panel.runModal() == .OK, let url = panel.url {
-            model.draft?.workingDirectory = url.standardizedFileURL.path
+        if panel.runModal() == .OK {
+            model.addFolders(panel.urls)
         }
     }
 
@@ -279,8 +294,18 @@ struct ProjectEditorView: View {
         )
     }
 
-    private var groupBinding: Binding<String> {
-        Binding(get: { model.draft?.group ?? "" }, set: { model.draft?.group = $0.isEmpty ? nil : $0 })
+    private func folderNameBinding(_ folderID: UUID) -> Binding<String> {
+        Binding(
+            get: { model.draft?.folders.first(where: { $0.id == folderID })?.name ?? "" },
+            set: { model.renameFolder(folderID, name: $0) }
+        )
+    }
+
+    private func folderPathBinding(_ folderID: UUID) -> Binding<String> {
+        Binding(
+            get: { model.draft?.folders.first(where: { $0.id == folderID })?.path ?? "" },
+            set: { model.updateFolderPath(folderID, path: $0) }
+        )
     }
 
     private func tabNameBinding(_ tabID: UUID) -> Binding<String> {
@@ -301,6 +326,13 @@ struct ProjectEditorView: View {
         Binding(
             get: { currentPane(tabID: tabID, paneID: pane.id)?.command ?? "" },
             set: { model.updatePaneCommand(tabID: tabID, paneID: pane.id, command: $0) }
+        )
+    }
+
+    private func paneFolderBinding(tabID: UUID, pane: BessieProjectPane) -> Binding<UUID?> {
+        Binding(
+            get: { currentPane(tabID: tabID, paneID: pane.id)?.folderID },
+            set: { model.updatePaneFolder(tabID: tabID, paneID: pane.id, folderID: $0) }
         )
     }
 

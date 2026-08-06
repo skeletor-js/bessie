@@ -113,16 +113,32 @@ Record anything surprising, even if it is only a rough edge. This candidate rema
 
 ## Keyboard shortcuts
 
-Bessie uses native macOS Command shortcuts. Press `Cmd+B` to open the searchable command palette, browse every available action and its shortcut, and run an action with Return or a click.
+Bessie uses Ghostty-style native macOS Command shortcuts. Product chords (split, close pane, tabs, rail, palette, …) use **one window-scoped policy** — they do not change based on whether the terminal or chrome currently has focus. They only yield to ordinary text fields, IME composition, and modal sheets.
 
-- `Cmd+N` creates a workspace; `Cmd+T` creates a tab; `Cmd+1`–`9` jumps directly.
-- `Cmd+[` / `Cmd+]` changes tabs; `Cmd+W` closes a tab.
-- `Cmd+D` splits right; `Shift+Cmd+D` splits down.
-- `Option+Cmd+Arrow` moves pane focus; add Shift to swap panes.
-- `Control+Cmd+Arrow` resizes a pane.
-- `Shift+Cmd+B` toggles the rail; `Cmd+,` opens Settings.
+Press `Cmd+Shift+P` to open the searchable command palette (also **Bessie → Command Palette…**). Browse every action and its shortcut there. In the palette: `↑`/`↓` move, `Return` runs, `Cmd+Return` runs the alternate route when present, `Esc` closes.
 
-Ordinary terminal input, including terminal Control sequences, remains owned by the focused terminal. Only exact Command shortcuts are claimed by Bessie.
+### Product / topology
+- `Cmd+N` new workspace · `Cmd+T` new tab · `Cmd+1`–`9` jump to tab
+- `Cmd+[` / `Cmd+]` cycle **panes** · `Cmd+Shift+[` / `Cmd+Shift+]` cycle **tabs**
+- `Cmd+W` close **pane** (confirm) · `Cmd+Shift+W` close workspace · close tab via palette
+- `Cmd+D` split right · `Shift+Cmd+D` split down · `Cmd+Shift+Enter` zoom pane
+- `Option+Cmd+Arrow` focus pane · `Shift+Option+Cmd+Arrow` swap · `Control+Cmd+Arrow` resize
+- `Cmd+Shift+J` / `Cmd+Shift+K` walk the rail · `Cmd+Shift+B` toggle rail · `Cmd+,` Settings
+- `Option+P` Projects · `Cmd+Shift+G` workspaces · `Cmd+Shift+Z` Zen · `Option+Cmd+N` next needs-you
+- `Shift+Option+Cmd+[` / `]` previous/next agent · `Esc` exits Zen
+
+### Terminal-focused (Ghostty-style)
+- `Cmd+B` → one byte `0x02` (Herdr prefix; same as your Ghostty `cmd+b=text:\\x02`)
+- `Cmd+G` → delete entire line (`Ctrl-A` + `Ctrl-K`) — Ghostty uses ⌘G for search-next; Bessie has no terminal search yet
+- `Cmd+Backspace` → kill to start of line (`Ctrl-U`) · `Cmd+Delete` → kill to end (`Ctrl-K`)
+- `Cmd+←` / `Cmd+→` → beginning / end of line
+- `Option+←` / `Option+→` → word left / right (ESC b / ESC f)
+- `Cmd+C` copy selection, or `0x03` interrupt if nothing selected
+- `Cmd+V` paste · `Cmd+A` select all · `Cmd+K` clear scrollback
+- `Cmd+↑` / `Cmd+↓` jump to previous/next prompt
+- Ordinary typing and Control sequences stay with the terminal
+
+System chords `Cmd+Q` / `H` / `M` / `` ` `` always pass through to AppKit.
 
 ## How it is built
 

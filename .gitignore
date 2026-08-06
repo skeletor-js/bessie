@@ -6,4 +6,7 @@ dist/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
+.worktrees/
+__pycache__/
+*.pyc
 .env

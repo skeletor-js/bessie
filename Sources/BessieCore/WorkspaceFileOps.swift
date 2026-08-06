@@ -45,7 +45,7 @@ public enum WorkspaceFileOps {
         fileManager: FileManager = .default
     ) throws -> [WorkspaceBrowserItem] {
         if let remote = root.remote {
-            let abs = try WorkspaceFS.absolutePath(root: root, relativePath: relativeDirectory).get()
+            let abs = try WorkspaceFS.resolveFile(root: root, relativePath: relativeDirectory).get().path
             let entries = try SSHRemoteFileClient(access: remote).listDirectory(abs, limit: limit)
             return entries.compactMap { entry in
                 let relativePath = relativeDirectory.isEmpty ? entry.name : "\(relativeDirectory)/\(entry.name)"
@@ -97,7 +97,7 @@ public enum WorkspaceFileOps {
         maximumByteSize: Int = defaultTextByteLimit
     ) throws -> WorkspaceTextDocument {
         if let remote = root.remote {
-            let abs = try WorkspaceFS.absolutePath(root: root, relativePath: relativePath).get()
+            let abs = try WorkspaceFS.resolveFile(root: root, relativePath: relativePath).get().path
             let client = SSHRemoteFileClient(access: remote)
             let st = try client.stat(abs)
             guard st.exists, st.isRegularFile else { throw WorkspacePathError.notFound }

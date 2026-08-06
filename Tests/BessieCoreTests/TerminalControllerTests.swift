@@ -51,7 +51,8 @@ final class TerminalControllerTests: XCTestCase {
 
     func testInputRouterPreservesCompositeSubmissionOrder() throws {
         let transport = RecordingTerminalInputTransport()
-        let router = TerminalInputRouter(transport: transport)
+        let recorder = BessiePerformanceRecorder(now: SteppingClock(values: Array(stride(from: 0.0, through: 0.011, by: 0.001))).now)
+        let router = TerminalInputRouter(transport: transport, performanceRecorder: recorder)
 
         try router.send(.raw(Data("a".utf8)))
         try router.send(.keys(["left"]))
@@ -59,6 +60,148 @@ final class TerminalControllerTests: XCTestCase {
         try router.send(.scroll(direction: .down, lines: 2, source: .pageKey, column: nil, row: nil, modifiers: 0))
 
         XCTAssertEqual(transport.events, ["raw:a", "keys:left", "paste:β\n", "scroll:down:2:page_key"])
+        let grouped = Dictionary(grouping: recorder.evidence().milestones, by: \BessiePerformanceMark.sequence)
+        XCTAssertEqual(grouped.keys.compactMap { $0 }.count, 4)
+        for marks in grouped.values {
+            XCTAssertEqual(marks.map(\.milestone), [.terminalInputReceived, .terminalInputEnqueued, .terminalWriteCompleted])
+        }
+        let renderedSpans = recorder.evidence().spans.filter { $0.endMilestone == .terminalFrameRendered }
+        XCTAssertEqual(renderedSpans.count, 4)
+        XCTAssertTrue(renderedSpans.allSatisfy { $0.budgetVerdict == .unavailable })
+    }
+
+    func testEnqueuedInputReturnsBeforeTransportCompletesAndKeepsFIFOOrder() {
+        let gate = DispatchSemaphore(value: 0)
+        let transport = RecordingTerminalInputTransport(firstOperationGate: gate)
+        let router = TerminalInputRouter(transport: transport)
+        let returned = expectation(description: "enqueue returns while transport is blocked")
+
+        DispatchQueue.global().async {
+            router.enqueue(.raw(Data("a".utf8)))
+            returned.fulfill()
+        }
+
+        let result = XCTWaiter.wait(for: [returned], timeout: 0.5)
+        if result != .completed {
+            gate.signal()
+            XCTFail("enqueue blocked on terminal transport")
+            return
+        }
+        XCTAssertTrue(transport.waitForEventCount(1, timeout: 0.5))
+        router.enqueue(.keys(["enter"]))
+        router.enqueue(.paste("next"))
+        gate.signal()
+        XCTAssertTrue(transport.waitForEventCount(3, timeout: 1))
+        XCTAssertEqual(transport.events, ["raw:a", "keys:enter", "paste:next"])
+    }
+
+    func testInputRouterPreservesTenThousandCompositeOperationsWithoutDropOrReorder() throws {
+        let transport = RecordingTerminalInputTransport()
+        let router = TerminalInputRouter(transport: transport)
+        var expected: [String] = []
+        expected.reserveCapacity(10_000)
+
+        for index in 0..<10_000 {
+            switch index % 4 {
+            case 0:
+                try router.send(.raw(Data("x".utf8)))
+                expected.append("raw:x")
+            case 1:
+                try router.send(.keys(["left"]))
+                expected.append("keys:left")
+            case 2:
+                try router.send(.paste("paste-\(index)"))
+                expected.append("paste:paste-\(index)")
+            default:
+                try router.send(.scroll(
+                    direction: .down,
+                    lines: 2,
+                    source: .pageKey,
+                    column: nil,
+                    row: nil,
+                    modifiers: 0
+                ))
+                expected.append("scroll:down:2:page_key")
+            }
+        }
+
+        XCTAssertEqual(transport.events, expected)
+    }
+
+    func testInputRouterReturnsSequenceForAnExplicitRenderedFrameCorrelation() throws {
+        let transport = RecordingTerminalInputTransport()
+        let recorder = BessiePerformanceRecorder(now: SteppingClock(values: [0, 0.001, 0.002, 0.010]).now)
+        let router = TerminalInputRouter(transport: transport, performanceRecorder: recorder)
+
+        let sequence = try XCTUnwrap(router.send(.raw(Data("x".utf8)), correlateToRenderedFrame: true))
+        recorder.mark(.terminalFrameRendered, sequence: sequence)
+
+        XCTAssertEqual(sequence, 1)
+        XCTAssertEqual(
+            recorder.duration(from: .terminalInputReceived, to: .terminalFrameRendered, sequence: sequence),
+            10,
+            accuracy: 0.001
+        )
+        XCTAssertFalse(recorder.evidence().spans.contains {
+            $0.sequence == sequence && $0.budgetVerdict == .unavailable
+        })
+    }
+
+    func testFocusStateRequiresAuthoritativeAndResponderAgreementForOutline() {
+        var focus = TerminalFocusStateMachine(authoritativePaneID: "p1", responderPaneID: "p1")
+        XCTAssertEqual(focus.outlinedPaneID, "p1")
+
+        let request = focus.beginRequest(paneID: "p2")
+        focus.responderChanged(paneID: "p2", isFirstResponder: true)
+        XCTAssertNil(focus.outlinedPaneID)
+
+        XCTAssertTrue(focus.complete(request, authoritativePaneID: "p2"))
+        XCTAssertEqual(focus.outlinedPaneID, "p2")
+    }
+
+    func testRapidFocusSwitchIgnoresStaleCompletionAndNeverRestoresOldOutline() {
+        var focus = TerminalFocusStateMachine(authoritativePaneID: "p1", responderPaneID: "p1")
+        let first = focus.beginRequest(paneID: "p2")
+        focus.responderChanged(paneID: "p2", isFirstResponder: true)
+        let second = focus.beginRequest(paneID: "p1")
+        focus.responderChanged(paneID: "p1", isFirstResponder: true)
+
+        XCTAssertFalse(focus.complete(first, authoritativePaneID: "p2"))
+        XCTAssertNil(focus.outlinedPaneID)
+        XCTAssertTrue(focus.complete(second, authoritativePaneID: "p1"))
+        XCTAssertEqual(focus.outlinedPaneID, "p1")
+    }
+
+    func testExternalAuthoritativeFocusDoesNotClaimResponderOrOutline() {
+        var focus = TerminalFocusStateMachine(authoritativePaneID: "p1", responderPaneID: "p1")
+
+        focus.reconcile(authoritativePaneID: "p2")
+
+        XCTAssertEqual(focus.responderPaneID, "p1")
+        XCTAssertNil(focus.outlinedPaneID)
+    }
+
+    func testStaleResponderLossCannotClearTheNewResponder() {
+        var focus = TerminalFocusStateMachine(authoritativePaneID: "p2", responderPaneID: "p1")
+
+        focus.responderChanged(paneID: "p2", isFirstResponder: true)
+        focus.responderChanged(paneID: "p1", isFirstResponder: false)
+
+        XCTAssertEqual(focus.responderPaneID, "p2")
+        XCTAssertEqual(focus.outlinedPaneID, "p2")
+    }
+
+    func testFailedFocusClearsOnlyTheMatchingPendingRequest() {
+        var focus = TerminalFocusStateMachine(authoritativePaneID: "p1", responderPaneID: "p1")
+        let failed = focus.beginRequest(paneID: "p2")
+
+        XCTAssertTrue(focus.fail(failed))
+        XCTAssertNil(focus.pendingRequest)
+
+        let stale = focus.beginRequest(paneID: "p2")
+        let current = focus.beginRequest(paneID: "p3")
+        XCTAssertFalse(focus.fail(stale))
+        XCTAssertEqual(focus.pendingRequest, current)
     }
 
     func testProcessInvocationUsesOneControllerWithoutTakeover() {
@@ -140,9 +283,165 @@ final class TerminalControllerTests: XCTestCase {
         XCTAssertTrue(invocations[1].contains("--takeover"))
     }
 
+    func testDeltaFramesDoNotRepublishReadyState() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-delta-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scriptURL = directory.appendingPathComponent("fake-herdr")
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}'
+        printf '%s\\n' '{"type":"terminal.frame","seq":2,"encoding":"ansi","width":80,"height":24,"full":false,"bytes":"IQ=="}'
+        while IFS= read -r line; do
+            case "$line" in
+                *'"cmd":"release"'*) exit 0 ;;
+            esac
+        done
+        """
+        try Data(script.utf8).write(to: scriptURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let frames = expectation(description: "both frames delivered")
+        frames.expectedFulfillmentCount = 2
+        let states = TerminalStatusRecorder()
+        let controller = HerdrTerminalController(
+            executablePath: scriptURL.path,
+            paneID: "p1",
+            socketPath: "/tmp/test.sock",
+            environment: ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"],
+            onFrame: { _ in frames.fulfill() },
+            onState: { states.record($0) }
+        )
+
+        controller.start()
+        wait(for: [frames], timeout: 2)
+        controller.release()
+
+        XCTAssertEqual(states.readyCount, 1)
+    }
+
+    func testReleasedControllerCanResumeWithoutLosingItsConfiguredGrid() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-release-resume-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logURL = directory.appendingPathComponent("invocations.log")
+        let scriptURL = directory.appendingPathComponent("fake-herdr")
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$BESSIE_TEST_LOG"
+        printf '%s\\n' '{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}'
+        while IFS= read -r line; do
+            case "$line" in
+                *'"cmd":"release"'*) exit 0 ;;
+            esac
+        done
+        """
+        try Data(script.utf8).write(to: scriptURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let firstReady = expectation(description: "initial stream ready")
+        let secondReady = expectation(description: "resumed stream ready")
+        let readyRecorder = TerminalReadyRecorder(first: firstReady, second: secondReady)
+        let controller = HerdrTerminalController(
+            executablePath: scriptURL.path,
+            paneID: "p1",
+            socketPath: "/tmp/test.sock",
+            environment: [
+                "BESSIE_TEST_LOG": logURL.path,
+                "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+            ],
+            onFrame: { _ in },
+            onState: { status in
+                guard case .ready = status else { return }
+                readyRecorder.record()
+            }
+        )
+
+        controller.start()
+        wait(for: [firstReady], timeout: 2)
+        controller.release()
+        controller.retry()
+        wait(for: [secondReady], timeout: 2)
+        controller.release()
+
+        let invocations = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertEqual(invocations.count, 2)
+        XCTAssertTrue(invocations.allSatisfy { $0.contains("--cols 80 --rows 24") })
+    }
+
     func testProcessFailureSeparatesOwnershipConflictFromReconnectableExit() {
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "terminal x already has an attached client; retry with --takeover", status: 1), .ownershipConflict("terminal x already has an attached client; retry with --takeover"))
         XCTAssertEqual(TerminalControllerFailure.classify(stderr: "", status: 9), .processExit("terminal controller exited 9"))
+    }
+
+    func testClosedStreamWithTakeoverHintIsOwnershipConflictNotReconnectLoop() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-conflict-closed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logURL = directory.appendingPathComponent("invocations.log")
+        let scriptURL = directory.appendingPathComponent("fake-herdr")
+        // First attach: closed with takeover hint. Second (takeover): ready frame.
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$BESSIE_TEST_LOG"
+        case "$*" in
+          *--takeover*)
+            printf '%s\\n' '{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}'
+            while IFS= read -r line; do
+              case "$line" in
+                *'"type":"terminal.release"'*) exit 0 ;;
+              esac
+            done
+            ;;
+          *)
+            printf '%s\\n' '{"type":"terminal.closed","reason":"terminal attach failed: terminal term_x already has an attached client; retry with --takeover"}'
+            exit 0
+            ;;
+        esac
+        """
+        try Data(script.utf8).write(to: scriptURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let conflict = expectation(description: "ownership conflict")
+        let ready = expectation(description: "takeover ready")
+        let states = TerminalStatusRecorder()
+        let controller = HerdrTerminalController(
+            executablePath: scriptURL.path,
+            paneID: "p1",
+            socketPath: "/tmp/test.sock",
+            environment: [
+                "BESSIE_TEST_LOG": logURL.path,
+                "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+            ],
+            onFrame: { _ in },
+            onState: { status in
+                states.record(status)
+                if case .ownershipConflict = status { conflict.fulfill() }
+                if case .ready = status { ready.fulfill() }
+            }
+        )
+
+        controller.start()
+        wait(for: [conflict], timeout: 2)
+        controller.takeOver()
+        wait(for: [ready], timeout: 2)
+        controller.release()
+
+        let invocations = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertEqual(invocations.count, 2)
+        XCTAssertFalse(invocations[0].contains("--takeover"))
+        XCTAssertTrue(invocations[1].contains("--takeover"))
+        XCTAssertGreaterThanOrEqual(states.ownershipConflictCount, 1)
     }
 }
 
@@ -167,12 +466,70 @@ private final class TerminalReadyRecorder: @unchecked Sendable {
     }
 }
 
-private final class RecordingTerminalInputTransport: TerminalInputTransport, @unchecked Sendable {
-    private(set) var events: [String] = []
-    func sendRaw(_ data: Data) throws { events.append("raw:" + String(decoding: data, as: UTF8.self)) }
-    func sendKeys(_ keys: [String]) throws { events.append("keys:" + keys.joined(separator: ",")) }
-    func sendPaste(_ text: String) throws { events.append("paste:" + text) }
-    func sendScroll(direction: TerminalScrollDirection, lines: Int, source: TerminalScrollSource, column: Int?, row: Int?, modifiers: Int) throws {
-        events.append("scroll:\(direction.rawValue):\(lines):\(source.rawValue)")
+private final class TerminalStatusRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var statuses: [TerminalControllerStatus] = []
+
+    func record(_ status: TerminalControllerStatus) {
+        lock.withLock { statuses.append(status) }
     }
+
+    var readyCount: Int {
+        lock.withLock { statuses.filter { if case .ready = $0 { true } else { false } }.count }
+    }
+
+    var ownershipConflictCount: Int {
+        lock.withLock { statuses.filter { if case .ownershipConflict = $0 { true } else { false } }.count }
+    }
+}
+
+private final class RecordingTerminalInputTransport: TerminalInputTransport, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let firstOperationGate: DispatchSemaphore?
+    private var storedEvents: [String] = []
+    private var firstOperation = true
+
+    init(firstOperationGate: DispatchSemaphore? = nil) {
+        self.firstOperationGate = firstOperationGate
+    }
+
+    var events: [String] {
+        condition.withLock { storedEvents }
+    }
+
+    func sendRaw(_ data: Data) throws { record("raw:" + String(decoding: data, as: UTF8.self)) }
+    func sendKeys(_ keys: [String]) throws { record("keys:" + keys.joined(separator: ",")) }
+    func sendPaste(_ text: String) throws { record("paste:" + text) }
+    func sendScroll(direction: TerminalScrollDirection, lines: Int, source: TerminalScrollSource, column: Int?, row: Int?, modifiers: Int) throws {
+        record("scroll:\(direction.rawValue):\(lines):\(source.rawValue)")
+    }
+
+    func waitForEventCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while storedEvents.count < count {
+            if !condition.wait(until: deadline) { return false }
+        }
+        return true
+    }
+
+    private func record(_ event: String) {
+        condition.lock()
+        storedEvents.append(event)
+        let shouldBlock = firstOperation
+        firstOperation = false
+        condition.broadcast()
+        condition.unlock()
+        if shouldBlock { firstOperationGate?.wait() }
+    }
+}
+
+private final class SteppingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [TimeInterval]
+
+    init(values: [TimeInterval]) { self.values = values }
+
+    func now() -> TimeInterval { lock.withLock { values.removeFirst() } }
 }

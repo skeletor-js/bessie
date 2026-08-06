@@ -1,5 +1,403 @@
 # Goal progress
 
+## 2026-08-05: Sidebar context actions and named topology creation
+
+Status: implemented, packaged, and installed on `jordan-macbook`; the feature tests pass, while the full Mac verifier still has a late unrelated performance-profile failure.
+
+- **Sidebar actions:** herd/host, workspace, tab, and pane rows now expose their existing actions through native right-click context menus. The host-level new-workspace action sends `workspace.create` without a `cwd`, leaving Herdr to choose that host's authoritative startup directory instead of copying the selected workspace.
+- **Required naming:** every interactive new-tab, split-pane, and move-pane-to-new-tab path now enters a shared required-name sheet before invoking Herdr. Process launch placements carry the required tab/pane name; split creation follows the public `pane.split` with public `pane.rename` after the new pane appears in the authoritative snapshot.
+- **Command palette:** opening with Command-Shift-P now focuses the search field immediately.
+- **Tests:** the Mac Swift suite passed **424/424**, including `testTopologyCreationControlsUseOrdinaryHerdrActions`, process-launch label coverage, context-menu presentation contracts, and command-palette focus-source coverage. VPS `./scripts/check.sh` passed.
+- **Mac verification:** the first run exposed and then fixed a missing `BessieThemeCoordinator` environment injection at launch. The rerun built and packaged successfully, passed all 424 Swift tests plus 21 CLI/MCP tests, passed the design snapshot, and completed the live terminal workload. It then exited at the verifier's asynchronous native `sample` wait after writing the profile; this was outside the sidebar/topology paths, so a complete `mac-verify.sh` green result is still outstanding.
+- **Install:** `/Applications/Bessie.app` was replaced from the latest newly packaged `dist/Bessie.app`, deep codesign verification passed, the executable is byte-identical at SHA-256 `eb6cbc1f4ab87b18ac8dd97906d6cc84f8a3461f2e8d1eadba22ae7afef92f66`, and the ordinary installed app was relaunched as pid `83232`. The packaged workspace screenshot showed intact sidebar, titlebar, split layout, and Ghostty terminal rendering.
+- No commit, push, PR, or upstream Herdr/libghostty change.
+
+## 2026-08-05: Restore working-status spinner without whole-window commits
+
+Status: fixed, packaged, installed on `jordan-macbook`.
+
+- **Cause:** earlier pane-lag work froze `BessieStatusGlyph` working ring at angle `0` because continuous SwiftUI rotation/`TimelineView` forced shared `NSHostingView` commits (~40% CPU) and starved libghostty.
+- **Fix:** working state now uses `BessieWorkingSpinner` / `BessieWorkingSpinnerNSView` — a tiny AppKit view with a Core Animation infinite rotation on a content layer. Same 10pt ring / 0.28 arc / 0.8s cadence. Reduce Motion keeps it static. Path rebuilds do not touch the animated transform.
+- **Tests:** `testWorkingSpinnerUsesCoreAnimationAndRespectsReduceMotion` plus existing visual foundation/rail tests — **25/25** on Mac.
+- **Verification:** VPS `./scripts/check.sh` passed. Packaged + installed `/Applications/Bessie.app` byte-identical SHA-256 `2c167fe5873c302121af1c42e4de4b8eba19ed226afe70729fbe0815584d502b`. `codesign --verify --deep --strict` ok. Relaunched (pid 8171). No commit/push/PR.
+
+## 2026-08-05: Intermittent pane-switch cold starts and terminal-wide lag
+
+Status: measured fix installed; one real visible click cycle remains to confirm the UI path.
+
+- **The intermittent pattern is now identified:** already-warm pane swaps attached and
+  flushed in **20–59 ms**. First selection of a cold pane attached quickly but waited
+  **1.2–1.9 s** for its first complete terminal frame; Herdr focus confirmation varied
+  from **2.1–2.85 s**. Re-selecting the same warmed pane returned to **20–23 ms**.
+- **Cold-start fix:** the current workspace's non-visible panes are bounded by the
+  existing warm capacity and receive real offscreen libghostty hosts. This starts the
+  public `herdr terminal session control` bridge before selection rather than creating
+  a dormant controller that cannot safely accept frames.
+- **Warm-stream boundary:** an intermediate candidate paused hidden streams after their
+  first complete frame. It displayed cached pixels in **33–50 ms**, but live traces
+  showed **0.65–1.3 s** of stale/non-interactive time while the selected stream resumed.
+  That candidate was rejected. With the status animation removed, all bounded panes in
+  the current workspace can remain live at **2.5–6.1% CPU**, eliminating the reconnect
+  gap. Hidden warm hosts remain excluded from interactive presentation and can never
+  receive first-responder focus.
+- **Post-switch lag root cause:** both `TimelineView(.animation)` and a replacement
+  continuously animated SwiftUI transform forced display-cadence commits of the shared
+  `NSHostingView`. With one active terminal this held Bessie near **40–42% CPU**. Making
+  the 14 px working glyph static reduced the same live workload to **3.5–7.1% CPU**.
+  The final keep-live candidate remained at **2.5–6.1% CPU** with all three current
+  workspace terminal controllers continuously ready.
+- **Verification:** VPS `./scripts/check.sh` and `git diff --check` passed. Focused Mac
+  suites (`SurfaceProjectionTests|TerminalControllerTests|BessieDesignSystemTests`)
+  passed **70/70**, including bounded precreation, hidden-host no-focus, and controller
+  release/resume coverage. Packaged and installed executables are byte-identical and
+  deep codesign verification passed.
+- **Install:** a later integrated mouse-debug package from the shared working tree
+  replaced the initial candidate while verification was active. `/Applications/Bessie.app`
+  and `dist/Bessie.app` are byte-identical at SHA-256
+  `440f4860aee98e0fa3fe55197afc579aa4fb3da6e7fd52566786cbeba2e7208e`.
+  Payload-free timing is active at `/tmp/bessie-mouse-debug5.log`. Bessie's public
+  `pane.focus` intent changes authoritative Herdr focus but does not drive visible UI
+  selection, so it was not misrepresented as a click-path verification.
+
+## 2026-08-05: Remote startup follow-up — host and API bootstrap
+
+Status: installed and live-measured on `jordan-macbook`; full verifier has an AppKit test-runner crash.
+
+- Set Jordan's saved launch policy to remote-only: `local-bessie=false`, `hermes-vps=true`.
+- Removed the redundant `ping` RPC for explicit socket/SSH connections. Compatibility is still checked against the subscribed snapshot before it is installed.
+- Added payload-free `remote_bridge_start` and `remote_tunnel_ready` performance milestones.
+- Live installed warm-master measurement: tunnel ready `225.6 ms` after connection start; snapshot installed `2590.7 ms`; shell ready `2676.8 ms`.
+- Direct API probes identified the remaining variance: `events.subscribe` and `session.snapshot` each vary between roughly `180 ms` and `790 ms`; buffered events can require a correctness-preserving second snapshot.
+- SSH review: Tailscale is direct at roughly `76–96 ms`; one ED25519 identity is offered and accepted; fresh SSH is roughly `2.9–3.9 s`; multiplexed commands are roughly `0.2–0.9 s`.
+- Host review: two 19-hour-old `workerd` processes from the Bessie landing-site worktree each consumed roughly one CPU. Jordan approved stopping them; both ignored `SIGTERM`, were identity-checked, then stopped with `SIGKILL`. Host idle improved from `19–26%` to `60–65%`, though provider-side steal remained `13–19%`.
+- Post-cleanup live measurement: snapshot installed `1888.0 ms` and shell ready `1973.6 ms` after connection start, versus `2590.7 ms` / `2676.8 ms` before cleanup.
+- Network review: the Mac's own Wi-Fi gateway measured `3.8/141.7/587.5 ms` min/avg/max with no loss. Public and tailnet routes showed the same roughly `680–704 ms` spikes, establishing local Wi-Fi jitter as the dominant remaining environmental delay. SSH compression made API latency worse and should remain disabled.
+- Verification: `./scripts/check.sh` passed; focused Mac suite passed 46/46; package built, signed, installed, and packaged/installed executable SHA-256 matched (`8e66efb0…adc3a`). `mac-verify.sh` twice reached the full suite but `xctest` crashed in AppKit `_NSWindowTransformAnimation` teardown; the named test passed alone. The full verifier is not recorded as passed.
+
+## 2026-08-05: Why Ghostty mouse works and Bessie's didn't (+ fix)
+
+Status: fixed — packaged and installed on `jordan-macbook`.
+
+### Why Ghostty is flawless here
+- Ghostty **owns the PTY + VT**. When a TUI enables mouse mode (`CSI ? 1000h`
+  etc.), Ghostty sees it on the real byte stream, sets `mouse_captured`, and only
+  then encodes pointer events into the PTY.
+- Bessie is a **remote renderer** of Herdr-owned panes. Herdr sends **painted ANSI
+  frames**, not the original PTY stream. Live probe confirmed frames do **not**
+  re-emit mouse DECSET. Herdr 0.8.0 also has **no public mouse-capture API**.
+- So Bessie cannot copy Ghostty's "only send mouse when captured" path without
+  upstream Herdr capability. It has to synthesize button SGR (or give up TUI mouse).
+
+### Why the previous Bessie path still failed for TUIs
+1. Every click called `requestFocus` → full Herdr `pane.focus` navigate + snapshot
+   refresh (Ghostty only does local `makeFirstResponder`). That async churn on
+   every mouseDown breaks mouse-aware TUIs.
+2. The "only when first responder" gate was the wrong control plane and blocked
+   legitimate TUI clicks in practice.
+
+### Fix just shipped
+- Default policy `.buttons`: button/drag → SGR; **free motion never** (no flood);
+  wheel → Herdr `terminal.scroll`; Shift → local selection.
+- Click path: local `makeFirstResponder` only; Herdr navigate **only if the pane
+  is not already selected**.
+- Zen / agent-detail surfaces get local focus hooks too.
+- Tests: `TerminalMouseRoutingTests` **8/8**.
+- Packaged/installed SHA-256
+  `8e66efb0b0638afe58d19500f870a12cc6a9c60139d0cac93c70843c369adc3a`
+  (byte-identical). Binary contains `Terminal mouse SGR`. No commit/push/PR.
+
+### Honest remaining gap
+Hover/any-event motion reporting still needs Herdr public capture state. Clicking
+in a plain shell may insert a short SGR burst (not a continuous flood). Shift-drag
+still selects.
+
+## 2026-08-04: Intermittent pane refresh / resize oscillation
+
+Status: fixed candidate installed with timing diagnostics armed.
+
+- **Observed code path:** `TerminalSurfaceHostView.layout()` ran `fitToSize()` on
+  every SwiftUI/AppKit layout pass, then called `terminalWasPresented()`, which
+  performed another full refresh. `fitToSize()` already sends the newly computed
+  grid through `InMemoryTerminalSession.resize`; the second path explicitly sent
+  another Herdr resize using the potentially stale grid in controller status.
+  Variable layout-pass counts therefore produced variable resize/full-frame churn.
+- **Fix:**
+  1. `TerminalSurfacePresentationTracker` permits one full presentation for a new
+     attachment or real size change; repeated same-size layout is a no-op.
+  2. Removed the explicit status-grid resize after `fitToSize()`; the in-memory
+     session resize is now the single grid authority.
+  3. Added payload-free switch stages to the optional state log: request,
+     host attach, display flush, and Herdr confirmation with monotonic elapsed ms.
+- **Tests:** VPS `./scripts/check.sh` passed. Mac focused suites
+  `SurfaceProjectionTests|ProjectionActionTests|IntentActionDispatcherTests|TerminalControllerTests`
+  passed **78/78**. The isolated notification test also passed **1/1**.
+- **Full verification:** `./scripts/mac-verify.sh` reached `xcrun swift test`,
+  where the aggregate XCTest process exited with signal 11 during an unrelated
+  `SettingsAndNotificationsTests` run. A direct aggregate rerun reproduced that
+  teardown/concurrency crash; the test at the crash boundary passes alone. The
+  full verifier therefore did **not** pass and is not reported as passing.
+- **Install:** `/Applications/Bessie.app` relaunched; packaged and installed
+  executable SHA-256 `fb04e6c9dac80c9f699b39ed5a6aaf86cb4855e59640ed1424fa15c3996e2c52`
+  (byte-identical), deep codesign verification passed, no startup faults.
+  Temporary timing capture is armed at `/tmp/bessie-pane-switch.log`; terminal
+  contents are never logged. Screenshot capture was blocked by macOS Screen
+  Recording permissions in the SSH session, so visual inspection is not claimed.
+
+## 2026-08-05: Mouse TUIs without gibberish flood
+
+Status: fixed — packaged and installed on `jordan-macbook`.
+
+- **Problem:** Unconditional SGR mouse inject fixed TUI clicks but flooded new
+  shells with free-motion escape sequences. Disabling all SGR stopped the flood
+  and also killed mouse-aware TUIs.
+- **Constraint (verified live):** Herdr 0.8.0 protocol 19 has no public mouse
+  capture command/state. Rendered ANSI frames do **not** re-emit DECSET mouse
+  modes (`1000/1002/1003/1006`), so local libghostty cannot track PTY mouse mode
+  from frames either.
+- **Fix — `buttonsWhenFocused` policy (default):**
+  1. Free **motion never** becomes PTY bytes (stops the gibberish stream).
+  2. Click that establishes first-responder → focus + local selection only (no
+     SGR into shells on click-to-focus).
+  3. Click/drag on an **already-focused** pane → SGR button sequences for mouse
+     TUIs; gesture stays armed through drag/up.
+  4. Wheel → Herdr `terminal.scroll` (host vs alternate-screen routing).
+  5. Shift → local selection always.
+  6. `.full` (motion SGR) reserved until Herdr advertises capture; `.unavailable`
+     remains for locked-down surfaces.
+- **Tests (Mac):** `TerminalMouseRoutingTests` + `TerminalSGRMouseTests` → **13/13**.
+- **Verify:** VPS `./scripts/check.sh` ok. Packaged + installed
+  `/Applications/Bessie.app`, relaunched. SHA-256
+  `d8451bc8ed89791d5bab7ba9247f766e5f7afc078c71386be88a4e4d839519bb`
+  (byte-identical). Binary contains `buttonsWhenFocused`. No commit/push/PR.
+- **UX note:** After focusing a pane (click or keyboard), mouse clicks reach the
+  TUI. The focus-establishing click itself does not inject SGR.
+
+## 2026-08-04: Pane-switch latency (batch + optimistic + light refresh)
+
+
+Status: packaged and installed on `jordan-macbook`.
+
+- **Why switches still felt laggy:** each focus hop did per-action Herdr RPC + full `session.snapshot` (often 3× for openPane); same-tab hops forced Herdr resize; multi async full refreshes and host recreate added cost.
+- **Shipped:**
+  1. Navigation batches via one `client.perform([actions])` → **one snapshot**.
+  2. `prunedNavigationActions` skips already-focused workspace/tab/pane RPCs.
+  3. Optimistic `applyingLocalFocus` paints chrome before Herdr returns.
+  4. `SurfaceRefresh.display` vs `.full` — same-tab skips resize storms; park/reattach still full.
+  5. Dropped forced `.id(paneID)` recreate (park-on-swap keeps correctness cheaper).
+  6. Single focus activation path instead of double/triple refresh.
+- **Tests:** `ProjectionActionTests|IntentActionDispatcherTests|SurfaceProjectionTests` → **58/58**.
+- **Verify:** `./scripts/check.sh` ok. Packaged + installed `/Applications/Bessie.app`, relaunched. SHA-256 `913acbd56c349c0a7bf996bc42cf30c4ab4356de96d288c205d36cc1e1c93ec5` (byte-identical). No commit/push/PR.
+
+## 2026-08-05: Remote connect fast path
+
+Status: complete — packaged and installed on `jordan-macbook`.
+
+- **RemoteHerdrBridge:** `ControlMaster=auto` + `ControlPersist=600`; cache remote socket path under `/tmp/bessie-$USER/<id>/remote-socket.path`; reuse healthy local forwards without a new SSH; cached-path tunnel before status; status multiplexes through existing control when present; tighter tunnel-ready poll (no 100ms flat sleep loop).
+- **ConnectionLifecycle:** when `HERDR_SOCKET_PATH` is set (SSH tunnel / diagnostics), skip local sha256/codesign/`herdr status` and go socket ping → bootstrap. Local cold start probes readiness immediately (no sleep-before-first-check).
+- Tests: `BessieConnectionTests` + `PersistenceReconnectTests` → **24/24**. `./scripts/check.sh` OK.
+- Packaged/installed BessieApp SHA-256 `1180436fa51200eb7a87c974c1ec44d1bb904c6fcba2929fdda2f92f32a1049b` (byte-identical). `codesign --verify --deep --strict` ok. Binary contains `remote-socket.path`. No commit/push/PR.
+
+## 2026-08-05: Start-at-launch herds (settings-controlled)
+
+Status: complete — packaged and installed on `jordan-macbook`.
+
+- Per-herd `connectAtLaunch` on `BessieConnectionDefinition` (`connect_at_launch` in `connections.json`). Defaults: local **on**, SSH **off**. Legacy JSON without the key keeps those defaults.
+- Fleet no longer starts every configured herd at app open. Launch set = herds with Start at launch; if none enabled, falls back to the selected herd. Selecting a herd (or Connect) still starts it on demand. Turning launch off does not disconnect a live herd.
+- Settings → Herds: Launch toggle per row + helper copy. Not-started herds show phase `Not started` with Connect.
+- Tests (Mac): `BessieConnectionTests` + `testSettingsConnectAtLaunchPersistsPerHerd` + `testFleetStartsOnlyLaunchEnabledConnections` → **16/16 pass**. Hardened `applyAppAppearance` for nil `NSApp` in XCTest.
+- `./scripts/check.sh` passed on VPS. Packaged `dist/Bessie.app`, installed `/Applications/Bessie.app`, relaunched. Packaged/installed BessieApp SHA-256 `8c18589ad8f30f92bfda77937291ac49973c24b20aa75b27a845ddc4629079dc` (byte-identical). `codesign --verify --deep --strict` ok. Binary contains `connect_at_launch` / Start at launch copy. No commit/push/PR.
+
+## 2026-08-05: New-pane gibberish character flood
+
+Status: fixed — packaged and installed on `jordan-macbook`.
+
+- **Symptom:** Opening a new pane started an uncontrollable stream of random gibberish characters.
+- **Root cause:** `BessieTerminalView` unconditionally injected xterm SGR mouse sequences (`\x1b[<…M`) into Herdr `terminal.input` on every `mouseMoved`/click/drag/wheel, with `mouse-reporting=true` and a motion tracking area. New shells have no mouse capture, so free pointer motion became a raw byte flood.
+- **Fix (contract-aligned):**
+  - Added pure `TerminalMouseRouting` policy: capture `.unavailable` never emits SGR; motion is silent; click → focus + local selection; wheel → Herdr `terminal.scroll`.
+  - `BessieTerminalView` routes all pointer events through that policy; default capability stays `.unavailable`.
+  - Restored `mouse-reporting=false` so local libghostty cannot encode PTY mouse bytes from the rendering-only surface.
+  - Removed the always-on mouse-moved tracking area that fed the flood.
+- **Tests (Mac):** `TerminalMouseRoutingTests` + `TerminalSGRMouseTests` → **10/10 pass**, including `testUnavailableCaptureNeverEmitsSGREvenForMotionFlood`.
+- **Verify:** VPS `./scripts/check.sh` passed. Full `./scripts/mac-verify.sh` still fails on pre-existing LiveHerdr socket / XCTest SIGSEGV (unrelated). Packaged `dist/Bessie.app`, installed `/Applications/Bessie.app`, relaunched. Packaged/installed BessieApp SHA-256 `913acbd56c349c0a7bf996bc42cf30c4ab4356de96d288c205d36cc1e1c93ec5` (byte-identical). Process running. No commit/push/PR.
+- **Honest limitation:** Mouse-aware TUI clicks remain off until a negotiated public Herdr mouse-capture capability exists (per TERMINAL-BEHAVIOR). Do not re-enable unconditional SGR inject.
+
+## 2026-08-04: Stuck pane switch / no refresh until Projects detour
+
+Status: fixed — packaged and installed on `jordan-macbook`.
+
+- **Symptom:** Switching panes/tabs left the terminal surface stuck/stale. Detour through Projects then back fixed it (full host teardown).
+- **Root cause:** SwiftUI reused `TerminalSurfaceHostView` across pane identity changes. `attach` rebound `paneController` without parking the previous Ghostty surface, so the old terminal could remain a host subview under/over the new one. Going to Projects emptied `presentedTerminalPaneIDs` and dismantled every host, masking the bug.
+- **Fix:**
+  - `TerminalSurfaceHostView.attach` parks the previous controller before rebinding, then lays out immediately when already sized/windowed.
+  - `attachTerminal` keeps exactly one host subview (the active terminal).
+  - Registry `activatePresentedSurface` always `refreshAfterReattach` after deferred focus attach (not focus-only).
+  - Workspace + Zen terminal surfaces use `.id(paneID)` so representables do not silently reuse hosts.
+  - Pane/tab focus paths re-focus and refresh on the next runloop after navigation settles.
+- **Tests:** Mac `swift test --filter SurfaceProjectionTests` → **46/46**, including new `testHostControllerSwapParksPreviousTerminalAndShowsOnlyNewSurface`.
+- **Verify:** `./scripts/check.sh` passed on VPS. Packaged `dist/Bessie.app`, installed `/Applications/Bessie.app`, relaunched. Packaged/installed BessieApp SHA-256 `11bbf6510d8179b97593949d0ea966cf80aa5acbf7f21f10df275c7c7da05998` (byte-identical). Process running. No commit/push/PR.
+
+## 2026-08-05: Gate 2 follow-through (notify policy + windowless + verify)
+
+Status: partial — code landed for settled + windowless; signing blocked on interactive keychain; mac-verify still SIGSEGV.
+
+- **#4 Settled notifications:** planner treats Settled as `done|idle` under `blockedAndDone`, emits only on `working|blocked → done|idle`. Focused planner tests pass.
+- **#3 Windowless reconcile:** fleet notify watching on `BessieAppDelegate` (survives main-window close). Product shell keeps active connection while window visible.
+- **#2 Signing:** added `scripts/dogfood-install-signed.sh` (Developer ID default). SSH codesign fails `errSecInternalComponent`. Installed app this pass still ad-hoc `7b21259e…2b8b`.
+- **#5 mac-verify:** re-run failed — XCTest signal 11 in `SettingsAndNotificationsTests.testTestNotificationRequestsPermission…`. Intent/CLI 21/21 ok.
+- **#1 Mouse:** SGR inject path already in tree; Ghostty≠Bessie architecture. Live regression debug still needed.
+- **#6 Identity split:** confirmed required; not implemented in package/mac-verify yet.
+- No commit/push/notarize.
+
+## 2026-08-05: Cold-open video only on first open
+
+Status: complete — packaged and installed on `jordan-macbook`.
+
+- Reverted every-start video playback. Ordinary launches still enter `ColdOpenSplashView` while bootstrap runs, but only the native "joining the herd" loader is shown when onboarding is already completed.
+- Video plays at 1× only for first-run / Run Setup Again (`!settings.onboarding.completed`), plus design artboard `09`. `playsVideo` gates AVPlayer setup so completed launches never load or start the MP4.
+- Removed the completed-user 2× rate path. Dismissal still requires playback-end (immediate for loader-only) and bootstrap settled; Reduce Motion / env fallbacks unchanged.
+- Verification: `./scripts/check.sh` passed on VPS. Mac: rsync (no `--delete`) → `./scripts/package-app.sh` → install `/Applications/Bessie.app` → relaunch. Packaged/installed BessieApp SHA-256 `afa2f0739657cb5d409d005acba03bb2f1ff226378aec3da2adb0294706f55f6` (byte-identical). `codesign --verify --deep --strict` ok. Cold-open video still `f68f09d8…b871`. Binary contains `ColdOpenSplashView` / `joining the herd`. No commit/push/PR.
+
+## 2026-08-05: Sidebar install, landing deploy, workspace cleanup
+
+Status: complete on Jordan's explicit request.
+
+- Packaged current dirty tree (includes sidebar pane context-menu parity) on `jordan-macbook` after rsync from VPS. Focused Swift tests: `SurfaceProjectionTests|HerdRailPresentationTests` → **46/46 pass**. `./scripts/package-app.sh` exit 0.
+- Installed `/Applications/Bessie.app`, relaunched, and matched packaged executable byte-for-byte. SHA-256 `2df61a9da0a71d813a20bd547e5d50b3361d4139c9e21e856b3a45bb45fd40be`. `codesign --verify --deep --strict` exit 0. Binary contains `PaneContextMenuContent` and `ColdOpenSplashView`. Cold-open video still `f68f09d8…b871`. Herdr server process left running across the Bessie quit/relaunch.
+- Deployed landing cold-open from `.worktrees/feat-bessie-dev-landing/site` with `npm run check` (ok) then `npm run deploy` (wrangler). Workers preview: https://bessie-dev.jordanjstella.workers.dev — version `4d288868-71ae-45f3-a42b-6cb33cb0b988`. Live checks: `/` 200, `/assets/bessie-cold-open.mp4` 200 with SHA-256 `f68f09d8…b871`, `/install` 200, `config.js` has `coldOpen:true`. No custom-domain/DNS changes; `bessie.dev` not attached.
+- Closed all other Bessie workspace tabs; left only this Hermes pane (`w2E:tQ` / `w2E:p1P`). Workspace now 1 tab / 1 pane.
+- Full `mac-verify.sh` not re-run (known unrelated XCTest SIGSEGV risk). No commit/push/PR.
+
+## 2026-08-05: Corrected cold open on app startup and landing
+
+- Replaced the app, retained V1 release, and landing cold-open copies with the corrected-logo video. The source MP4 reported 7.105 seconds but contained non-monotonic timestamps and played as 2.483 seconds in Chromium, so the shipped copies were intentionally normalized to H.264 1920×1080, 60 fps, 7.083333 seconds, fast-start MP4. All three shipped copies have SHA-256 `f68f09d8b31cd6b5af0483c50fb79dd33fbe619a358c81c8438d04ab9f67b871`; the inbox source remains unchanged at `74fe32a1d3b1ccf7cc48911da00a7b9e449402b8d18e0b5c058be92841caf86a`.
+- Ordinary first-window startup now enters `ColdOpenSplashView` while connection bootstrap runs. First-run/onboarding playback remains 1×; launches with completed onboarding use 2×. Playback-end and bootstrap-settled are both required before dismissal, with explicit failure fallback, final-frame hold, design-artboard suppression, Reduce Motion, and existing cold-open environment overrides preserved.
+- The landing uses the same normalized asset as a muted, non-looping, aspect-fill video layer over an already-landed hero and ambient canvas. `prefers-reduced-motion`, `data-reduce-motion`, and `coldOpen:false` skip the video without loading it.
+- `./scripts/check.sh`, focused diff checks, landing `npm run check`, JavaScript syntax checks, and landing visual proof passed. The enabled-video browser proof observed duration 7.083333, muted playback, no loop, completion-driven handoff, reduced-motion/no-motion skips, and a clean cold-open screenshot at `site/proof/cold-open-1440.png`.
+- Two `./scripts/mac-verify.sh` attempts against this checkout production-built and packaged the normalized resource; the final attempt synced and debug-compiled the completed playback/fallback implementation and all app sources. Both cumulative XCTest runs later exited with the repository's previously documented signal 11, at different unrelated test locations, so the verifier stopped at remote line 608 before live checks, installation, relaunch, and installed-executable identity. The only subsequent Swift edit increased the already-compiled safety-timeout literal from 7.75 to 15 seconds and passed static checks. Those later gates are not claimed, and `/Applications/Bessie.app` was not replaced.
+- Independent review identified elapsed-time and asset-regression risks. The implementation now treats playback-end events as authoritative, converts deadline misses to explicit fallback rather than successful playback, pins the normalized hash in both static check lanes, and exercises enabled playback in Playwright. No remaining high-confidence review finding is known.
+- No commit, staging, push, PR, deployment, publication, or remote creation was performed. Unrelated dirty work in both checkouts was preserved.
+
+## 2026-08-04 — Pre-v1 redesign U7 Settings and preference migration
+
+Status: U7 implementation and VPS static verification complete; native Swift compilation and screenshots were not run because this bounded unit requested `check.sh` and focused static checks only.
+
+- Screen 08 now follows the binding General, Herds, Terminal, Notifications, Menu bar, Appearance, and Advanced & diagnostics structure. Existing startup, connection, terminal, appearance, notification permission/test, setup rerun, reset, and diagnostic actions remain functional; Copy diagnostics now writes a compact runtime report to the pasteboard.
+- Added persisted menu-bar visibility (default on), badge policy (Needs you / Needs you + Unknown / Nothing), and row-click behavior (Focus pane / Open Bessie). The published preferences object is the observation seam for U10; no menu-bar controller was added.
+- Presentation persistence now writes schema-versioned envelopes, migrates legacy unversioned state losslessly, preserves `blockedAndDone` as blocked plus done only, and rejects unknown newer schemas without rewriting them. The settings model surfaces that error and disables all presentation writes while the unsupported file remains.
+- Notification planning is explicitly Off = none, blockedOnly = blocked, blockedAndDone = blocked + done; idle is never eligible.
+- Added real 512×512 dark and light running-app icon resources. Selection is persisted and applied at launch/change through `NSApplication.applicationIconImage`; this does not claim Finder bundle-icon mutation.
+- Verification: `./scripts/check.sh` passed; focused changed-file `git diff --check` passed; both icon resources were verified nonempty 512×512 RGBA PNGs. Swift is unavailable on the VPS, so new Swift tests were added but not executed here.
+- No reset, clean, stash, rebase, staging, commit, push, publish, or install action was performed.
+
+## 2026-08-04 — Ghostty parity, terminal performance, Herd status buckets, and mouse spike
+
+Status: shortcut, Herd, and terminal-performance product changes are implemented. The packaged terminal workload passes every budget. Mouse-aware TUI input remains blocked on a missing public Herdr capability. Jordan stopped the final repeated verifier and waived another final screenshot, so cold-start sampling and installation of the exact current package are not claimed.
+
+Shipped behavior:
+
+- Ghostty macOS shortcut ownership now applies only while the terminal is first responder. `Cmd+B` sends raw byte `0x02`; the command palette moved to `Cmd+Shift+P`. Copy-or-interrupt, paste, clear scrollback, Select All, prompt jumps, pane/tab cycling, directional focus/swap, split creation, zoom, resize, direct tab selection, and system passthrough follow the Ghostty/Bessie matrix. Plain left Option reaches libghostty with `macos-option-as-alt=left`; terminals also use `mouse-hide-while-typing=true` and retain `mouse-reporting=false`.
+- Live packaged automation observed `input=shortcut_cmd_b_control_b value=true` on both verifier panes. The first-responder regression test proves a parked/background terminal cannot steal `Cmd+C`, `Cmd+V`, `Cmd+A`, `Cmd+B`, or `Cmd+K` from text fields or sheets.
+- The Herd now presents exactly Needs you (`blocked`), Working (`working`), Settled (`done` or `idle`), and Unknown (unknown or unrecognized), with All retained as an aggregate filter. Counts, card labels, accessibility labels, filters, and sorting use those buckets. Raw `.done` and `.idle` remain distinct in Herdr models, notifications, and diagnostics.
+- Terminal input from AppKit/libghostty now enters one nonblocking FIFO router. Raw, special-key, paste, and scroll operations preserve order; the slower public Herdr key/paste requests no longer occupy the terminal frame-consume queue or block the main thread. A 10,000-operation mixed-input test proves no drop or reorder, and a gated transport test proves enqueue returns before transport completion.
+- Hidden warm libghostty views are detached from the window so their display links do not burn idle CPU. Delta frames feed libghostty without republishing an unchanged ready state through SwiftUI. Performance evidence serialization is deferred, selected tabs present immediately from the local selection, release packaging cleans SwiftPM products before building, pane-switch and terminal workloads run separately, and the sustained producer is anchored to a monotonic 305-second deadline.
+
+Performance investigation and packaged evidence:
+
+- Baseline suffix `26483`: idle CPU was about 81%; parked terminal views remained attached and kept display links active.
+- Suffix `37375`: hidden-view detachment reduced idle CPU to 0%; the remaining failure was a CPU >80% burst lasting 3 seconds against a 2-second budget.
+- Suffix `49094`: the remaining failure was first pane-switch usability at about 106.6 ms.
+- Suffix `60421`: the earlier terminal/resource plan passed after immediate selected-tab presentation; printable echo p95 was 25.753 ms, pane switching 54.568 ms, five-minute CPU 1.979%, idle CPU 0.87%, and RSS 176.266 MB.
+- Suffix `73663`: every metric except sustained input passed. The old probe measured paste plus intercepted Enter and reported 238.087 ms. Investigation found public Herdr paste/special-key control calls commonly taking about 106–111 ms under output. Oracle review confirmed that the plan's <100 ms typing contract should use raw printable input, while paste/special keys remain covered by FIFO/order/drop tests rather than a false latency claim.
+- Final completed terminal run suffix `87557`, packaged local app, overall PASS:
+  - printable echo: p50 21.295 ms, p95 24.998 ms, p99 28.024 ms across 200 samples;
+  - frame receive to libghostty feed: p95 0.044 ms across 1,457 frames;
+  - 1 MB output max 183.366 ms and 50,000-line output max 66.783 ms across five runs each;
+  - pane switch first usable max 48.835 ms across 20 switches;
+  - resize convergence 105.682 ms;
+  - sustained raw-input max 25.935 ms across 100 samples during 305.089 seconds of output;
+  - five-minute CPU average 4.686%, CPU >80% longest burst 0 seconds, idle CPU 0%, and maximum RSS 142.781 MB.
+- The same run completed 20 warm startup samples: first-window p95 219.068 ms and warm-shell p95 419.669 ms, both within budget. One of 500 startup main-thread probes measured 106.946 ms against the 100 ms maximum. The run stopped before five cold bundled-Herdr samples, so cold-shell p95 and the complete startup gate are unresolved rather than greenwashed.
+
+Validation and package state:
+
+- `./scripts/check.sh`, `bash -n scripts/mac-verify.sh`, benchmark Python compilation/self-test, and focused diff checks pass.
+- Focused Mac `TerminalControllerTests`: 19 tests, 0 failures.
+- The exact current source production-built and packaged `Bessie.app`, passed missing/corrupt bundled-runtime and external-runtime cases, then passed 317 XCTest cases and 21 Swift Testing cases with zero failures. Jordan stopped the repeated full verifier during its long packaged performance phase and waived another final screenshot.
+- The current `dist/Bessie.app` is version `0.1.0`, build `3`, passes deep/strict code-sign verification, and contains Herdr 0.8.0/protocol 19 with SHA-256 `d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178`. Its app executable SHA-256 is `8133656440e22ee54e342362cca484b4578d17669c8a16083c8c9cb194c0f70c`.
+- The current package was not installed after the stopped run. `/Applications/Bessie.app` still has the prior executable SHA-256 `58dcf0ba9693602fecca2478bde20621435e163833583eca7836395b3cc5be92`; both packages contain the same locked Herdr binary, but the app executables do not compare equal.
+- Repository-wide `git diff --check` remains nonzero only because of pre-existing trailing whitespace in unrelated dirty plan/roadmap files. Focused changed-file diff checks pass. No file was staged, committed, pushed, published, or deployed.
+
+Mouse and remaining limits:
+
+- The bundled Herdr 0.8.0/protocol-19 public terminal bridge exposes raw input, resize, vertical scroll/page, and release, but no typed negotiated button, drag, pointer-motion, horizontal-wheel, or authoritative mouse-capture state. Bessie therefore does not claim mouse-aware TUI clicks and does not copy private bincode or guess ANSI sequences.
+- `docs/research/2026-08-04-herdr-public-terminal-mouse-capability.md` specifies a versioned public capability, ordered typed events, authoritative capture state, Shift-drag local selection, and live acceptance proof. Bessie can implement clicks only after Herdr exposes that contract.
+- `libghostty-spm` 1.3.2 has Select All but no embedded action for Ghostty's semantic “select previous command output” behavior. `Cmd+Shift+A` falls through rather than being faked with Select All. Herdr also exposes no public equalize-splits mutation, so that shortcut is omitted honestly.
+- The <100 ms sustained-input claim is specifically raw printable typing under the measured local output workload. Public Herdr paste and intercepted special-key calls were observed around 110 ms under load; saturated output beyond the measured producer and remote SSH latency remain outside that claim.
+
+## 2026-08-03 — Bessie iOS control plane: ce-plan + goal contract
+
+Status: planning only (not implementing). **Locked as first post–Mac-V1 ship** — not in V1 L/K; do not goal-loop until V1 release (or Jordan early green light).
+
+- Plan: `docs/plans/2026-08-03-bessie-ios-control-plane.md` — ce-plan; Queued post-V1; M0→M5 (+ optional M6).
+- Roadmap: `docs/roadmap/bessie-ios-control-plane.md` — P0 after V1 launch.
+- Goal: `GOAL-ios-v1-control-plane.md` — start-gated contract.
+- Also noted in `docs/roadmap/README.md`, `docs/plans/2026-08-01-bessie-v1.md`, vision-occam deferred list, workstream `V1-SCOPE.md`.
+- Branch when execution starts: `feat/ios-v1-control-plane`.
+
+## 2026-08-03 — V1 Slice L brand shell and chrome hygiene
+
+Status: M0–M6 complete; Mac verification, installation, and installed-app identity passed.
+
+M0 violation map:
+
+- Warm light shell ladder and low-contrast light cowprint: `BessieDesign.palette(for:)` and `BessieCowprintTexture` in `BessieDesignSystem.swift`.
+- Shouted status/count chrome, repeated connection badges, filled row actions, and dual workspace overflow: `HerdSurface`, `AttentionSurface`, `PaneControllerStatusLabel`, `BessieProductShell`, `WorkspaceSurface`, and `ProductPane` in `ProductSurfaces.swift`; connection rows in `BessieSettings.swift`; Project rows in `ProjectsSurface.swift`.
+- Dual Follow latest/Pin controls: `FollowFilesSurface.swift`.
+- Repeating or incomplete zero states: Herd, Attention, Workspaces, Workspace, and Agent states in `ProductSurfaces.swift`; Projects in `ProjectsSurface.swift`; Files preview in `WorkspaceFilesSurface.swift`.
+- Files dual-verb action: `WorkspaceFilesBrowser` in `WorkspaceFilesSurface.swift`. Selection gating already existed for both destructive controls.
+- Project launch review lacked a concise Herdr reverse-line: `ProjectLaunchReviewView` in `ProjectsSurface.swift`.
+- Onboarding was a single floating card without a visible step list; Trouble was a single full-bleed card: `OnboardingView.swift` and `TroubleView.swift`.
+- Pane fallback order produced `Untitled pane`, blocked state was only a generic glyph, and top-level workspace exposed separate pane/tab menus: rail, Agent detail, `WorkspaceSurface`, and `ProductPane` in `ProductSurfaces.swift`.
+- Drop-shadow product chrome remained on the Project launch progress card and command palette. Slice L owns the Project chrome shadow; the transient command-palette overlay is outside the sampled product-card chrome.
+
+Baseline evidence:
+
+- Branch: `feat/v1-l-brand-chrome`.
+- `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package checks, intent parity for 9 intents, UI-copy checks, and static checks passed. Swift is unavailable on the VPS.
+- Existing unrelated modified roadmap/plan files and the untracked Slice L goal/plan were present before implementation and were not staged, reverted, or cleaned.
+
+M1 shell and window chrome:
+
+- Replaced every warm light semantic token with the locked achromatic greyscale ladder from Slice L §2.
+- Preserved the independent dark terminal plate in light mode.
+- Rebuilt the light cowprint tile as black RGBA ink from the artwork's alpha mask. The previous bridged template-image shading left the source tile's white RGB visible on a near-white plate; the fresh light captures now show unmistakable dark cow spots. Dark mode continues to use the original white artwork.
+- Confirmed `BessieTopBar` already uses the main `background` plate with only a bottom hairline; comfortable/compact gap floors remain `cardGap` 9/6 and `paneGap` 7/5-or-higher by preference validation.
+- Made the native window toolbar background transparent and extended the adaptive desk/cowprint beneath the safe area. `BessieAppDelegate` retains native traffic lights, hidden title, transparent titlebar, full-size content, and the existing titlebar double-click behavior; it now uses the adaptive Bessie window backing rather than system grey.
+- Fixed the root cowprint background's missing `BessieSettingsModel` injection, which had caused a SwiftUI fatal error. Disabled AppKit secure-state save/restore and verifier persistent UI so stale crash-restoration state cannot block test launches.
+
+M2–M5 product chrome:
+
+- Converted product labels and actions to sentence case, removed repeated connection/status badges, reduced filled row actions, consolidated workspace overflow, and replaced Follow Files' competing follow/pin controls with one stateful control. Herd and Attention filtering/builders were not changed.
+- Added honest, action-oriented empty states across Herd, Attention, Workspaces, Workspace, Projects, Follow Files, and Files. Files selection is cleared on directory loads; rename, move, and trash are enabled only for a current valid selection, with distinct rename and move dialogs.
+- Added the concise Herdr create sequence to project launch review and quieted project section chrome.
+- Restyled Onboarding and Trouble as flat rail/content plates, retained explicit Herdr-survival copy, and removed product-card shadow elevation.
+- Workspace pane titles now derive from authoritative label/agent/title/CWD/process information before falling back to `Shell`; needs-you state is visible in pane chrome and the workspace has one overflow locus. Light mode keeps terminals on readable semantic dark code colors.
+
+M6 evidence:
+
+- Final VPS `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package checks, parity for 9 intents, UI-copy checks, and static checks passed. Swift remains unavailable on the VPS.
+- Final `./scripts/mac-verify.sh`: exit 0. Production and debug builds passed; 227 XCTest cases and 21 intent/CLI tests passed with zero failures; isolated live Herdr/libghostty checks, runtime failure routes, packaging, signing, design captures, quit survival, installation, and installed-app relaunch passed.
+- Fresh light screenshots: `dist/Bessie-herd-light.png` and `dist/Bessie-workspace-light.png`. Inspection confirmed visible achromatic cowprint; the workspace capture retained readable dark terminal panes and visible pane gaps.
+- Fresh windowed screenshot: `dist/Bessie-titlebar-windowed.png`. Inspection confirmed cowprint visible beneath native colored traffic lights, no solid system-grey titlebar strip, and rail/main plates beginning below the native strip.
+- Installed executable SHA-256: `89396ef50b2fdebc5080e2b1e738d122e2d4c6724ddafa7d16e466377d1407fb`; packaged and `/Applications/Bessie.app` executables matched byte-for-byte (`cmp=passed`).
+- One preceding full run hit a transient intent-socket ownership assertion after all 227 XCTest cases passed. The unchanged test passed immediately on rerun, and the final unchanged full verifier passed. No test or check was weakened or skipped.
+
+Manual-only remainder:
+
+- Jordan's final visual preference judgment on cowprint strength and chrome quietness remains subjective. The automated light-capture check now requires actual darkened-pixel coverage rather than generic variance, and the captured result was inspected directly.
+- Double-click titlebar behavior is preserved in code and the app relaunches successfully, but the SSH verifier does not synthesize a native titlebar double-click.
+
 ## 2026-08-02 — V1 Slice F2: workspace media and markdown viewer
 
 Status: implementation complete; shared-mirror integration verification blocked by unrelated Slice J source drift.
@@ -1047,3 +1445,124 @@ Exact verification:
 - Final screenshot: `/tmp/Bessie-slice-d-final.png`, **1180×740**, SHA-256 `c6dcc91ee6dd24829777f94c685f16aaf0da433f488bf24373c41102397f9658`. Direct inspection found no obvious dead prototype chrome, clipping, or overlap.
 
 No check was weakened. Existing unrelated dirty planning/roadmap work and concurrent Mac files were preserved. No Herdr session was stopped, and no push, PR, publication, deployment, notarization, or upstream modification occurred.
+
+## 2026-08-03: V1 Slice M4 Herd consolidation
+
+- Removed the standalone Attention destination, surface, pane-reconstructed list model, fleet list, and duplicate tests. The Herd now owns the blocked-only Needs you count, sidebar cue, and next-needs-you shortcut.
+- Added one Core `requiresUserAction` predicate (`blocked` only), authoritative-agent workspace cues and notification projections, connected-connection freshness gating, connection-scope filtering, deterministic state/connection/location/identity ordering, and exact routed pane targets.
+- Stale or unavailable notification and Herd targets now consume the route, report an honest failure, and recover to The Herd instead of navigating to Attention.
+- `./scripts/check.sh`: exit 0. Runtime lock/compatibility/notice/package, intent parity, UI copy, and M4 static anchors passed. Swift is unavailable on this VPS, so native compilation, focused Swift tests, Mac runtime checks, screenshots, packaging, installation, and visual acceptance were not run or claimed.
+- Focused `git diff --check` over M4-owned source, tests, and `scripts/check.sh`: exit 0. Repository-wide `git diff --check` remains blocked by pre-existing trailing whitespace in unrelated dirty planning and roadmap files.
+
+## 2026-08-04: Pre-v1 redesign U3 pickers
+
+- Added native SwiftUI popovers anchored to the expanded rail for screens 03/04. The Herd picker presents All, local, and SSH scopes with current fleet health, selection, per-connection retry, and the existing Settings add-connection route. The Workspace picker projects only fresh authoritative workspaces in the selected scope, focuses the owning Herdr connection/workspace, and creates through the existing `workspace.create` action.
+- Native popover controls own keyboard traversal, Escape/outside-click dismissal, focus return, accessibility, and constrained narrow-window placement. No custom popover state machine or durable topology was introduced. Existing feature-flagged Files/Follow routes were unchanged.
+- Added focused picker presentation tests for healthy/disconnected multi-connection rows, selected-scope authoritative workspaces, and ordinary Herdr workspace creation. Swift is unavailable on this VPS, so the requested native test target could not compile here; `./scripts/check.sh` passed with all runtime-lock, intent-parity, UI-copy, and static checks green.
+- Full `mac-verify.sh`, terminal performance probes, installation, commit, staging, push, PR, publication, deployment, and Herdr session mutation were not run.
+
+## 2026-08-04: Pre-v1 redesign U4 workspace panes
+
+- Preserved the existing recursive authoritative pane renderer, warm terminal registry/controller identity, terminal shortcut actions, input ordering, focus state machine, and performance probes. Updated pane Expand to public `pane.zoom` maximize/restore rather than entering Zen, and made Add Tab require a connected workspace, reconcile from the action's fresh snapshot, and restore terminal focus.
+- Completed the direct workspace-terminal shortcut contract: `Option+P`, `Cmd+D`, `Cmd+Shift+D`, `Cmd+W` Close Pane, `Cmd+Shift+J/K` rendered-rail traversal with wrap, and the existing one-shot terminal copy/paste/`0x02`/`0x03` actions. Direct topology/rail commands now pass through when a text or modal control owns first responder. Close Tab remains in the command palette without the `Cmd+W` chord; pane-close cancellation restores terminal focus without mutation.
+- Added focused shortcut policy and responder-gate tests. `./scripts/check.sh` and focused changed-file `git diff --check` passed. Swift is unavailable on this VPS, so native compilation/tests and live Mac verification were not run or claimed.
+- No terminal controller/input implementation, performance budget/probe, U1 design constant, U3 picker, Herdr session, stage/index, commit, push, PR, install, or shared visual source was changed.
+
+## 2026-08-04: Pre-v1 redesign U1-U7 verified; U8 blocked by Herdr 0.8 SSH lifecycle
+
+- Implemented the design foundation, herd-centric shell/rail, herd and workspace pickers, workspace pane chrome and direct shortcut contract, Projects list/editor, entity-aware palette, and versioned Settings/preferences through U7. The existing terminal performance code and budgets remain unchanged.
+- Focused Mac verification passed in successive waves: U1-U3 ran 71 tests with 0 failures; U4-U5 ran 159 tests with 0 failures, including the 10,000-operation terminal ordering test; U6-U7 ran 77 tests with 0 failures. The VPS `./scripts/check.sh` remained green after each wave.
+- U8 stopped before edits at a public-capability blocker. Herdr 0.8.0 exposes `session list`, `attach`, `stop`, and `delete`, but no public noninteractive detached named-session start. The safe attach auto-start path also seeds a workspace from its current directory before Bessie can issue U8's required public `workspace.create` for the selected path. Shell-specific detachment, a supervisor, private protocol use, silently accepting the seeded workspace, or reusing an unrelated session would violate the plan.
+- U8-U12 were not implemented or claimed. Resolving the blocker requires either a public Herdr detached empty-session lifecycle or an explicit product-plan amendment allowing the attach-created selected-path workspace. No package install, commit, push, reset, clean, stash, or rebase was performed.
+
+## 2026-08-04: Pre-v1 redesign U8 implementation attempt
+
+- Recorded the approved remote amendment in U8: validated selected remote cwd, forced-PTY public `session attach`, strict fresh-session/collision proof, exact attach-created topology adoption, detached-daemon proof, and post-bootstrap status/snapshot/tunnel survival.
+- Added the exact H.264 1920×1080 cold-open resource, four-step native onboarding presentation, native local folder picker/remote absolute-path input, Finish-versus-Skip notification behavior, a versioned pending-attempt model/store, safe IDs/path validation, coordinator stages and duplicate-submit guard, and safe forced-PTY attach argument construction.
+- `./scripts/check.sh`: exit 0, including packaged video metadata. Swift is unavailable on this VPS, so native compilation and tests were not run.
+- U8 is not complete: the cold-open entry gate is not yet routed from `BessieApp`; the coordinator is not yet wired to local/remote launch, collision/status/snapshot/detached survival reconciliation, exact topology adoption, first-frame focus completion, or rerun cancellation; bootstrap concurrency and failure handoff remain unwired. These are compile/runtime risks for the host to resolve before Mac verification.
+- No stage/index operation, commit, push, reset, clean, stash, rebase, Mac command, install, Herdr session mutation, secret access, private RPC, nohup, supervisor, or fake topology was performed.
+
+## 2026-08-04: Pre-v1 redesign U8 lifecycle wiring follow-up
+
+- Routed each incomplete/setup-again entry through the cold-open once, with a bounded static/reduced-motion fallback, then into the existing bootstrap Connect/onboarding surfaces. Ordinary completed starts do not enter the splash.
+- Wired selected connection/path into a persisted, duplicate-submit-guarded coordinator and a narrow injectable materialization service. The production service uses public `workspace.create`, diffs fresh authoritative topology, rejects anything other than one exact workspace/tab/pane at the selected path, persists those IDs, navigates/focuses that pane, and completes only after its real terminal controller reports a ready frame.
+- Added setup-again pre-materialization cancellation restoration and focused coverage. `./scripts/check.sh` passed; Swift is unavailable on this VPS, so native compilation and the host-owned Mac lifecycle verification remain unclaimed.
+- The forced-PTY remote argument seam remains present and tested. This follow-up does not claim a live SSH bootstrap execution on Linux; host Mac verification must exercise that process lifecycle before release.
+
+## 2026-08-04: Amended U8 remote bootstrap lifecycle
+
+- Replaced remote onboarding's pre-ready `workspace.create` assumption with an injectable OpenSSH/Herdr bootstrap adapter. It proves absence through `herdr session list --json`, validates the path via fixed BatchMode/strict-host-key SSH arguments with path bytes on stdin, launches forced-PTY attach in the selected cwd, decodes Herdr 0.8 capabilities honestly, and requires `detached_server_daemon=true` before stopping only the attach client.
+- The production adapter then opens the existing `RemoteHerdrBridge`, pings and snapshots through its tunnel, and accepts only one workspace/tab/pane with exact parent IDs and selected effective cwd. Exact persisted IDs reconcile without a second attach. Focused fakes cover collision/auth/path failures, attach ordering, detached wait and survival, topology rejection, and resume idempotency.
+- `./scripts/check.sh` passed. Swift remains unavailable on this VPS, so native compilation, focused XCTest execution, Mac verification, installation, and live SSH mutation were not run or claimed. No git staging, commit, push, reset, clean, stash, rebase, Herdr stop/delete, nohup, supervisor, private RPC, or credential access was performed.
+
+## 2026-08-04: Pre-v1 redesign U11 accessibility hardening
+
+- Added shared, testable accessibility/minimum-window contracts for the 1080×680 desktop floor, bounded scrollable pickers, reduced spatial motion, opaque Reduce Transparency surfaces, and opaque increased-contrast materials. The command palette now removes scale/scroll animation under Reduce Motion while preserving its existing terminal-focus return.
+- Added deterministic picker entry/return focus, scrollable onboarding content with initial path focus, expanded/selected accessibility values, spoken herd state/location and connection health, non-color menu-bar health symbols, and explicit VoiceOver labels for rail disclosures, palette, onboarding errors, and menu-bar actions.
+- `./scripts/check.sh` and restricted changed-file `git diff --check` passed. Swift is unavailable on this VPS, and the request prohibited Mac sync, so native compilation, Accessibility Inspector, keyboard-only walkthrough, screenshots, and live minimum-window/IME verification were not run or claimed.
+
+## 2026-08-04: Pre-v1 redesign U12 capture and release gate
+
+- Added a packaged-native 15-screen × dark/light capture harness with a deterministic fixture seed, binding frame table, exact 30-entry JSON manifest, and semantic image checks for exact dimensions, opacity, monochrome chroma, cowprint regions, visible copy via Vision OCR, and packaged assets. It reuses production views and the isolated Herdr fixture; preview inputs select presentation only and do not own runtime topology.
+- Wired the matrix into `mac-verify.sh` after the unchanged startup/terminal performance probes and before destructive fixture cleanup. Existing budgets and the known `terminal_workload` failure were not removed, relabeled, narrowed, or relaxed.
+- Reconciled roadmap and older plan authority: menu bar and entity palette are Pre-v1, the newer floating-card shell/four-step onboarding supersedes older visuals, four-state Settled vocabulary is canonical, elapsed-age UI is absent, and `Cmd+B` / empty-selection `Cmd+C` remain one-shot terminal mappings rather than a Bessie prefix mode.
+- Linux-only `./scripts/check.sh` and focused diff checks are the verification for this host run. Per instruction, no Mac sync, native capture, package install, relaunch, or performance execution was performed; the host must run `./scripts/mac-verify.sh` and inspect `dist/redesign-matrix/manifest.json` plus all 30 PNGs.
+
+## 2026-08-04: Pre-v1 redesign U12 final release proof
+
+- Closed U12 with a final packaged-native 30-state dark/light matrix at every binding frame. The complete manifest, references, native captures, raw/amplified diffs, overlays, per-state metrics, contact sheets, and logs are under `/tmp/bessie-u12-evidence/`; the approved-mask structural mismatch set is empty.
+- Fixed the release-blocking capture states: deterministic open Herd/Workspace pickers, `sch` palette seed, Projects destination, fixed opaque material tint, portable macOS Bash zero-padding, and a segmented 1180×1720 Settings stitch that retains the titlebar, herd rail, Settings header, correct appearance, and complete document.
+- `./scripts/check.sh`, scoped `git diff --check`, production packaging, strict deep codesign, and 36 focused Mac tests pass. The live Projects contract passed on immediate focused retry after one transient output timeout. The cumulative native lane repeated the documented U11 XCTest signal-11 residual; no check or performance probe was weakened.
+- Installed and launched `/Applications/Bessie.app`. Packaged and installed executable SHA-256 values both equal `066ad29dea825d1b374e6a660813332bab38418dc39747abfe15d33b31c6147f`; the installed screenshot is `/tmp/bessie-u12-evidence/installed-app.png`.
+
+## 2026-08-04: Sidebar pane context-menu parity
+
+- Added one shared pane context-menu view used by workspace terminal panes, the visible Herd rail pane rows, and the retained nested Sessions pane rows. It exposes focus/open, Zen, split right/down, zoom, directional resize, connection-scoped tab/workspace moves, conditional terminal takeover, the existing pane rename editor, and the existing confirmed close flow.
+- Sidebar action dispatch and move choices resolve through the pane's owning connection projection. Takeover is shown only when that connection already has a ready observe-mode terminal controller. Action and close reconciliation now also ignore stale completions after the user switches connections.
+- VPS `./scripts/check.sh` and focused `git diff --check` passed. On the Apple Silicon Mac, the final focused Swift build and sidebar action-contract test passed; the preceding complete `SurfaceProjectionTests` and `HerdRailPresentationTests` runs passed 46 tests with 0 failures.
+- Full `mac-verify.sh`, packaging, installation, relaunch, and live right-click screenshot proof were not run because the shared dirty tree contains extensive unrelated in-progress work that this scoped change must not package or install.
+
+## 2026-08-05: Sidebar hierarchy creation and keyboard palette UX
+
+- Added right-click action menus to expanded and collapsed herd, workspace, and tab hierarchy rows. The menus dispatch the existing connection/workspace/tab actions and use the same mutation and tab-boundary availability as the visible controls.
+- Every workspace `+` path now sends public `workspace.create` without `cwd`, leaving the targeted Herdr runtime's startup directory authoritative. New tabs, splits, and move-to-new-tab actions request a non-empty name before mutation; split naming follows public `pane.split` with public `pane.rename` after identifying the created pane from a fresh projection.
+- `Cmd-Shift-P` now mounts the command-palette search field and then focuses it from a view-scoped cancellable SwiftUI task. Existing fuzzy ranking remains live on every query update, and existing local key routing handles arrows, Return, Command-Return, and Escape while the text field owns first responder.
+- Red-first focused test commands could not start on the VPS because `swift` is unavailable. Tests were added before production edits for named topology action construction, process placement naming, and hierarchy menu availability. Mac `BessieCore` and `BessieCoreTests` targets compile. `./scripts/check.sh` and focused `git diff --check` pass.
+- Full `./scripts/mac-verify.sh` currently stops during production compilation on unrelated concurrent Catppuccin appearance cases that are not handled in existing switches in `BessieSettings.swift`, `HerdRail.swift`, and `ProductSurfaces.swift`. The previous run compiled and ran the suite but later stalled in the long terminal performance probe; its state log does contain the 20-transition pane-switch completion marker. Because the required Mac lane is not green, no package was installed or claimed as verified.
+
+## 2026-08-05: Curated Bessie themes implementation checkpoint
+
+- Added the settled seven-choice selection catalog with six authored concrete app/terminal definitions: Bessie Dark, Bessie Light, and official Catppuccin Latte, Frappé, Macchiato, and Mocha terminal values pinned to `catppuccin/ghostty` commit `5a58926563ddacbde4a12b4a347464c2c6945393`. System resolves only to Bessie Dark/Light. No `GhosttyTheme`, Tokyo Night, Dracula, custom-theme schema, or independent terminal selector was added.
+- Theme selection is terminal-first through one coordinator. Existing and warm controllers update transactionally, earlier controllers roll back after a mid-fan-out rejection, app chrome/persistence commit only after terminal success, and future controllers receive the effective concrete theme before presentation. System light/dark changes use the effective terminal-theme fingerprint while keeping the persisted `system` selection. Light themes use Aqua rather than forced Dark Aqua.
+- Added the finite native picker, transactional rail/context-menu routes, semantic diff colors, theme-authored cowprint treatment, packaged Catppuccin MIT attribution, the deferred advanced-custom-theme roadmap item, and a same-process six-theme live capture gate with real terminal/controller identity checks and ANSI/input readback.
+- Focused Apple Silicon Mac command `xcrun swift test --filter "BessieThemeTests|PersistenceReconnectTests|BessieVisualFoundationTests|HerdRailPresentationTests|SurfaceProjectionTests"`: **98 tests, 0 failures**. Coverage includes exact catalog/order and Catppuccin values, contrast, all ANSI slots, legacy/unknown persistence, first and mid-fan-out rejection, rollback, System fingerprint transitions, fixed-theme OS-change behavior, visible/warm/future propagation, controller identity, override composition, and future-controller rejection state.
+- VPS `./scripts/check.sh`: exit 0; runtime lock/compatibility/notice/package, intent parity, UI copy, and static checks passed. Swift remains unavailable on the VPS. Full Mac verification, packaging/install/relaunch, installed executable identity, live captures, and visual inspection remain pending at this checkpoint and are not yet claimed.
+
+## 2026-08-05: Curated themes and UI follow-up installed for testing
+
+- Completed the requested pane-gutter, theme-toggle visibility, single-pane Zen, live fuzzy command-palette filtering, menu-bar popover, and alphabetical workspace/tab presentation follow-ups. Tab move-left/right actions and drag/drop ordering are absent; Herdr's authoritative topology order is not mutated.
+- The final full Mac lane was intentionally stopped at Jordan's request after its native suite passed **432 XCTest tests and 21 Swift Testing tests with 0 failures** and the theme design snapshots reported success. The full lane was not restarted or claimed complete.
+- Enlarged the wide Bessie menu-bar mark from a constrained 18×18-point drawing to a 24×18-point transparent template canvas with a 23×16-point visible mark. Focused Mac test `MenuBarPresentationTests/testStatusIconIsATransparentMonochromeTemplate` passed with 0 failures.
+- Packaged and installed `/Applications/Bessie.app` through the focused rebuild/install path, then relaunched one installed instance. Packaged and installed executable SHA-256 values both equal `9fe767bd5473140427dceff5a12c31dd579a72bb07c3016f3d9caee2bb89be0f`.
+
+## 2026-08-05: Live theme, menu-bar icon, and sidebar acceptance fixes
+
+- Propagated the effective concrete theme through the SwiftUI environment and made semantic chrome colors resolve from that value, fixing stale mounted chrome during same-dark Catppuccin changes without recreating the terminal controller or view. Jordan confirmed live theme switching works in the installed app.
+- Replaced the menu-bar image drawing path with a transparent 52×36 bitmap representation whose 26×18-point logical size is set before AppKit installs it as a template image, eliminating the undersized drawing and uncleared backing-pixel path.
+- Removed the explicit 2.5-point leading selection stripe beside the active Tab row in the sidebar after Jordan identified it as an unwanted white line.
+- Rebuilt, installed, and relaunched `/Applications/Bessie.app`. The final packaged and installed executable SHA-256 values both equal `3fabee1b22b15eb5092f0103ccdcf085d4cda35e111fb8dc4c0baeddfc1a5f6e`; the install script's 17 focused tests passed with 0 failures. Full `mac-verify.sh` was not rerun for this visual follow-up.
+
+## 2026-08-05: Global hierarchy views
+
+- Added All Herds, All Workspaces, and All Tabs options to the top sidebar hierarchy. All Herds opens the existing fleet-wide Herd surface; the two new aggregate surfaces derive their rows from fresh connection-qualified Herdr projections and do not persist shadow topology.
+- Global workspace rows open their owning connection/workspace. Global tab rows resolve a focused-or-first live pane inside the connection-qualified tab and use the existing routed-pane path, preserving normal focus and stale-target handling.
+- Focused Mac coverage for global route mapping, aggregate labels/counts, duplicate-ID connection scoping, and tab open-target resolution passed. The install path's 17 checks also passed with 0 failures.
+- Rebuilt, installed, and relaunched `/Applications/Bessie.app`. Packaged and installed executable SHA-256 values both equal `782f5e6594f6050219a10f86759ae09ceeefa155d951efd9ebb7538be6a587d4`. Full `mac-verify.sh` was not rerun.
+
+## 2026-08-06: Unified in-place workspace scopes
+
+- Reinterpreted All Tabs, All Workspaces, and All Herds as pure workspace scopes rendered by the existing `WorkspaceSurface`. Scope groups retain connection/workspace/tab identity and authoritative layout order; All Herds receives only fleet projections with a current endpoint and connected health.
+- Added connection-owned supplemental terminal registries for aggregate herds, exact routed pane targets, connection-routed mutations, ordinary-selection narrowing, and text-only All rows with selected accessibility state.
+- Added focused model coverage for scope boundaries, deterministic order, duplicate pane IDs, exact routes, stale-input exclusion, and in-place callback reduction.
+- `./scripts/check.sh`: exit 0. Focused changed-file `git diff --check`: exit 0. Swift is unavailable on this VPS, so focused XCTest compilation/execution, UI screenshot inspection, full `mac-verify.sh`, packaging, installation, and relaunch were not run or claimed.

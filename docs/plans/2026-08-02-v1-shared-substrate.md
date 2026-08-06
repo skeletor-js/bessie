@@ -7,7 +7,7 @@
 
 ## Why this exists
 
-Remaining V1 slices share identity, attention, routing, and capability concepts. Parallel work without this contract will fork models inside `ProductSurfaces.swift` and break multi-connection Herd.
+Remaining V1 slices share identity, needs-you status, routing, and capability concepts. Parallel work without this contract will fork models inside `ProductSurfaces.swift` and break multi-connection Herd.
 
 ## Non-negotiable product rules
 
@@ -89,21 +89,19 @@ struct RoutedPaneTarget: Equatable, Sendable {
 
 Notification userInfo already uses `connection_id` + pane fields — keep that schema; do not invent a second deep-link format.
 
-## 3. Needs-you / attention semantics
+## 3. Needs-you semantics inside The Herd
 
 **Source:** `AgentSemanticState` in `SurfaceProjection.swift`.
 
-| State | Herdr values | Needs-you? | Attention list? |
+| State | Herdr values | Needs-you? | Herd presentation |
 | --- | --- | --- | --- |
-| blocked | `blocked` | **Yes** | Yes (primary) |
-| done | `done` | Optional presentation | Yes (secondary) |
-| working | `working` | No | No |
-| idle | `idle` | No | No |
-| unknown | other | No | No |
+| blocked | `blocked` | **Yes** | Needs you filter + blocked-first All |
+| done | `done` | No | Done filter; optional notification |
+| working | `working` | No | Working filter |
+| idle | `idle` | No | Idle filter |
+| unknown | other | No | All only; honest unknown |
 
-**V1 Attention product (Occam):** list items that need the user; only action is **Open pane**. No snooze, no local resolved history.
-
-**Needs-you filter (Herd):** must mean `AgentSemanticState.blocked` (and optionally include `done` only if product copy says so — **default V1: Needs you = blocked only**; Done stays its own filter).
+**V1 product contract:** no standalone Attention destination. Herd's **Needs you** filter means `AgentSemanticState.blocked` only. **Open pane** is the safe action. Done stays its own filter and notification policy.
 
 ### Known bug to fix in slice E
 
@@ -134,7 +132,7 @@ Contract:
 1. Planner is **per connectionID**.
 2. Events carry exact pane topology + connectionID.
 3. Click → activate connection → resolve target against **current** projection → focus pane.
-4. Stale target → fall back to Attention destination; never crash.
+4. Stale target → show an honest route error and open Herd or the affected connection's recovery state; never crash.
 5. Policy: blocked-only or blocked+done (existing settings).
 6. Suppress notifications for the actively focused pane (existing).
 
@@ -171,7 +169,7 @@ Rules:
 | Capability | Local | SSH remote V1 |
 | --- | --- | --- |
 | Terminal | Yes | Yes if bridge healthy |
-| Herd/Attention list | Yes | Yes if snapshot healthy |
+| Herd including Needs you | Yes | Yes if snapshot healthy |
 | Open pane | Yes | Yes |
 | Follow files / media / markdown save | Yes | **No** — honest banner |
 | Notification deep link | Yes | Yes if app connected |
@@ -183,7 +181,7 @@ Rules:
 D Production polish          [solo first, Mac]
         │
         ▼
-E Herd B + Attention thin    [same worktree; shares Needs-you + labels]
+E Herd B + M consolidation  [one roster; shared Needs-you + labels]
         │
         ├──────────────► G Notification polish   [after Needs-you + RoutedPaneTarget stable]
         │
@@ -210,6 +208,7 @@ K Notarized gate             [last]
 - `feat/v1-g-notification-polish`
 - `feat/v1-i-appearance`
 - `feat/v1-j-connection-ux`
+- `feat/v1-l-brand-chrome`
 
 ## 8. Verification baseline every slice
 
@@ -221,12 +220,13 @@ After meaningful work:
 
 ## 9. What agents must not do
 
-- Expand Deferred items (search, menu bar item, layout presets, entity palette, general code editor)
+- Expand Deferred items (search, menu bar item, layout presets, entity palette, general code editor, graphical approve without typed RPC). Bounded Zen moved into V1 through the 2026-08-03 acceptance remediation plan.
 - Add snooze/resolved history to Attention
 - Introduce second notification route schema
 - Use raw pane IDs across fleet without connectionID
 - Implement remote file access via ad-hoc SSH commands
 - Rewrite ProductSurfaces as a mega-PR without extracting testable Core helpers
+- Ship warm cream light palette as identity (use achromatic light; slice L/I)
 
 ## 10. Slice readiness
 
@@ -240,4 +240,5 @@ After meaningful work:
 | G Notifications | `2026-08-02-menu-bar-herd.md` (notify-only) | **Yes after E** |
 | I Appearance | `2026-08-02-design-system-customization.md` | **Yes** (parallel-ish after D) |
 | J Connection UX | `2026-08-02-herdr-session-connection-manager.md` | **Yes after labels** |
+| L Brand chrome | `2026-08-03-brand-shell-and-chrome-hygiene.md` | **Yes** (prefer after I; may co-own tokens with I) |
 | K Hardening | `2026-08-02-v1-hardening-gate.md` | **Yes last** |

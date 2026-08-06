@@ -5,14 +5,14 @@
 **V1 slice:** G
 **Branch:** `feat/v1-g-notification-polish`
 **Goal-loop ready:** Yes after E (Needs-you + RoutedPaneTarget stable)
-**Occam lock:** **Menu-bar status item DEFERRED**. Only polish existing `UserNotifications` + deep links.
+**Superseded scope note:** This plan's notification work remains historical, but the menu-bar deferral was explicitly superseded by `2026-08-04-001-feat-pre-v1-ui-redesign-plan.md` U10/U12.
 
 ## 1. Outcome
 
 1. Notification click always activates correct **connection** + **pane** (warm and cold start).
-2. Titles/bodies match Herd/Attention urgency language ("needs you" / "done").
+2. Titles/bodies match Herd's state language ("needs you" / "done").
 3. Authorization failures surface in Settings (improve error handling; don't swallow silently).
-4. Stale targets fall back to Attention destination without crash.
+4. Stale targets show an honest route error and open Herd or connection recovery without crashing.
 5. No menu bar item, no quiet-hours suite, no phone.
 
 ## 2. Substrate

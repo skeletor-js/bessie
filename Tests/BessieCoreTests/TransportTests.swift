@@ -15,7 +15,7 @@ final class TransportTests: XCTestCase {
     }
 
     func testResponseDecoderRejectsMismatchedCorrelationID() throws {
-        let payload = Data(#"{"id":"other","result":{"type":"pong","version":"0.7.5","protocol":17}}"#.utf8)
+        let payload = Data(#"{"id":"other","result":{"type":"pong","version":"0.8.0","protocol":19}}"#.utf8)
 
         XCTAssertThrowsError(try HerdrResponseDecoder.decode(payload, expectedID: "expected")) { error in
             XCTAssertEqual(error as? HerdrClientError, .mismatchedResponseID(expected: "expected", actual: "other"))
@@ -39,13 +39,13 @@ final class TransportTests: XCTestCase {
     }
 
     func testSnapshotDecoderPreservesAuthoritativeIdentifiersAndCollections() throws {
-        let payload = Data(#"{"id":"snapshot-1","result":{"type":"session_snapshot","snapshot":{"version":"0.7.5","protocol":17,"focused_workspace_id":"w1","focused_tab_id":"t1","focused_pane_id":"p1","workspaces":[{"workspace_id":"w1"}],"tabs":[],"panes":[],"layouts":[],"agents":[]}}}"#.utf8)
+        let payload = Data(#"{"id":"snapshot-1","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"focused_workspace_id":"w1","focused_tab_id":"t1","focused_pane_id":"p1","workspaces":[{"workspace_id":"w1"}],"tabs":[],"panes":[],"layouts":[],"agents":[]}}}"#.utf8)
 
         let response = try HerdrResponseDecoder.decode(payload, expectedID: "snapshot-1")
         let snapshot = try response.snapshot()
 
         XCTAssertEqual(snapshot.focusedWorkspaceID, "w1")
         XCTAssertEqual(snapshot.workspaces.count, 1)
-        XCTAssertEqual(snapshot.protocolVersion, 17)
+        XCTAssertEqual(snapshot.protocolVersion, 19)
     }
 }

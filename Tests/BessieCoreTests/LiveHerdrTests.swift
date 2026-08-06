@@ -10,12 +10,12 @@ final class LiveHerdrTests: XCTestCase {
 
         let api = HerdrSocketAPI(socketPath: socketPath)
         let identity = try api.ping()
-        XCTAssertEqual(identity, HerdrServerIdentity(version: "0.7.5", protocolVersion: 17))
+        XCTAssertEqual(identity, HerdrServerIdentity(version: "0.8.0", protocolVersion: 19))
 
         let bootstrapped = try HerdrBootstrapper().bootstrap(api: api)
         defer { bootstrapped.subscription.close() }
-        XCTAssertEqual(bootstrapped.snapshot.version, "0.7.5")
-        XCTAssertEqual(bootstrapped.snapshot.protocolVersion, 17)
+        XCTAssertEqual(bootstrapped.snapshot.version, "0.8.0")
+        XCTAssertEqual(bootstrapped.snapshot.protocolVersion, 19)
 
         let created = try api.request(
             method: "workspace.create",
@@ -103,6 +103,32 @@ final class LiveHerdrTests: XCTestCase {
         XCTAssertFalse(projection.tabs.contains { $0.id == secondTab.id })
         projection = try client.perform(.workspaceClose(id: workspace.id))
         XCTAssertFalse(projection.workspaces.contains { $0.id == workspace.id })
+    }
+
+    func testFinalPaneAndFinalTabUseHerdrAuthoritativeWorkspaceCascade() throws {
+        guard let socketPath = ProcessInfo.processInfo.environment["BESSIE_LIVE_HERDR_SOCKET"] else {
+            throw XCTSkip("Set BESSIE_LIVE_HERDR_SOCKET only for the isolated Mac live check.")
+        }
+
+        let api = HerdrSocketAPI(socketPath: socketPath)
+        let client = HerdrActionClient(api: api)
+        let runID = ProcessInfo.processInfo.environment["BESSIE_LIVE_RUN_ID"] ?? UUID().uuidString
+
+        let paneWorkspace = try HerdrWorkspaceCreationResult(result: api.request(
+            method: "workspace.create",
+            params: ["label": .string("bessie-final-pane-\(runID)"), "focus": .bool(true)]
+        ))
+        var projection = try client.perform(.paneClose(id: paneWorkspace.rootPaneID))
+        XCTAssertFalse(projection.panes.contains { $0.id == paneWorkspace.rootPaneID })
+        XCTAssertFalse(projection.workspaces.contains { $0.id == paneWorkspace.workspaceID })
+
+        let tabWorkspace = try HerdrWorkspaceCreationResult(result: api.request(
+            method: "workspace.create",
+            params: ["label": .string("bessie-final-tab-\(runID)"), "focus": .bool(true)]
+        ))
+        projection = try client.perform(.tabClose(id: tabWorkspace.tabID))
+        XCTAssertFalse(projection.tabs.contains { $0.id == tabWorkspace.tabID })
+        XCTAssertFalse(projection.workspaces.contains { $0.id == tabWorkspace.workspaceID })
     }
 
     func testProjectsMilestoneZeroContractAgainstIsolatedHerdr() throws {

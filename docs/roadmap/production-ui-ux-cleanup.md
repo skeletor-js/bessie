@@ -1,51 +1,38 @@
 # Production UI/UX cleanup
 
-**Status:** Approved
+**Status:** Approved (Mac polish integrated; **brand chrome remainder → slice L**)
 **Roadmap horizon:** V1
 **Product area:** App shell, windowing, menus, chrome hygiene
 **Implementation approval:** Granted by Jordan on 2026-08-02 as part of the expanded V1 release contract
+**Execution:** Mac quit/zoom/keys — [`../plans/2026-08-02-production-ui-ux-cleanup.md`](../plans/2026-08-02-production-ui-ux-cleanup.md) (D).
+**Brand/visual chrome** — [`../plans/2026-08-03-brand-shell-and-chrome-hygiene.md`](../plans/2026-08-03-brand-shell-and-chrome-hygiene.md) (L).
 
 ## Outcome
 
-Make Bessie behave like a normal production Mac app: standard window and quit interactions work, focus and shortcut ownership are predictable, and leftover prototype chrome is gone.
+Make Bessie behave like a normal production Mac app **and** look like finished cowprint Bessie: standard window/quit, predictable shortcuts, no prototype chrome, and identity-correct light/dark surfaces.
 
 ## Why this exists
 
-Foundation preview still has desktop-polish gaps that break trust before feature depth matters—for example **⌘Q not quitting cleanly** (key routing / first-responder hijack) and missing ordinary title-bar behaviors such as **double-click to zoom/fullscreen**. Production readiness also means deleting unused or confusing UI rather than shipping every exploration surface.
+Foundation preview had desktop-polish gaps (⌘Q, title-bar zoom). Separate live-app review found brand drift (cream light, grey top bar, badge shout, full-bleed Trouble). D owns Mac behavior; L owns visual hygiene.
 
 ## Product boundary (V1)
 
-### In scope
+### In scope (D)
 
-- **Quit:** ⌘Q and app menu Quit always terminate Bessie cleanly without being swallowed by terminal/webview/first-responder paths; Herdr and pane processes keep running (survival rule unchanged).
-- **Window chrome:** double-click title bar uses standard macOS zoom/fullscreen behavior consistent with system preference; traffic lights and full-screen transitions behave like a normal document/app window.
-- **Shortcut ownership:** document which shortcuts the terminal may consume vs which the app shell always owns; fix known hijacks.
-- **Chrome audit:** remove or hide unneeded prototype controls, dead navigation, placeholder panels, and exploratory UI that is not part of the V1 product surfaces.
-- **Empty/error/loading consistency:** shared patterns so leftover half-states do not feel like a demo.
-- **Accessibility basics:** VoiceOver labels on primary chrome; keyboard path to quit and main destinations.
+- Quit paths; title-bar zoom; shortcut ownership; dead prototype cull.
+
+### In scope (L)
+
+- Achromatic light; cowprint on light; continuous top bar; gaps; case/badges/controls; empties; onboarding/Trouble restyle; workspace pane chrome.
 
 ### Out of scope
 
-- Full design-token playground (see design-system customization / themes for intentional appearance prefs).
-- New product surfaces not already on the V1 list.
+- Full design-token playground.
+- Deferred product surfaces (menu bar item, entity palette, graphical approve, etc.). Bounded Zen is owned by slice M rather than this cleanup card.
 - Changing Herdr lifecycle on quit.
 
-## First useful milestones
+## Acceptance
 
-1. Reproduce and fix ⌘Q / Quit menu path with and without terminal focus.
-2. Title-bar double-click zoom/fullscreen + standard window behaviors.
-3. App-shell vs terminal key-routing matrix for reserved shortcuts.
-4. Chrome cull pass against V1 destinations only.
-5. Smoke checklist on clean install build.
-
-## Acceptance criteria
-
-1. With focus in a live libghostty pane, ⌘Q quits Bessie; Herdr session/processes remain.
-2. Double-click title bar zooms or full-screens per macOS expectation.
-3. No obvious prototype-only chrome remains on primary V1 paths (Herd, workspace, Projects, Follow files, files, attention, settings, Trouble, menu bar).
-4. Quit from Dock / app menu matches ⌘Q behavior.
-
-## Unresolved decisions
-
-- Whether “fullscreen” means macOS native full screen vs zoom-to-fill (follow system title-bar double-click preference when possible).
-- Exact reserved shortcut list beyond ⌘Q / standard app menu items.
+D: quit/zoom/keys evidenced.
+L: brand checklist on 14-surface re-capture.
+Together: primary paths feel production-ready before K.

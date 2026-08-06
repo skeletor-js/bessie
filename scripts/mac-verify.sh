@@ -6,8 +6,10 @@ mac_host=${BESSIE_MAC_HOST:-jordan-macbook}
 mac_dir=${BESSIE_MAC_DIR:-/Users/jordanstella/GitHub/bessie}
 agent_kind=${BESSIE_AGENT_KIND:-codex}
 codesign_identity=${BESSIE_CODESIGN_IDENTITY:--}
+skip_install=${BESSIE_SKIP_INSTALL:-0}
 mirror_marker='source=/home/hermes/code/bessie'
 verification_lock=/tmp/bessie-mac-verify.lock
+ssh_options=(-o StrictHostKeyChecking=yes)
 
 case "$agent_kind" in
     pi|claude|codex|gemini|amp|grok|hermes) ;;
@@ -19,13 +21,18 @@ case "$mac_dir" in
     *) echo "Refusing unapproved Mac mirror path: $mac_dir" >&2; exit 1 ;;
 esac
 
-if ! ssh "$mac_host" mkdir "$verification_lock"; then
+case "$skip_install" in
+    0|1) ;;
+    *) echo "BESSIE_SKIP_INSTALL must be 0 or 1." >&2; exit 1 ;;
+esac
+
+if ! ssh "${ssh_options[@]}" "$mac_host" mkdir "$verification_lock"; then
     echo "Another Bessie Mac verification is already running: $verification_lock" >&2
     exit 1
 fi
-trap 'ssh "$mac_host" rmdir "$verification_lock" 2>/dev/null || true' EXIT
+trap 'ssh -o StrictHostKeyChecking=yes "$mac_host" rmdir "$verification_lock" 2>/dev/null || true' EXIT
 
-ssh "$mac_host" bash -s -- "$mac_dir" "$mirror_marker" <<'REMOTE'
+ssh "${ssh_options[@]}" "$mac_host" bash -s -- "$mac_dir" "$mirror_marker" <<'REMOTE'
 set -euo pipefail
 mac_dir=$1
 trap 'echo "mac-verify failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -54,22 +61,26 @@ fi
 REMOTE
 
 rsync -az \
-    --exclude='.git/' \
+    -e 'ssh -o StrictHostKeyChecking=yes' \
+    --exclude='.git' \
     --exclude='.build/' \
     --exclude='.swiftpm/' \
     --exclude='.local/' \
     --exclude='dist/' \
     "$repo_root/" "$mac_host:$mac_dir/"
 
-ssh "$mac_host" bash -s -- "$mac_dir" "$agent_kind" "$codesign_identity" <<'REMOTE'
+ssh "${ssh_options[@]}" "$mac_host" bash -s -- "$mac_dir" "$agent_kind" "$codesign_identity" "$skip_install" <<'REMOTE'
 set -euo pipefail
 trap 'status=$?; trap - ERR; echo "Mac verification failed at remote line $LINENO (exit $status)." >&2; exit $status' ERR
 mac_dir=$1
 requested_agent_kind=$2
 codesign_identity=$3
+skip_install=$4
 export BESSIE_CODESIGN_IDENTITY="$codesign_identity"
+logical_mac_dir=${mac_dir%/}
 mac_dir=$(cd "$mac_dir" && pwd -P)
 cd "$mac_dir"
+source "$mac_dir/scripts/lib/bessie-app-lifecycle.sh"
 
 login_path=$(zsh -lic 'printf "%s\n" "$PATH"' 2>/dev/null | tail -n 1)
 [[ -n "$login_path" ]] || { echo "Could not resolve the Mac login PATH." >&2; exit 1; }
@@ -96,6 +107,17 @@ state_log="$herdr_dir/runtime/bessie-state.log"
 app_log="$herdr_dir/runtime/bessie-app.log"
 intent_socket="$herdr_dir/runtime/bessie-intent-verify-$$.sock"
 presentation_path="$herdr_dir/runtime/bessie-presentation-$$.json"
+performance_evidence_path="$herdr_dir/runtime/bessie-performance-$$.json"
+performance_report_path="$herdr_dir/runtime/bessie-performance-$$.txt"
+terminal_performance_evidence_path="$herdr_dir/runtime/bessie-terminal-performance-$$.json"
+pane_switch_performance_evidence_path="$herdr_dir/runtime/bessie-pane-switch-performance-$$.json"
+terminal_performance_resources_path="$herdr_dir/runtime/bessie-terminal-resources-$$.json"
+terminal_performance_report_path="$herdr_dir/runtime/bessie-terminal-performance-$$.txt"
+terminal_performance_profile_path="$herdr_dir/runtime/bessie-terminal-profile-$$.txt"
+startup_evidence_dir="$herdr_dir/runtime/bessie-startup-evidence-$$"
+startup_samples_path="$herdr_dir/runtime/bessie-startup-samples-$$.json"
+startup_report_path="$herdr_dir/runtime/bessie-startup-performance-$$.txt"
+pane_read_error_path="$herdr_dir/runtime/bessie-pane-read-$$.stderr"
 projects_root="$herdr_dir/runtime/projects-$$"
 snapshot_path="$mac_dir/dist/Bessie-window.png"
 autostart_root="/tmp/bessie-autostart-verify-$$"
@@ -109,22 +131,35 @@ herdr_pid=''
 app_pid=''
 installed_pid=''
 installed_app=/Applications/Bessie.app
+installed_executable="$installed_app/Contents/MacOS/BessieApp"
+installed_menu_snapshot="$mac_dir/dist/Bessie-menu-bar-installed.png"
 install_stage="/Applications/.Bessie.app.install-$$"
 install_backup="/tmp/Bessie.app.backup-$$"
 install_candidate_active=false
+leave_installed_app_running=false
 runtime_case_pid=''
 runtime_case_root=''
 runtime_case_herdr=''
 missing_bundle_case=''
 corrupt_bundle_case=''
+performance_profile_pid=''
 launch_counter=0
 cli_workspace_id=''
 process_automation=0
 process_agent_kind=''
 terminal_automation=1
+terminal_performance_probe=0
+terminal_performance_pane_id=''
+pane_switch_performance_probe=0
+startup_performance_probe=0
+startup_performance_scenario=warm
 setup_automation=0
 snapshot_trigger=live-two-pane
+autostart_snapshot_trigger=''
+autostart_design_preview=herd
 design_preview=''
+fullscreen_snapshot=0
+theme_capture_dir=''
 
 launch_app() {
     local app_bundle="$mac_dir/dist/Bessie.app"
@@ -144,8 +179,17 @@ launch_app() {
         --env "BESSIE_RUN_TOKEN=$run_token"
         --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket"
         --env "BESSIE_PRESENTATION_PATH=$presentation_path"
+        --env "BESSIE_PERFORMANCE_EVIDENCE_PATH=$performance_evidence_path"
+        --env "BESSIE_PERFORMANCE_EVIDENCE_KIND=packaged_local_measurement"
+        --env "BESSIE_PERFORMANCE_STARTUP_SCENARIO=$startup_performance_scenario"
+        --env "BESSIE_STARTUP_PERFORMANCE_PROBE=$startup_performance_probe"
         --env "BESSIE_PROJECTS_PATH=$projects_root"
+        --env "BESSIE_DEVELOPER_FEATURES=fileBrowserEditor,followFiles"
+        --env "NSDisablePersistentUI=YES"
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=$terminal_automation"
+        --env "BESSIE_TERMINAL_PERFORMANCE_PROBE=$terminal_performance_probe"
+        --env "BESSIE_TERMINAL_PERFORMANCE_PANE_ID=$terminal_performance_pane_id"
+        --env "BESSIE_PANE_SWITCH_PERFORMANCE_PROBE=$pane_switch_performance_probe"
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$snapshot_path"
         --env "BESSIE_PROCESS_LIVE_AUTOMATION=$process_automation"
         --env "BESSIE_PROCESS_AGENT_KIND=$process_agent_kind"
@@ -153,6 +197,8 @@ launch_app() {
     )
     [[ -z "$snapshot_trigger" ]] || open_args+=(--env "BESSIE_WINDOW_SNAPSHOT_TRIGGER=$snapshot_trigger")
     [[ -z "$design_preview" ]] || open_args+=(--env "BESSIE_DESIGN_PREVIEW=$design_preview")
+    [[ -z "$theme_capture_dir" ]] || open_args+=(--env "BESSIE_THEME_LIVE_CAPTURE_DIR=$theme_capture_dir")
+    [[ "$fullscreen_snapshot" != 1 ]] || open_args+=(--env "BESSIE_FULLSCREEN_SNAPSHOT=1")
     open -n "$app_bundle" "${open_args[@]}"
     for _ in {1..40}; do
         local run_line
@@ -189,7 +235,14 @@ launch_autostart_app() {
         --env "BESSIE_RUN_TOKEN=$run_token" \
         --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$autostart_presentation_path" \
+        --env "BESSIE_PERFORMANCE_EVIDENCE_PATH=$performance_evidence_path" \
+        --env "BESSIE_PERFORMANCE_EVIDENCE_KIND=packaged_local_measurement" \
+        --env "BESSIE_PERFORMANCE_STARTUP_SCENARIO=$startup_performance_scenario" \
+        --env "BESSIE_STARTUP_PERFORMANCE_PROBE=$startup_performance_probe" \
+        --env "NSDisablePersistentUI=YES" \
         --env "BESSIE_SETUP_AUTOMATION=$setup_automation" \
+        --env "BESSIE_DESIGN_PREVIEW=$autostart_design_preview" \
+        --env "BESSIE_WINDOW_SNAPSHOT_TRIGGER=$autostart_snapshot_trigger" \
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$autostart_snapshot_path" \
         --env "BESSIE_WINDOW_SNAPSHOT_DELAY=2" \
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
@@ -237,8 +290,133 @@ stop_app() {
     app_pid=''
 }
 
+startup_evidence_ready() {
+    local evidence_path=$1
+    [[ -s "$evidence_path" ]] || return 1
+    /usr/bin/python3 - "$evidence_path" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+milestones = payload.get("milestones", [])
+names = {mark.get("milestone") for mark in milestones}
+required = {"process_start", "first_window_content", "connection_start", "first_complete_frame"}
+spans = [
+    span for span in payload.get("spans", [])
+    if span.get("start_milestone") == "startup_main_thread_probe_scheduled"
+    and span.get("end_milestone") == "startup_main_thread_probe_completed"
+    and isinstance(span.get("duration_ms"), (int, float))
+]
+raise SystemExit(0 if required.issubset(names) and len(spans) >= 25 else 1)
+PY
+}
+
+capture_design_surface() {
+    local name=$1
+    local preview=$2
+    local verify_shell=${3:-true}
+    local appearance=${4:-dark}
+    local fullscreen=${5:-false}
+    local output="$mac_dir/dist/Bessie-$name.png"
+    stop_app
+    # Keep removed keys here deliberately: every native visual capture also
+    # proves old presentation files still decode after contrast/motion removal.
+    printf '{"preferences":{"appearance":"%s","appIcon":"light","cowprintEnabled":true,"cowPrintIntensity":0.05,"cowPrintMotion":false},"first_real_terminal_completion_version":1}\n' \
+        "$appearance" > "$presentation_path"
+    rm -f "$output"
+    snapshot_path=$output
+    snapshot_trigger=''
+    design_preview=$preview
+    [[ "$fullscreen" == true ]] && fullscreen_snapshot=1 || fullscreen_snapshot=0
+    launch_app
+    for _ in {1..80}; do
+        [[ -s "$output" ]] && break
+        kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; return 1; }
+        sleep 0.25
+    done
+    [[ -s "$output" ]] || {
+        echo "Design snapshot was not written: $output" >&2
+        tail -n 80 "$app_log" >&2 || true
+        return 1
+    }
+    file "$output" | grep -Fq 'PNG image data' || {
+        echo "Design snapshot is not a PNG: $output" >&2
+        return 1
+    }
+    [[ $(stat -f %z "$output") -gt 15000 ]] || {
+        echo "Design snapshot is unexpectedly small: $output" >&2
+        return 1
+    }
+    if [[ "$verify_shell" == true ]]; then
+        xcrun swift scripts/verify-design-snapshot.swift "$output" "$appearance"
+    fi
+    grep -Fq "Window snapshot path=$output" "$state_log" || {
+        echo "Design snapshot was not acknowledged in the app state log: $output" >&2
+        tail -n 80 "$state_log" >&2 || true
+        return 1
+    }
+    fullscreen_snapshot=0
+}
+
+capture_live_theme_matrix() {
+    stop_app
+    printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light","cowprintEnabled":true},"first_real_terminal_completion_version":1}' > "$presentation_path"
+    theme_capture_dir="$mac_dir/dist"
+    local names=(bessie-dark bessie-light catppuccin-latte catppuccin-frappe catppuccin-macchiato catppuccin-mocha)
+    local schemes=(dark light light dark dark dark)
+    for name in "${names[@]}"; do
+        rm -f "$theme_capture_dir/Bessie-theme-$name-live.png"
+    done
+    snapshot_trigger=disabled
+    design_preview=workspace
+    terminal_automation=0
+    launch_app
+    for _ in {1..160}; do
+        grep -Fq 'Theme live capture complete themes=6 controller_identity=stable' "$state_log" && break
+        kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; return 1; }
+        sleep 0.25
+    done
+    grep -Fq 'Theme live capture complete themes=6 controller_identity=stable' "$state_log"
+    ! grep -Fq 'Theme live capture failed' "$state_log"
+    for index in "${!names[@]}"; do
+        local output="$theme_capture_dir/Bessie-theme-${names[$index]}-live.png"
+        [[ -s "$output" ]]
+        file "$output" | grep -Fq 'PNG image data'
+        [[ $(stat -f %z "$output") -gt 20000 ]]
+        xcrun swift scripts/verify-design-snapshot.swift "$output" "${schemes[$index]}" --surface-only true
+        grep -Fq "Window snapshot path=$output" "$state_log"
+    done
+    local observed
+    observed=$(read_pane_recent "$cli_pane_id")
+    grep -Fq 'BESSIE_THEME_ANSI_16_牛é🐄' <<<"$observed"
+    theme_capture_dir=''
+    terminal_automation=1
+    design_preview=''
+}
+
 intent_cli() {
     BESSIE_INTENT_SOCKET_PATH="$intent_socket" "$mac_dir/.build/debug/bessie" "$@"
+}
+
+read_pane_recent() {
+    local pane_id=$1
+    local output=''
+    for _ in {1..20}; do
+        if output=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
+            HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
+            "$herdr_bin" pane read "$pane_id" --source recent --lines 200 \
+            2>"$pane_read_error_path"); then
+            printf '%s\n' "$output"
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "Could not read live Herdr pane after retries: $pane_id" >&2
+    cat "$pane_read_error_path" >&2
+    return 1
 }
 
 assert_intent_ok() {
@@ -277,10 +455,10 @@ verify_runtime_failure_case() {
     local presentation="$root/presentation.json"
     local screenshot="$mac_dir/dist/Bessie-trouble-$name.png"
     local token="verify-runtime-$name-$$"
-    local pid=''
+    local case_pid=''
     runtime_case_root=$root
     mkdir -p "$root/xdg-config" "$root/xdg-state"
-    printf '%s\n' '{"preferences":{}}' > "$presentation"
+    printf '%s\n' '{"preferences":{},"first_real_terminal_completion_version":1}' > "$presentation"
     if [[ -n "$selection_json" ]]; then
         printf '%s\n' "$selection_json" > "$root/runtime-selection.json"
     fi
@@ -296,18 +474,23 @@ verify_runtime_failure_case() {
         --env "BESSIE_RUN_TOKEN=$token" \
         --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$presentation" \
+        --env "NSDisablePersistentUI=YES" \
         --env "BESSIE_WINDOW_SNAPSHOT_PATH=$screenshot" \
         --env "BESSIE_WINDOW_SNAPSHOT_DELAY=1"
     for _ in {1..80}; do
         line=$(grep -F "App run=$token pid=" "$state" | tail -n 1 || true)
-        [[ -z "$line" ]] || { pid=${line##* pid=}; break; }
+        [[ -z "$line" ]] || { case_pid=${line##* pid=}; break; }
         sleep 0.25
     done
-    [[ "$pid" =~ ^[0-9]+$ ]]
-    runtime_case_pid=$pid
+    if [[ ! "$case_pid" =~ ^[0-9]+$ ]]; then
+        cat "$log" >&2
+        echo "Runtime failure case $name did not report a process ID." >&2
+        return 1
+    fi
+    runtime_case_pid=$case_pid
     for _ in {1..80}; do
         grep -Fq "source=$expected_source path=$expected_path finding=$expected_finding" "$state" && break
-        kill -0 "$pid"
+        kill -0 "$case_pid"
         sleep 0.25
     done
     grep -Fq "source=$expected_source path=$expected_path finding=$expected_finding" "$state"
@@ -318,12 +501,12 @@ verify_runtime_failure_case() {
     [[ -s "$screenshot" ]]
     file "$screenshot" | grep -Fq 'PNG image data'
     [[ $(stat -f %z "$screenshot") -gt 20000 ]]
-    kill "$pid"
+    kill "$case_pid"
     for _ in {1..40}; do
-        ! kill -0 "$pid" 2>/dev/null && break
+        ! kill -0 "$case_pid" 2>/dev/null && break
         sleep 0.25
     done
-    ! kill -0 "$pid" 2>/dev/null
+    ! kill -0 "$case_pid" 2>/dev/null
     ! pgrep -f "^$app_bundle/Contents/Resources/Herdr/herdr server" >/dev/null
     find "$root" -depth -delete
     runtime_case_pid=''
@@ -338,11 +521,11 @@ verify_external_runtime_success_case() {
     local log="$root/app.log"
     local presentation="$root/presentation.json"
     local token="verify-runtime-compatible-external-$$"
-    local pid=''
+    local case_pid=''
     runtime_case_root=$root
     runtime_case_herdr=$external_runtime
     mkdir -p "$root/xdg-config" "$root/xdg-state"
-    printf '%s\n' '{"preferences":{"startupBehavior":"lastWorkspace"}}' > "$presentation"
+    printf '%s\n' '{"preferences":{"startupBehavior":"lastWorkspace"},"first_real_terminal_completion_version":1}' > "$presentation"
     printf '{"version":1,"kind":"custom","path":"%s"}\n' "$external_runtime" > "$root/runtime-selection.json"
     : > "$state"
     : > "$log"
@@ -355,27 +538,32 @@ verify_external_runtime_success_case() {
         --env "BESSIE_RUN_TOKEN=$token" \
         --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
         --env "BESSIE_PRESENTATION_PATH=$presentation" \
+        --env "NSDisablePersistentUI=YES" \
         --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
         --env "BESSIE_PROCESS_LIVE_AUTOMATION=0"
     for _ in {1..80}; do
         line=$(grep -F "App run=$token pid=" "$state" | tail -n 1 || true)
-        [[ -z "$line" ]] || { pid=${line##* pid=}; break; }
+        [[ -z "$line" ]] || { case_pid=${line##* pid=}; break; }
         sleep 0.25
     done
-    [[ "$pid" =~ ^[0-9]+$ ]]
-    runtime_case_pid=$pid
+    if [[ ! "$case_pid" =~ ^[0-9]+$ ]]; then
+        cat "$log" >&2
+        echo "Compatible external runtime case did not report a process ID." >&2
+        return 1
+    fi
+    runtime_case_pid=$case_pid
     for _ in {1..120}; do
         grep -Fq "Runtime stage=workspaceReady source=custom path=$external_runtime finding=none api=true" "$state" && break
-        kill -0 "$pid"
+        kill -0 "$case_pid"
         sleep 0.25
     done
     grep -Fq "Runtime stage=workspaceReady source=custom path=$external_runtime finding=none api=true" "$state"
-    kill "$pid"
+    kill "$case_pid"
     for _ in {1..40}; do
-        ! kill -0 "$pid" 2>/dev/null && break
+        ! kill -0 "$case_pid" 2>/dev/null && break
         sleep 0.25
     done
-    ! kill -0 "$pid" 2>/dev/null
+    ! kill -0 "$case_pid" 2>/dev/null
     external_status=$(XDG_CONFIG_HOME="$root/xdg-config" XDG_STATE_HOME="$root/xdg-state" \
         HERDR_SESSION=bessie "$external_runtime" status server --json)
     grep -Fq '"running":true' <<<"$external_status"
@@ -390,6 +578,10 @@ verify_external_runtime_success_case() {
 
 cleanup() {
     cleanup_status=$?
+    if [[ -n "$performance_profile_pid" ]] && kill -0 "$performance_profile_pid" 2>/dev/null; then
+        kill "$performance_profile_pid" 2>/dev/null || true
+        wait "$performance_profile_pid" 2>/dev/null || true
+    fi
     stop_app || true
     if [[ -n "$runtime_case_pid" ]] && kill -0 "$runtime_case_pid" 2>/dev/null; then
         kill "$runtime_case_pid" 2>/dev/null || true
@@ -401,13 +593,14 @@ cleanup() {
     [[ -z "$runtime_case_root" ]] || find "$runtime_case_root" -depth -delete 2>/dev/null || true
     [[ -z "$missing_bundle_case" ]] || find "$missing_bundle_case" -depth -delete 2>/dev/null || true
     [[ -z "$corrupt_bundle_case" ]] || find "$corrupt_bundle_case" -depth -delete 2>/dev/null || true
-    if [[ -n "$installed_pid" ]] && kill -0 "$installed_pid" 2>/dev/null; then
-        installed_executable=$(ps -p "$installed_pid" -o command= 2>/dev/null || true)
-        if [[ "$installed_executable" == /Applications/Bessie.app/Contents/MacOS/BessieApp ]]; then
+    if [[ -n "$installed_pid" ]] && kill -0 "$installed_pid" 2>/dev/null \
+        && { [[ "$cleanup_status" -ne 0 ]] || [[ "$leave_installed_app_running" != true ]]; }; then
+        cleanup_installed_executable=$(ps -p "$installed_pid" -o command= 2>/dev/null || true)
+        if [[ "$cleanup_installed_executable" == /Applications/Bessie.app/Contents/MacOS/BessieApp ]]; then
             kill "$installed_pid"
             wait "$installed_pid" 2>/dev/null || true
         else
-            echo "Refusing to stop unexpected installed-app process: $installed_executable" >&2
+            echo "Refusing to stop unexpected installed-app process: $cleanup_installed_executable" >&2
         fi
     fi
     if [[ "$cleanup_status" -ne 0 && "$install_candidate_active" == true ]]; then
@@ -442,8 +635,13 @@ cleanup() {
 trap cleanup EXIT
 
 ./scripts/check.sh
+bash ./scripts/verify-app-install-lifecycle.sh
 
 mkdir -p "$herdr_dir/runtime" "$herdr_xdg_config" "$herdr_xdg_state"
+# rsync preserves source mtimes, so a pre-existing Mac release build can look
+# newer than changed source. Clean before packaging so the app under live test
+# is built from the exact mirrored source rather than stale SwiftPM products.
+xcrun swift package clean
 ./scripts/package-app.sh
 
 packaged_runtime="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr"
@@ -525,7 +723,7 @@ status_json=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_sta
 grep -Fq '"running":true' <<<"$status_json"
 /usr/bin/python3 -c 'import json, sys; status = json.load(sys.stdin); expected = int(sys.argv[1]); actual = status.get("protocol"); raise SystemExit(0 if actual == expected else f"Herdr protocol mismatch: {actual!r}")' "$herdr_protocol" <<<"$status_json"
 
-# rsync preserves source mtimes, so clean SwiftPM state before trusting the mirrored build.
+# Rebuild the test products independently from the packaged release artifact.
 xcrun swift package clean
 XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
     BESSIE_LIVE_HERDR_SOCKET="$herdr_socket" BESSIE_LIVE_RUN_ID="verify-$$" xcrun swift test
@@ -539,6 +737,10 @@ test -x dist/Bessie.app/Contents/Resources/Herdr/herdr
 test -s dist/Bessie.app/Contents/Resources/Herdr/LICENSE
 test -s dist/Bessie.app/Contents/Resources/BessieDark.icns
 test -s dist/Bessie.app/Contents/Resources/BessieLight.icns
+attribution_path=dist/Bessie.app/Contents/Resources/ATTRIBUTION.md
+[[ -s "$attribution_path" ]]
+grep -Fq '5a58926563ddacbde4a12b4a347464c2c6945393' "$attribution_path"
+grep -Fq 'Copyright (c) 2021 Catppuccin' "$attribution_path"
 [[ $(plutil -extract CFBundleIconFile raw dist/Bessie.app/Contents/Info.plist) == BessieDark.icns ]]
 [[ $(plutil -extract CFBundleShortVersionString raw dist/Bessie.app/Contents/Info.plist) == 0.1.0 ]]
 [[ $(plutil -extract CFBundleVersion raw dist/Bessie.app/Contents/Info.plist) == 3 ]]
@@ -547,10 +749,15 @@ otool -L dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-o
 nm -gU dist/Bessie.app/Contents/MacOS/BessieApp > "$herdr_dir/runtime/bessie-symbols.txt"
 grep -Fq '/Metal.framework/' "$herdr_dir/runtime/bessie-otool.txt"
 grep -Fq 'GhosttyTerminal03AppB4View' "$herdr_dir/runtime/bessie-symbols.txt"
+controller_bin="$logical_mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr"
+[[ $(cd "$(dirname "$controller_bin")" && pwd -P)/herdr == "$packaged_runtime" ]]
 
 : > "$state_log"
 : > "$app_log"
-printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"}}' > "$presentation_path"
+# This phase verifies the live workspace shell. Keep onboarding completed in
+# the isolated presentation fixture so the two-pane snapshot cannot capture
+# the onboarding window instead of the Herdr-owned terminal topology.
+printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"},"first_real_terminal_completion_version":1}' > "$presentation_path"
 rm -f "$snapshot_path"
 launch_app
 
@@ -598,6 +805,11 @@ done
 grep -Fq "Terminal pane=$cli_pane_id input=raw_unicode,special_enter,paste" "$state_log"
 grep -Fq "Terminal pane=$cli_pane_id viewport raw=true paste=true" "$state_log"
 for _ in {1..40}; do
+    grep -Fq "Terminal pane=$cli_pane_id input=shortcut_cmd_b_control_b value=true" "$state_log" && break
+    sleep 0.25
+done
+grep -Fq "Terminal pane=$cli_pane_id input=shortcut_cmd_b_control_b value=true" "$state_log"
+for _ in {1..40}; do
     grep -Fq "Terminal pane=$cli_pane_id input=scroll" "$state_log" && break
     sleep 0.25
 done
@@ -616,8 +828,44 @@ for _ in {1..80}; do
     sleep 0.25
 done
 grep -Fq "Terminal pane=$split_pane_id viewport raw=true paste=true" "$state_log"
-controller_count=$(pgrep -P "$app_pid" -f "^$herdr_bin terminal session control" | wc -l | tr -d ' ')
-[[ "$controller_count" == 2 ]]
+for _ in {1..40}; do
+    grep -Fq "Terminal pane=$split_pane_id input=shortcut_cmd_b_control_b value=true" "$state_log" && break
+    sleep 0.25
+done
+grep -Fq "Terminal pane=$split_pane_id input=shortcut_cmd_b_control_b value=true" "$state_log"
+# Foundation Process children are not guaranteed to remain direct children of
+# the packaged app on every macOS release. The verifier-owned runtime path is
+# unique, so scope controller assertions to that exact executable instead.
+controller_count=0
+for _ in {1..40}; do
+    controller_count=$({ pgrep -f "^$controller_bin terminal session control" || true; } | wc -l | tr -d ' ')
+    [[ "$controller_count" == 2 ]] && break
+    sleep 0.25
+done
+if [[ "$controller_count" != 2 ]]; then
+    echo "Expected two packaged terminal controllers, found $controller_count for $controller_bin." >&2
+    pgrep -alf 'terminal session control' >&2 || true
+    exit 1
+fi
+
+# Validate the packaged app's opt-in payload-free performance evidence. The
+# evaluator intentionally exits nonzero for incomplete evidence, so capture and
+# assert that status rather than letting `set -e` misclassify it as a harness
+# failure. Live percentile collection remains a separate release blocker.
+for _ in {1..40}; do
+    [[ -s "$performance_evidence_path" ]] && \
+        /usr/bin/python3 -m json.tool "$performance_evidence_path" >/dev/null 2>&1 && break
+    sleep 0.25
+done
+[[ -s "$performance_evidence_path" ]]
+performance_status=0
+/usr/bin/python3 scripts/run-hardening-benchmarks.py \
+    --app-evidence "$performance_evidence_path" > "$performance_report_path" || performance_status=$?
+[[ "$performance_status" == 1 ]]
+grep -Fq 'evidence_kind: packaged_local_measurement' "$performance_report_path"
+grep -Fq 'simulation_is_not_live_measurement: false' "$performance_report_path"
+grep -Fq 'UNAVAILABLE printable_key_to_visible_echo_p95 observed=unavailable' "$performance_report_path"
+grep -Fq 'overall: INCOMPLETE' "$performance_report_path"
 
 # Exercise the verifier-owned agent bus while the packaged app and isolated
 # Herdr server are live (AE1-AE3 and AE6).
@@ -691,19 +939,59 @@ grep -Fq "Window snapshot path=$snapshot_path" "$state_log"
 
 first_token=${cli_pane_id//:/_}
 second_token=${split_pane_id//:/_}
-first_read=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
-    HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
-    "$herdr_bin" pane read "$cli_pane_id" --source recent --lines 200)
-second_read=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
-    HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
-    "$herdr_bin" pane read "$split_pane_id" --source recent --lines 200)
+first_read=$(read_pane_recent "$cli_pane_id")
+second_read=$(read_pane_recent "$split_pane_id")
 grep -Fq "RAW_${first_token}_牛é🐄" <<<"$first_read"
 grep -Fq "PASTE_$first_token" <<<"$first_read"
 grep -Fq "RAW_${second_token}_牛é🐄" <<<"$second_read"
 grep -Fq "PASTE_$second_token" <<<"$second_read"
 
+# Emit all 16 ANSI background slots through Herdr's public mode-aware input API,
+# then prove every concrete coordinated theme in the same live workspace. Each
+# relaunch reuses the Herdr-owned panes and terminal output; only Bessie-owned
+# presentation selection changes.
+ansi_request=$(BESSIE_ANSI_PANE_ID="$cli_pane_id" /usr/bin/python3 - <<'PY' | nc -U "$herdr_socket"
+import json, os
+blocks = "\\033[3J\\033[H\\033[2JBessie ANSI 00-15: "
+blocks += "".join(f"\\033[{40 + index}m {index:02d} " for index in range(8))
+blocks += "\\033[0m\\n"
+blocks += "".join(f"\\033[{100 + index}m {index + 8:02d} " for index in range(8))
+command = "printf '" + blocks + "\\033[0m\\nBESSIE_THEME_ANSI_16_牛é🐄\\n'"
+print(json.dumps({
+    "id": "mac-theme-ansi",
+    "method": "pane.send_input",
+    "params": {"pane_id": os.environ["BESSIE_ANSI_PANE_ID"], "text": command, "keys": ["Enter"]},
+}))
+PY
+)
+grep -Fq '"type":"ok"' <<<"$ansi_request"
+for _ in {1..40}; do
+    ansi_read=$(read_pane_recent "$cli_pane_id")
+    grep -Fq 'BESSIE_THEME_ANSI_16_牛é🐄' <<<"$ansi_read" && break
+    sleep 0.25
+done
+grep -Fq 'BESSIE_THEME_ANSI_16_牛é🐄' <<<"$ansi_read"
+
+capture_live_theme_matrix
+
+# Continue lifecycle/recovery checks from a fresh Bessie Dark attachment.
+stop_app
+printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"},"first_real_terminal_completion_version":1}' > "$presentation_path"
+snapshot_path="$mac_dir/dist/Bessie-window.png"
+snapshot_trigger=disabled
+terminal_automation=0
+ready_before_theme_reopen=$(grep -c 'Terminal pane=.* state=ready_' "$state_log" || true)
+launch_app
+for _ in {1..80}; do
+    ready_after_theme_reopen=$(grep -c 'Terminal pane=.* state=ready_' "$state_log" || true)
+    [[ "$ready_after_theme_reopen" -ge $((ready_before_theme_reopen + 2)) ]] && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+[[ "$ready_after_theme_reopen" -ge $((ready_before_theme_reopen + 2)) ]]
+
 # Killing only one controller must freeze and reconnect it without takeover or pane loss.
-controller_pid=$(pgrep -P "$app_pid" -f "^$herdr_bin terminal session control $cli_pane_id" | head -n 1)
+controller_pid=$(pgrep -f "^$controller_bin terminal session control $cli_pane_id" | head -n 1)
 [[ -n "$controller_pid" ]]
 ready_before_controller_kill=$(grep -c "Terminal pane=$cli_pane_id state=ready_" "$state_log")
 kill "$controller_pid"
@@ -727,14 +1015,14 @@ not_running=$(intent_cli status || true)
 /usr/bin/python3 -c 'import json, sys; result=json.load(sys.stdin); raise SystemExit(0 if result.get("error", {}).get("code") == "bessie_not_running" else f"expected bessie_not_running: {result}")' <<<"$not_running"
 kill -0 "$herdr_pid"
 for _ in {1..40}; do
-    ! pgrep -f "^$herdr_bin terminal session control ($cli_pane_id|$split_pane_id)" >/dev/null && break
+    ! pgrep -f "^$controller_bin terminal session control ($cli_pane_id|$split_pane_id)" >/dev/null && break
     sleep 0.25
 done
-! pgrep -f "^$herdr_bin terminal session control ($cli_pane_id|$split_pane_id)" >/dev/null
-surviving_read=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
-    HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
-    "$herdr_bin" pane read "$cli_pane_id" --source recent --lines 200)
-grep -Fq "RAW_${first_token}_牛é🐄" <<<"$surviving_read"
+! pgrep -f "^$controller_bin terminal session control ($cli_pane_id|$split_pane_id)" >/dev/null
+surviving_read=$(read_pane_recent "$cli_pane_id")
+surviving_second_read=$(read_pane_recent "$split_pane_id")
+grep -Fq 'BESSIE_THEME_ANSI_16_牛é🐄' <<<"$surviving_read"
+grep -Fq "RAW_${second_token}_牛é🐄" <<<"$surviving_second_read"
 
 ready_before_reopen=$(grep -c 'Terminal pane=.* state=ready_' "$state_log")
 launch_app
@@ -749,6 +1037,7 @@ done
 # Relaunch with the app-owned process flow enabled and prove it creates and retains a real shell pane.
 stop_app
 process_automation=1
+terminal_automation=1
 snapshot_trigger=disabled
 launch_app
 for _ in {1..120}; do
@@ -765,9 +1054,7 @@ for _ in {1..80}; do
     sleep 0.25
 done
 grep -Fq "Terminal pane=$shell_pane_id viewport raw=true paste=true" "$state_log"
-shell_read=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
-    HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
-    "$herdr_bin" pane read "$shell_pane_id" --source recent --lines 200)
+shell_read=$(read_pane_recent "$shell_pane_id")
 grep -Fq "RAW_${shell_token}_牛é🐄" <<<"$shell_read"
 
 # The manifest is authoritative for supported kinds. The requested executable comes from the Mac login PATH.
@@ -856,6 +1143,212 @@ done
 printf 'Live agent proof pane=%s kind=%s status=%s executable=%s\n' \
     "$agent_pane_id" "$requested_agent_kind" "$agent_status" "$requested_agent_path" >> "$state_log"
 
+# Run the release-gating terminal and app performance workload in the isolated
+# Herdr fixture. Evidence contains timing/resource values and opaque sequences,
+# never terminal payloads, commands, paths, or host identity.
+stop_app
+performance_tab=$(XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
+    HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
+    "$herdr_bin" tab create --workspace "$cli_workspace_id" --label "bessie-perf-$$" --focus)
+performance_tab_pane_id=$(sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' <<<"$performance_tab" | head -n 1)
+[[ -n "$performance_tab_pane_id" ]] || {
+    echo "Could not create the second performance tab: $performance_tab" >&2
+    exit 1
+}
+performance_evidence_path="$pane_switch_performance_evidence_path"
+terminal_automation=0
+terminal_performance_probe=0
+terminal_performance_pane_id=''
+pane_switch_performance_probe=1
+snapshot_trigger=disabled
+design_preview=''
+rm -f "$terminal_performance_evidence_path" "$pane_switch_performance_evidence_path" \
+    "$terminal_performance_resources_path" \
+    "$terminal_performance_report_path" "$terminal_performance_profile_path"
+launch_app
+osascript -e 'tell application id "dev.bessie.app" to activate'
+for _ in {1..160}; do
+    grep -Fq 'Performance pane switch probe complete transitions=20 tabs=2' "$state_log" && break
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+grep -Fq 'Performance pane switch probe complete transitions=20 tabs=2' "$state_log"
+[[ -s "$pane_switch_performance_evidence_path" ]]
+stop_app
+
+performance_evidence_path="$terminal_performance_evidence_path"
+terminal_performance_probe=1
+terminal_performance_pane_id=$performance_tab_pane_id
+pane_switch_performance_probe=0
+launch_app
+osascript -e 'tell application id "dev.bessie.app" to activate'
+
+# Keep a native macOS stack sample from the measured packaged app. It is taken
+# after the scripted terminal workloads settle, so the trace diagnoses visible
+# idle rendering rather than perturbing the latency and throughput samples.
+(
+    for _ in {1..1600}; do
+        if grep -Fq 'Performance terminal probe complete' "$state_log" \
+            && grep -Fq 'Performance pane switch probe complete' "$state_log" \
+            && grep -Fq 'Performance resize probe complete' "$state_log"; then
+            /usr/bin/sample "$app_pid" 3 -file "$terminal_performance_profile_path" >/dev/null
+            exit
+        fi
+        kill -0 "$app_pid" 2>/dev/null || exit 1
+        sleep 0.25
+    done
+    exit 1
+) &
+performance_profile_pid=$!
+
+cpu_samples="$herdr_dir/runtime/bessie-terminal-cpu-$$.txt"
+rss_samples="$herdr_dir/runtime/bessie-terminal-rss-$$.txt"
+idle_cpu_samples="$herdr_dir/runtime/bessie-terminal-idle-cpu-$$.txt"
+: > "$cpu_samples"
+: > "$rss_samples"
+: > "$idle_cpu_samples"
+performance_started=$SECONDS
+for _ in {1..300}; do
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    if grep -Fq 'Performance terminal probe failed' "$state_log" \
+        || grep -Fq 'Performance pane switch probe failed' "$state_log" \
+        || grep -Fq 'Performance resize probe failed' "$state_log"; then
+        tail -n 120 "$state_log" >&2
+        exit 1
+    fi
+    read -r cpu_sample rss_sample < <(ps -p "$app_pid" -o %cpu= -o rss=)
+    [[ "$cpu_sample" =~ ^[0-9]+([.][0-9]+)?$ && "$rss_sample" =~ ^[0-9]+$ ]]
+    printf '%s\n' "$cpu_sample" >> "$cpu_samples"
+    printf '%s\n' "$rss_sample" >> "$rss_samples"
+    sleep 1
+done
+performance_duration=$((SECONDS - performance_started))
+for _ in {1..160}; do
+    if grep -Fq 'Performance terminal probe complete' "$state_log" \
+        && grep -Fq 'Performance pane switch probe complete' "$state_log" \
+        && grep -Fq 'Performance resize probe complete' "$state_log"; then
+        break
+    fi
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    sleep 0.25
+done
+grep -Fq 'Performance terminal probe complete echo_samples=200 megabyte_runs=5 line_runs=5 continuous_seconds=300 continuous_input_samples=100' "$state_log"
+grep -Fq 'Performance pane switch probe complete transitions=20 tabs=2' "$state_log"
+grep -Fq 'Performance resize probe complete storms=40' "$state_log"
+wait "$performance_profile_pid"
+performance_profile_pid=''
+[[ -s "$terminal_performance_profile_path" ]]
+
+# Measure a fresh 30-second idle window after the terminal workload settles.
+for _ in {1..30}; do
+    kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+    read -r idle_cpu_sample _ < <(ps -p "$app_pid" -o %cpu= -o rss=)
+    [[ "$idle_cpu_sample" =~ ^[0-9]+([.][0-9]+)?$ ]]
+    printf '%s\n' "$idle_cpu_sample" >> "$idle_cpu_samples"
+    sleep 1
+done
+
+/usr/bin/python3 - "$terminal_performance_resources_path" "$cpu_samples" "$idle_cpu_samples" "$rss_samples" "$performance_duration" <<'PY'
+import json
+import sys
+
+output, cpu_path, idle_path, rss_path, duration = sys.argv[1:]
+read = lambda path: [float(value) for value in open(path, encoding="utf-8") if value.strip()]
+payload = {
+    "duration_seconds": float(duration),
+    "sample_interval_seconds": 1.0,
+    "cpu_percent": read(cpu_path),
+    "idle_cpu_percent": read(idle_path),
+    "rss_mb": [value / 1024.0 for value in read(rss_path)],
+}
+with open(output, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, indent=2, sort_keys=True)
+PY
+
+/usr/bin/python3 - "$terminal_performance_evidence_path" "$pane_switch_performance_evidence_path" <<'PY'
+import json
+import sys
+
+terminal_path, switches_path = sys.argv[1:]
+terminal = json.load(open(terminal_path, encoding="utf-8"))
+switches = json.load(open(switches_path, encoding="utf-8"))
+switch_spans = [
+    span for span in switches["spans"]
+    if span.get("start_milestone") == "terminal_switch_requested"
+    and span.get("end_milestone") == "terminal_switch_surface_attached"
+    and "duration_ms" in span
+]
+if len(switch_spans) != 20:
+    raise ValueError(f"expected 20 pane-switch spans, found {len(switch_spans)}")
+terminal["spans"].extend(switch_spans)
+terminal["milestones"].extend(
+    mark for mark in switches["milestones"]
+    if mark.get("milestone") in {"terminal_switch_requested", "terminal_switch_surface_attached"}
+)
+with open(terminal_path, "w", encoding="utf-8") as stream:
+    json.dump(terminal, stream, indent=2, sort_keys=True)
+PY
+
+/usr/bin/python3 scripts/run-hardening-benchmarks.py \
+    --terminal-app-evidence "$terminal_performance_evidence_path" \
+    --resource-samples "$terminal_performance_resources_path" \
+    > "$terminal_performance_report_path"
+grep -Fq 'PASS printable_echo_p95_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS one_megabyte_output_max_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS fifty_thousand_lines_max_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS pane_switch_first_usable_max_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS resize_convergence_max_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS continuous_output_input_max_ms' "$terminal_performance_report_path"
+grep -Fq 'PASS idle_cpu_average_percent' "$terminal_performance_report_path"
+grep -Fq 'PASS resident_memory_max_mb' "$terminal_performance_report_path"
+grep -Fq 'overall: PASS' "$terminal_performance_report_path"
+
+stop_app
+terminal_performance_probe=0
+terminal_performance_pane_id=''
+pane_switch_performance_probe=0
+terminal_automation=0
+startup_performance_probe=1
+startup_performance_scenario=warm
+snapshot_trigger=live-two-pane
+design_preview=new-process
+mkdir -p "$startup_evidence_dir"
+for sample in {1..20}; do
+    performance_evidence_path="$startup_evidence_dir/warm-$sample.json"
+    rm -f "$performance_evidence_path"
+    launch_app
+    for _ in {1..120}; do
+        startup_evidence_ready "$performance_evidence_path" && break
+        kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
+        sleep 0.25
+    done
+    startup_evidence_ready "$performance_evidence_path" || {
+        echo "Warm startup sample $sample did not produce complete evidence." >&2
+        tail -n 100 "$state_log" >&2
+        exit 1
+    }
+    stop_app
+done
+startup_performance_probe=0
+terminal_automation=1
+performance_evidence_path="$herdr_dir/runtime/bessie-performance-$$.json"
+
+# Re-capture the primary connected product surfaces from the current build.
+capture_design_surface herd herd
+capture_design_surface attention attention
+capture_design_surface workspaces workspaces
+capture_design_surface workspace workspace
+capture_design_surface agent-detail agent-detail
+
+# Slice L locks both sides of the appearance switch. Capture the light Herd
+# shell and terminal grid explicitly alongside the established dark artifacts.
+capture_design_surface herd-light herd true light
+capture_design_surface workspace-light workspace true light
+capture_design_surface sidebar-windowed workspace true light
+capture_design_surface sidebar-fullscreen workspace false light true
+stop_app
+printf '%s\n' '{"preferences":{"appearance":"dark","appIcon":"light"}}' > "$presentation_path"
+
 # Capture the notification controls in the connected Settings surface as a second native artifact.
 stop_app
 settings_snapshot_path="$mac_dir/dist/Bessie-settings.png"
@@ -877,6 +1370,13 @@ settings_height=$(sips -g pixelHeight "$settings_snapshot_path" | awk '/pixelHei
 [[ $(stat -f %z "$settings_snapshot_path") -gt 20000 ]]
 xcrun swift scripts/verify-design-snapshot.swift "$settings_snapshot_path"
 grep -Fq "Window snapshot path=$settings_snapshot_path" "$state_log"
+
+# Capture the finite picker in every named Catppuccin mapping. These are additive
+# to the exact achromatic verifier above; named palettes do not redefine it.
+capture_design_surface settings-catppuccin-latte settings false catppuccinLatte
+capture_design_surface settings-catppuccin-frappe settings false catppuccinFrappe
+capture_design_surface settings-catppuccin-macchiato settings false catppuccinMacchiato
+capture_design_surface settings-catppuccin-mocha settings false catppuccinMocha
 
 # Capture the connected native Projects catalog using an isolated recipe root.
 stop_app
@@ -986,6 +1486,21 @@ launch_review_height=$(sips -g pixelHeight "$project_launch_review_snapshot_path
 grep -Fq "Window snapshot path=$project_launch_review_snapshot_path" "$state_log"
 design_preview=''
 
+# U12 release evidence. Reuse this verifier's packaged app and isolated Herdr
+# fixture; the matrix harness changes presentation inputs only and emits a
+# complete dark/light manifest. Performance probes and budgets above remain
+# independent and unchanged.
+stop_app
+PATH="$PATH" \
+HERDR_CONFIG_PATH="$herdr_config" BESSIE_HERDR_SOCKET_PATH="$herdr_socket" \
+XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
+BESSIE_STATE_LOG_PATH="$state_log" BESSIE_PRESENTATION_PATH="$presentation_path" \
+BESSIE_PROJECTS_PATH="$projects_root" BESSIE_CAPTURE_APP="$mac_dir/dist/Bessie.app" \
+BESSIE_CAPTURE_OUTPUT="$mac_dir/dist/redesign-matrix" \
+    ./scripts/capture-redesign-matrix.sh
+/usr/bin/python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); raise SystemExit(0 if len(value.get("artboards", [])) == 30 else "redesign manifest is incomplete")' \
+    "$mac_dir/dist/redesign-matrix/manifest.json"
+
 # Close the existing disposable workspace through the bus at its established
 # safe cleanup point, including the exact cascade and one-shot token (AE4).
 closed_workspace_id=$cli_workspace_id
@@ -1036,11 +1551,11 @@ reuse_result=$(intent_cli call workspace.close --json "$close_args" --confirm "$
 /usr/bin/python3 -c 'import json, sys; result=json.load(sys.stdin); raise SystemExit(0 if result.get("error", {}).get("code") == "confirm_token_invalid" else f"confirmation token reuse did not fail: {result}")' <<<"$reuse_result"
 kill -0 "$herdr_pid"
 for _ in {1..40}; do
-    ! pgrep -P "$app_pid" -f "^$herdr_bin terminal session control" >/dev/null && break
+    ! pgrep -f "^$controller_bin terminal session control" >/dev/null && break
     sleep 0.25
 done
-! pgrep -P "$app_pid" -f "^$herdr_bin terminal session control" >/dev/null
-connected_before_restart=$(grep -c '^Connected$' "$state_log")
+! pgrep -f "^$controller_bin terminal session control" >/dev/null
+connected_before_restart=$(grep -c 'Connected' "$state_log" || true)
 
 # Prove that a live app observes loss and reconverges after only the isolated server restarts.
 kill "$herdr_pid"
@@ -1053,7 +1568,7 @@ for _ in {1..40}; do
 done
 grep -Fq 'Retrying' "$state_log"
 
-find "$herdr_dir/runtime" -maxdepth 1 -type s \( -name 'herdr.sock' -o -name 'herdr-client.sock' \) -delete
+find "$herdr_dir/runtime" -maxdepth 1 -type s \( -name 'herdr.sock' -o -name 'herdr-client.sock' \) -delete 2>/dev/null || true
 XDG_CONFIG_HOME="$herdr_xdg_config" XDG_STATE_HOME="$herdr_xdg_state" \
 HERDR_CONFIG_PATH="$herdr_config" HERDR_SOCKET_PATH="$herdr_socket" \
     "$herdr_bin" server >>"$herdr_log" 2>&1 &
@@ -1067,12 +1582,12 @@ done
 tail -n 8 "$herdr_log" | grep -Fq "logs: $herdr_xdg_config/herdr/herdr-server.log"
 
 for _ in {1..60}; do
-    connected_count=$(grep -c '^Connected$' "$state_log" || true)
+    connected_count=$(grep -c 'Connected' "$state_log" || true)
     [[ "$connected_count" -gt "$connected_before_restart" ]] && break
     kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
     sleep 0.25
 done
-[[ $(grep -c '^Connected$' "$state_log" || true) -gt "$connected_before_restart" ]]
+[[ $(grep -c 'Connected' "$state_log" || true) -gt "$connected_before_restart" ]]
 
 stop_app
 
@@ -1106,6 +1621,7 @@ done
 stop_app
 
 setup_automation=1
+autostart_snapshot_trigger=disabled
 launch_autostart_app
 for _ in {1..80}; do
     grep -Eq 'Terminal pane=.* state=ready_' "$autostart_state_log" && \
@@ -1127,6 +1643,37 @@ stop_app
 autostart_after_quit=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
     HERDR_SESSION=bessie "$herdr_bin" status server --json)
 grep -Fq '"running":true' <<<"$autostart_after_quit"
+
+setup_automation=0
+startup_performance_probe=1
+startup_performance_scenario=cold
+autostart_snapshot_trigger=live-two-pane
+autostart_design_preview=new-process
+for sample in {1..5}; do
+    XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+        HERDR_SESSION=bessie "$herdr_bin" server stop >/dev/null
+    stopped_status=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
+        HERDR_SESSION=bessie "$herdr_bin" status server --json)
+    grep -Fq '"running":false' <<<"$stopped_status"
+    performance_evidence_path="$startup_evidence_dir/cold-$sample.json"
+    rm -f "$performance_evidence_path"
+    launch_autostart_app
+    for _ in {1..160}; do
+        startup_evidence_ready "$performance_evidence_path" && break
+        kill -0 "$app_pid" 2>/dev/null || { cat "$autostart_app_log" >&2; exit 1; }
+        sleep 0.25
+    done
+    startup_evidence_ready "$performance_evidence_path" || {
+        echo "Cold startup sample $sample did not produce complete evidence." >&2
+        tail -n 100 "$autostart_state_log" >&2
+        exit 1
+    }
+    stop_app
+done
+startup_performance_probe=0
+autostart_snapshot_trigger=disabled
+autostart_design_preview=herd
+
 XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
     HERDR_SESSION=bessie "$herdr_bin" server stop >/dev/null
 autostart_stopped=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$autostart_xdg_state" \
@@ -1134,12 +1681,78 @@ autostart_stopped=$(XDG_CONFIG_HOME="$autostart_xdg_config" XDG_STATE_HOME="$aut
 grep -Fq '"running":false' <<<"$autostart_stopped"
 find "$autostart_root" -depth -delete
 
+/usr/bin/python3 - "$startup_evidence_dir" "$startup_samples_path" <<'PY'
+import json
+import math
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+output = Path(sys.argv[2])
+
+def duration(payload, start, end):
+    marks = payload["milestones"]
+    start_values = [mark["elapsed_ms"] for mark in marks if mark["milestone"] == start]
+    end_values = [mark["elapsed_ms"] for mark in marks if mark["milestone"] == end]
+    if not start_values or not end_values:
+        raise ValueError(f"missing {start}->{end}")
+    start_value = min(start_values)
+    candidates = [value for value in end_values if value >= start_value]
+    if not candidates:
+        raise ValueError(f"out-of-order {start}->{end}")
+    return min(candidates) - start_value
+
+def read_samples(prefix, expected_count):
+    paths = sorted(root.glob(f"{prefix}-*.json"), key=lambda path: int(path.stem.split("-")[-1]))
+    if len(paths) != expected_count:
+        raise ValueError(f"expected {expected_count} {prefix} samples, found {len(paths)}")
+    return [json.loads(path.read_text()) for path in paths]
+
+warm = read_samples("warm", 20)
+cold = read_samples("cold", 5)
+all_samples = warm + cold
+stalls = [
+    float(span["duration_ms"])
+    for payload in all_samples
+    for span in payload["spans"]
+    if span["start_milestone"] == "startup_main_thread_probe_scheduled"
+    and span["end_milestone"] == "startup_main_thread_probe_completed"
+    and "duration_ms" in span
+]
+if len(stalls) < 20 or any(not math.isfinite(value) or value < 0 for value in stalls):
+    raise ValueError("startup main-thread evidence is incomplete")
+result = {
+    "evidence_kind": "packaged_local_measurement",
+    "first_window_content_ms": [duration(payload, "process_start", "first_window_content") for payload in warm],
+    "warm_shell_ready_ms": [duration(payload, "connection_start", "first_complete_frame") for payload in warm],
+    "cold_shell_ready_ms": [duration(payload, "connection_start", "first_complete_frame") for payload in cold],
+    "startup_main_thread_stall_ms": stalls,
+}
+output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+PY
+/usr/bin/python3 scripts/run-hardening-benchmarks.py \
+    --startup-samples "$startup_samples_path" > "$startup_report_path"
+grep -Fq 'PASS first_window_content_p95_ms' "$startup_report_path"
+grep -Fq 'PASS warm_shell_ready_p95_ms' "$startup_report_path"
+grep -Fq 'PASS cold_shell_ready_p95_ms' "$startup_report_path"
+grep -Fq 'PASS startup_main_thread_stall_max_ms' "$startup_report_path"
+grep -Fq 'overall: PASS' "$startup_report_path"
+
+if [[ "$skip_install" == 1 ]]; then
+    echo "Packaged verification passed; installation skipped by BESSIE_SKIP_INSTALL=1. Startup and terminal performance budgets passed."
+    exit 0
+fi
+
 # Install the verified package while retaining a restorable backup until all
 # installed-app identity checks pass.
 find "$install_stage" -depth -delete 2>/dev/null || true
 find "$install_backup" -depth -delete 2>/dev/null || true
 ditto "$mac_dir/dist/Bessie.app" "$install_stage"
 codesign --verify --deep --strict "$install_stage"
+# Stop every exact installed-path owner before moving the bundle. This also
+# clears validated leftovers from this installer's historical backup paths and
+# refuses unrelated BessieApp executables.
+bessie_terminate_installation_owners "$installed_executable"
 if [[ -e "$installed_app" ]]; then
     mv "$installed_app" "$install_backup"
 fi
@@ -1173,7 +1786,8 @@ installed_app_log="$herdr_dir/runtime/bessie-installed-app-$$.log"
 installed_token="verify-installed-$$"
 : > "$installed_state_log"
 : > "$installed_app_log"
-open -n "$installed_app" \
+rm -f "$installed_menu_snapshot"
+/usr/bin/open -n "$installed_app" \
     --stdout "$installed_app_log" \
     --stderr "$installed_app_log" \
     --env "BESSIE_REPOSITORY_ROOT=$mac_dir" \
@@ -1186,6 +1800,10 @@ open -n "$installed_app" \
     --env "BESSIE_RUN_TOKEN=$installed_token" \
     --env "BESSIE_INTENT_SOCKET_PATH=$intent_socket" \
     --env "BESSIE_PRESENTATION_PATH=$presentation_path" \
+    --env "BESSIE_DESIGN_ARTBOARD=15" \
+    --env "BESSIE_MENU_BAR_SNAPSHOT_PATH=$installed_menu_snapshot" \
+    --env "BESSIE_WINDOW_SNAPSHOT_DELAY=2" \
+    --env "NSDisablePersistentUI=YES" \
     --env "BESSIE_TERMINAL_LIVE_AUTOMATION=0" \
     --env "BESSIE_PROCESS_LIVE_AUTOMATION=0"
 for _ in {1..80}; do
@@ -1197,24 +1815,44 @@ for _ in {1..80}; do
     sleep 0.25
 done
 [[ "$installed_pid" =~ ^[0-9]+$ ]]
-[[ $(ps -p "$installed_pid" -o command=) == "$installed_app/Contents/MacOS/BessieApp" ]]
+installed_owner=$(bessie_assert_single_installed_owner "$installed_executable")
+[[ ${installed_owner%%$'\t'*} == "$installed_pid" ]]
 for _ in {1..80}; do
-    grep -Fq 'Connected' "$installed_state_log" && break
+    grep -Fq 'Connected' "$installed_state_log" \
+        && grep -Fq "Menu bar status owner pid=$installed_pid visible=true" "$installed_state_log" \
+        && [[ -s "$installed_menu_snapshot" ]] \
+        && break
     kill -0 "$installed_pid"
     sleep 0.25
 done
 grep -Fq 'Connected' "$installed_state_log"
-kill "$installed_pid"
-for _ in {1..40}; do
-    ! kill -0 "$installed_pid" 2>/dev/null && break
-    sleep 0.25
-done
-! kill -0 "$installed_pid" 2>/dev/null
+grep -Fq "Menu bar status owner pid=$installed_pid visible=true" "$installed_state_log"
+grep -Fq "Menu-bar snapshot path=$installed_menu_snapshot width=900 height=470" "$installed_state_log"
+[[ -s "$installed_menu_snapshot" ]]
+file "$installed_menu_snapshot" | grep -Fq 'PNG image data'
+[[ $(sips -g pixelWidth "$installed_menu_snapshot" | awk '/pixelWidth/ {print $2}') == 900 ]]
+[[ $(sips -g pixelHeight "$installed_menu_snapshot" | awk '/pixelHeight/ {print $2}') == 470 ]]
+kill -0 "$herdr_pid"
+bessie_terminate_installation_owners "$installed_executable"
+installed_pid=''
+kill -0 "$herdr_pid"
 
 system_default_after=$(HERDR_SESSION=default "$installed_app/Contents/Resources/Herdr/herdr" status server --json 2>&1 || true)
 [[ "$system_default_after" == "$system_default_before" ]]
 install_candidate_active=false
 find "$install_backup" -depth -delete 2>/dev/null || true
 
-echo "Mac tests, locked bundled Herdr identity and notices, automatic detached Bessie-session startup, focused native surfaces, validated workspace and Settings PNGs, live libghostty panes, composite input, app-driven shell and $requested_agent_kind launches, semantic agent state, agent survival across app reopen, manifest discovery, controller recovery, external CLI convergence, isolated Herdr restart, release packaging, installed-app identity, and isolated installed-app relaunch passed."
+# Finish in the ordinary user configuration, with no verification environment.
+/usr/bin/open "$installed_app"
+installed_owner=''
+for _ in {1..80}; do
+    installed_owner=$(bessie_assert_single_installed_owner "$installed_executable" 2>/dev/null || true)
+    [[ -z "$installed_owner" ]] || break
+    sleep 0.25
+done
+[[ -n "$installed_owner" ]]
+installed_pid=${installed_owner%%$'\t'*}
+leave_installed_app_running=true
+
+echo "Mac tests, locked bundled Herdr identity and notices, automatic detached Bessie-session startup, focused native surfaces, validated workspace, Settings, and installed menu-bar PNGs, live libghostty panes, composite input, app-driven shell and $requested_agent_kind launches, semantic agent state, agent survival across app reopen, manifest discovery, controller recovery, external CLI convergence, isolated Herdr restart, release packaging, exact installed-app identity, pre-install owner termination, and one normal installed status owner passed. Installed Bessie remains running as pid $installed_pid."
 REMOTE

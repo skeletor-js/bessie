@@ -1,100 +1,63 @@
-# Attention (thin) — execution plan (ce-plan)
+# Standalone Attention surface — folded into The Herd
 
-**Date:** 2026-08-02  
-**Status:** Implementation-ready  
-**V1 slice:** E (pair with Herd)  
-**Branch:** `feat/v1-e-herd-attention`  
-**Goal-loop ready:** Yes with Herd plan  
-**Occam lock:** Needs-you list + Open pane only — **no** snooze, resolved-local, history, keyboard triage pack
+**Date:** 2026-08-02
+**Superseded:** 2026-08-03 by Jordan's product decision
+**Status:** Remove from V1; functionality absorbed into The Herd
+**V1 slice:** M correction over integrated slice E
+**Canonical execution:** [`2026-08-03-v1-acceptance-remediation.md`](2026-08-03-v1-acceptance-remediation.md) §7
 
-## 1. Outcome
+## Decision
 
-Attention is a clear inbox of panes that need the user on the **active connection** (or fleet — see decision), each with **Open pane** only.
+Bessie V1 has no standalone Attention destination, list, route, or persisted Attention model.
 
-Default scope: **active connection** (matches today) unless Herd bar B work already surfaces fleet-wide attention — then use composite IDs. Prefer **fleet-wide Attention** for local+remote vision: items carry `connectionID` + label.
+Herdr 0.7.5 exposes `blocked` as an authoritative agent status, not a durable attention-item object. The useful behavior therefore belongs in The Herd:
 
-**Jordan vision:** local and remote live together → **fleet-wide Attention list**.
+- blocked-first ordering in All;
+- **Needs you** filter and count;
+- strongest blocked card treatment;
+- exact **Open pane** action;
+- next-needs-you command;
+- sidebar Herd cue and Zen blocked cue;
+- blocked notification policy and direct pane routing.
 
-## 2. Substrate
+This removes a duplicate product surface and avoids inventing Resolved, history, age, snooze, or dismissal semantics that Herdr does not own.
 
-| Piece | Path |
-| --- | --- |
-| Items | `AttentionSurfaceItem` in `SurfaceProjection.swift` — id is paneID only today |
-| UI | `AttentionSurface` in ProductSurfaces |
-| Actions | `.openPane` only — keep |
-| Notifications | separate planner; Open next attention shortcut |
+## Integrated baseline to remove
 
-## 3. Architecture
+The earlier slice E implementation added:
 
-### 3.1 Fleet attention model
+- `AttentionItemModel` and `AttentionListBuilder`;
+- `ConnectionFleetViewModel.attentionAgents`;
+- `AttentionSurface` and an Attention navigation destination;
+- `attentionFallback` notification routing;
+- blocked + done tests and next-attention terminology.
 
-```swift
-public struct AttentionItemModel: Equatable, Identifiable, Sendable {
-    public var id: String { "\(connectionID)::\(paneID)" }
-    public let connectionID: String
-    public let connectionLabel: String
-    public let paneID: String
-    public let state: AgentSemanticState  // blocked or done only
-    public let identity: String
-    public let location: String
-    public let target: RoutedPaneTarget
-}
+Those are historical implementation facts, not the accepted V1 contract.
 
-public enum AttentionListBuilder {
-    public static func items(from agents: [ConnectedAgentProjection], labels: ...) -> [AttentionItemModel]
-    // include state.needsAttention (blocked + done)
-    // sort blocked first, then done; secondary connection; tertiary identity
-}
-```
+## Required correction
 
-### 3.2 UI
+1. Keep/rename a shared Core `requiresUserAction` predicate that is true only for `.blocked`.
+2. Make `HerdListBuilder` the sole agent-status/needs-you presentation builder.
+3. Apply `ConnectionScope` before Herd cards, filter counts, and next-needs-you ordering.
+4. Remove `AttentionItemModel`, `AttentionListBuilder`, `attentionAgents`, `AttentionSurface`, the sidebar destination, route enum case, and duplicate tests.
+5. Rename user-facing next-attention commands/accessibility labels to **next needs you** or **open next agent that needs you**.
+6. Make workspace/sidebar blocked counts consume the same predicate where counts remain useful.
+7. Remove notification routing's generic Attention fallback. Missing/unavailable targets report an honest error and open Herd or connection recovery.
+8. Keep completion notifications independent: `done` remains Herd state and optional notification policy, never Needs you.
+9. Persist no attention records or compatibility stub.
 
-- List blocked then done sections **or** single list with state glyph (keep simple single list sorted).
-- Button Open pane → activate connection → open target.
-- Empty: "Nothing needs you".
-- No snooze UI.
+## Acceptance
 
-### 3.3 Shortcut
+- No Attention destination appears in the sidebar, menus, shortcuts, command palette, onboarding, Settings, or deep-link fallback.
+- All shows blocked agents first.
+- Needs you includes connected authoritative blocked agents only and reports the correct scoped count.
+- Open pane activates the owning host and exact workspace/tab/pane.
+- Blocked→working/idle/done removes the agent from Needs you after Herdr reconciliation.
+- Disconnected/stale agents do not count as live Needs you; host unavailability remains visible.
+- Done remains visible in Herd and may notify according to policy.
+- Test notifications and stale notification routes never mutate or open a hidden Attention surface.
+- Core/App tests lock one shared predicate and no duplicate list model.
 
-`openNotificationTarget` / ⌥⌘N: open first attention item fleet-wide (blocked first).
+## Future re-entry condition
 
-## 4. Files
-
-| File | Change |
-| --- | --- |
-| `Sources/BessieCore/AttentionList.swift` (**new**) | builder |
-| `Tests/BessieCoreTests/AttentionListTests.swift` | sort + composite id |
-| `Sources/BessieApp/ProductSurfaces.swift` | AttentionSurface fleet wiring |
-| `Sources/BessieApp/BessieApp.swift` | only if fleet API needed |
-
-## 5. Milestones
-
-### M1 — Core builder + tests
-### M2 — Wire UI fleet-wide + Open pane
-### M3 — ⌥⌘N uses builder ordering
-### M4 — Verify with Herd branch checklist
-
-## 6. Acceptance
-
-1. Attention shows blocked+done only, blocked first.
-2. Each row has connection label when multi-connection.
-3. Open pane routes correct connection + pane.
-4. No snooze/history/resolve UI.
-5. Unit tests for composite IDs and ordering.
-6. check.sh green.
-
-## 7. Non-goals
-
-Typed approve, explain/reason fields unless already free on projection, snooze, menu bar.
-
-## 8. Pause
-
-If fleet-wide attention doubles notification noise semantics — notifications stay per-connection planners; Attention UI is independent.
-
-## 9. Implementation evidence — 2026-08-02
-
-- Added fleet-wide `AttentionListBuilder` models with composite connection/pane IDs, blocked+done inclusion, blocked-first ordering, connection labels, and routed pane targets.
-- Wired the Attention destination, rail/status counts, Open pane action, and ⌥⌘N to the same fleet-wide builder ordering. Opening activates the owning connection before focusing the exact pane.
-- Kept the surface thin: one ordered list, one Open pane action, and “Nothing needs you” empty copy. No snooze, history, resolve, menu bar, files, or follow behavior was added.
-- Added `AttentionListTests` for inclusion, ordering, composite IDs, labels, and routed targets.
-- Verification: VPS `./scripts/check.sh` passed. A unique isolated Mac source mirror compiled BessieApp and passed `HerdListTests`, `AttentionListTests`, `SurfaceProjectionTests`, and `KeyboardShortcutTests`: **21 tests, 0 failures**. Full shared-mirror/package/install results are not claimed because concurrent slice synchronization made that shared mirror non-authoritative.
+A dedicated Attention product may return only when Herdr exposes durable typed attention objects with event identity, reason/type, lifecycle, timestamps, and safe typed resolution actions. Until then, it is a Herd filter—not a product area.

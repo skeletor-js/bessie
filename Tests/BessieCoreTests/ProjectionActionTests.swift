@@ -3,6 +3,18 @@ import XCTest
 @testable import BessieCore
 
 final class ProjectionActionTests: XCTestCase {
+    func testV1FeatureFlagsDefaultOffAndDeveloperEnvironmentOverrideIsTyped() {
+        let defaults = BessieFeatureFlags.v1
+        XCTAssertFalse(defaults.isEnabled(.fileBrowserEditor))
+        XCTAssertFalse(defaults.isEnabled(.followFiles))
+
+        let override = BessieFeatureFlags(environment: [
+            BessieFeatureFlags.developerEnvironmentKey: "followFiles, fileBrowserEditor,unknown"
+        ])
+        XCTAssertTrue(override.isEnabled(.fileBrowserEditor))
+        XCTAssertTrue(override.isEnabled(.followFiles))
+        XCTAssertEqual(BessieFeature.allCases, [.fileBrowserEditor, .followFiles])
+    }
     func testProjectionDecodesAuthoritativeFocusAndRecursiveSplitPaths() throws {
         let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
 
@@ -84,6 +96,39 @@ final class ProjectionActionTests: XCTestCase {
         XCTAssertEqual(projection.focusFallback(preferredWorkspaceID: "missing").workspaceID, "w1")
         XCTAssertEqual(projection.focusFallback(preferredWorkspaceID: "w1").paneID, "p2")
     }
+
+    func testPrunedNavigationActionsSkipAlreadyFocusedTargets() throws {
+        let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
+        // Fixture focus is w1/t1/p2.
+        XCTAssertEqual(
+            projection.prunedNavigationActions([
+                .workspaceFocus(id: "w1"),
+                .tabFocus(id: "t1"),
+                .paneFocus(id: "p2"),
+            ]),
+            []
+        )
+        XCTAssertEqual(
+            projection.prunedNavigationActions([
+                .workspaceFocus(id: "w1"),
+                .tabFocus(id: "t1"),
+                .paneFocus(id: "p1"),
+            ]),
+            [.paneFocus(id: "p1")]
+        )
+    }
+
+    func testApplyingLocalFocusRewritesFocusFlagsWithoutInventingEntities() throws {
+        let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
+        let focused = try projection.applyingLocalFocus(paneID: "p1")
+
+        XCTAssertEqual(focused.focusedPane?.id, "p1")
+        XCTAssertEqual(focused.focusedTab?.id, "t1")
+        XCTAssertEqual(focused.focusedWorkspace?.id, "w1")
+        XCTAssertEqual(focused.panes.first { $0.id == "p1" }?.focused, true)
+        XCTAssertEqual(focused.panes.first { $0.id == "p2" }?.focused, false)
+        XCTAssertEqual(Set(focused.panes.map(\.id)), Set(projection.panes.map(\.id)))
+    }
 }
 
 private final class RecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable {
@@ -96,7 +141,7 @@ private final class RecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable 
 
 private extension HerdrSnapshot {
     static let projectionFixture = HerdrSnapshot(
-        version: "0.7.5", protocolVersion: 17,
+        version: "0.8.0", protocolVersion: 19,
         focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p2",
         workspaces: [.object(["workspace_id": .string("w1"), "number": .number(1), "label": .string("main"), "focused": .bool(true), "pane_count": .number(2), "tab_count": .number(1), "active_tab_id": .string("t1"), "agent_status": .string("idle")])],
         tabs: [.object(["tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1), "label": .string("shell"), "focused": .bool(true), "pane_count": .number(2), "agent_status": .string("idle")])],

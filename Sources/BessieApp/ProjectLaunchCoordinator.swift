@@ -37,12 +37,6 @@ final class LiveProjectLaunchService: ProjectLaunchServicing, @unchecked Sendabl
     }
 }
 
-struct ProjectLaunchReview: Identifiable, Equatable {
-    let project: BessieProject
-    let connectionName: String
-    var id: UUID { project.id }
-}
-
 struct ProjectOpeningState: Equatable {
     let projectID: UUID
     let projectName: String

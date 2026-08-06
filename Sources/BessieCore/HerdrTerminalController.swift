@@ -33,6 +33,8 @@ public enum TerminalControllerFailure: Equatable, Sendable {
         {
             return .ownershipConflict(message)
         }
+        // Some herdr builds only put the conflict on the NDJSON closed reason,
+        // which is handled separately; keep stderr path aligned.
         return .processExit(message.isEmpty ? "terminal controller exited \(status)" : message)
     }
 }
@@ -51,7 +53,10 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     private let environment: [String: String]
     private let onFrame: FrameHandler
     private let onState: StateHandler
+    private let performanceRecorder: BessiePerformanceRecorder?
+    private let performanceSequence: UInt64?
     private let queue = DispatchQueue(label: "bessie.terminal.controller.\(UUID().uuidString)")
+    private let inputQueue = DispatchQueue(label: "bessie.terminal.controller.input.\(UUID().uuidString)")
     private var process: Process?
     private var inputHandle: FileHandle?
     private var outputFramer = NDJSONFramer()
@@ -74,6 +79,7 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         socketPath: String,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         initialGrid: TerminalGrid = TerminalGrid(columns: 80, rows: 24),
+        performanceRecorder: BessiePerformanceRecorder? = nil,
         onFrame: @escaping FrameHandler,
         onState: @escaping StateHandler
     ) {
@@ -85,6 +91,8 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         sequencer = TerminalFrameSequencer(grid: initialGrid)
         self.onFrame = onFrame
         self.onState = onState
+        self.performanceRecorder = performanceRecorder
+        performanceSequence = performanceRecorder?.nextSequence()
     }
 
     public func start() {
@@ -98,26 +106,28 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     public func takeOver() {
         queue.async { [weak self] in
             guard let self else { return }
-            if active || process != nil {
-                guard mode == .observe else { return }
-                restartWhenProcessExits = false
-                pendingResize?.cancel()
-                pendingResize = nil
-                try? write(.release)
-                try? inputHandle?.close()
-                inputHandle = nil
-                if let process {
-                    (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
-                    (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
-                    process.terminationHandler = nil
-                    if process.isRunning { process.terminate() }
-                }
-                process = nil
-                active = false
+            // Always force a --takeover relaunch from any state. The previous
+            // guard (only from .observe) no-oped while Bessie was stuck in
+            // control/reconnect against another attached client — the exact
+            // "Hermes mouse dead" failure mode with native Herdr TUI + Bessie.
+            restartWhenProcessExits = false
+            pendingResize?.cancel()
+            pendingResize = nil
+            try? write(.release)
+            try? inputHandle?.close()
+            inputHandle = nil
+            if let process {
+                (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+                (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+                process.terminationHandler = nil
+                if process.isRunning { process.terminate() }
             }
+            process = nil
+            stderr = ""
             mode = .takeover
             active = true
             restartAttempt = 0
+            sequencer.reset(grid: grid)
             launch()
         }
     }
@@ -133,18 +143,20 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func release() {
-        queue.sync {
-            guard active || process != nil else { return }
-            active = false
-            restartWhenProcessExits = false
-            pendingResize?.cancel()
-            pendingResize = nil
-            try? write(.release)
-            try? inputHandle?.close()
-            inputHandle = nil
-            if process?.isRunning == true { process?.terminate() }
-            process = nil
-            onState(.stopped)
+        inputQueue.sync {
+            queue.sync {
+                guard active || process != nil else { return }
+                active = false
+                restartWhenProcessExits = false
+                pendingResize?.cancel()
+                pendingResize = nil
+                try? write(.release)
+                try? inputHandle?.close()
+                inputHandle = nil
+                if process?.isRunning == true { process?.terminate() }
+                process = nil
+                onState(.stopped)
+            }
         }
     }
 
@@ -187,15 +199,17 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func sendRaw(_ data: Data) throws {
-        try queue.sync {
-            try requireReady()
-            try write(.input(data))
+        try inputQueue.sync {
+            try queue.sync {
+                try requireReady()
+                try write(.input(data))
+            }
         }
     }
 
     public func sendKeys(_ keys: [String]) throws {
-        try queue.sync {
-            try requireReady()
+        try inputQueue.sync {
+            try queue.sync { try requireReady() }
             _ = try HerdrSocketAPI(socketPath: socketPath).request(
                 method: "pane.send_keys",
                 params: ["pane_id": .string(paneID), "keys": .array(keys.map(JSONValue.string))]
@@ -204,8 +218,8 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func sendPaste(_ text: String) throws {
-        try queue.sync {
-            try requireReady()
+        try inputQueue.sync {
+            try queue.sync { try requireReady() }
             _ = try HerdrSocketAPI(socketPath: socketPath).request(
                 method: "pane.send_input",
                 params: ["pane_id": .string(paneID), "text": .string(text), "keys": .array([])]
@@ -214,9 +228,11 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
     }
 
     public func sendScroll(direction: TerminalScrollDirection, lines: Int, source: TerminalScrollSource, column: Int?, row: Int?, modifiers: Int) throws {
-        try queue.sync {
-            try requireReady()
-            try write(.scroll(direction: direction, lines: max(1, lines), source: source, column: column, row: row, modifiers: modifiers))
+        try inputQueue.sync {
+            try queue.sync {
+                try requireReady()
+                try write(.scroll(direction: direction, lines: max(1, lines), source: source, column: column, row: row, modifiers: modifiers))
+            }
         }
     }
 
@@ -304,14 +320,31 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
                     switch sequencer.accept(frame) {
                     case .apply(let bytes):
                         if frame.full { restartAttempt = 0 }
+                        let frameSequence = performanceRecorder?.nextSequence()
+                        performanceRecorder?.mark(.terminalFrameReceived, sequence: frameSequence)
                         onFrame(bytes)
-                        onState(.ready(grid: frame.grid, sequence: frame.sequence, full: frame.full))
+                        performanceRecorder?.mark(.terminalFrameFed, sequence: frameSequence)
+                        if frame.full {
+                            performanceRecorder?.mark(.terminalControllerReady, sequence: performanceSequence)
+                            performanceRecorder?.mark(.firstCompleteFrame, sequence: performanceSequence)
+                            // Readiness changes only on a complete repaint.
+                            // Delta frames still feed libghostty above, but must
+                            // not republish status and invalidate SwiftUI for
+                            // every terminal frame.
+                            onState(.ready(grid: frame.grid, sequence: frame.sequence, full: true))
+                        }
                     case .ignored: break
                     case .waitingForFull: onState(.waitingForFull)
                     case .reconnect(let reason): beginReconnect(reason: reason)
                     }
                 case .closed(let reason):
-                    beginReconnect(reason: reason)
+                    if Self.isOwnershipConflictReason(reason) {
+                        // Do not reconnect-loop without --takeover; that left Bessie
+                        // stuck unable to send input while native Herdr held the pane.
+                        finishOwnershipConflict(reason)
+                    } else {
+                        beginReconnect(reason: reason)
+                    }
                 }
             }
         } catch {
@@ -346,12 +379,34 @@ public final class HerdrTerminalController: TerminalInputTransport, @unchecked S
         guard active else { return }
         switch TerminalControllerFailure.classify(stderr: stderr, status: status) {
         case .ownershipConflict(let message):
-            active = false
-            onState(.ownershipConflict(message))
+            finishOwnershipConflict(message)
         case .processExit(let message):
             onState(.reconnecting(reason: message))
             scheduleRestart(reason: message)
         }
+    }
+
+    private func finishOwnershipConflict(_ message: String) {
+        active = false
+        restartWhenProcessExits = false
+        pendingResize?.cancel()
+        pendingResize = nil
+        try? inputHandle?.close()
+        inputHandle = nil
+        if let process, process.isRunning {
+            (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+            (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+            process.terminationHandler = nil
+            process.terminate()
+        }
+        process = nil
+        onState(.ownershipConflict(message))
+    }
+
+    private static func isOwnershipConflictReason(_ reason: String) -> Bool {
+        let message = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.localizedCaseInsensitiveContains("already has an attached client")
+            || message.localizedCaseInsensitiveContains("retry with --takeover")
     }
 
     private func scheduleRestart(reason: String) {

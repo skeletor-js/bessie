@@ -169,6 +169,66 @@ final class WorkspaceFSTests: XCTestCase {
         }
     }
 
+    func testMaterializeImageAllowsContainedFileAndRejectsSymlinkEscape() throws {
+        try withTemporaryDirectory { directory in
+            let rootURL = directory.appendingPathComponent("root", isDirectory: true)
+            let outside = directory.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            let image = rootURL.appendingPathComponent("preview.png")
+            let outsideImage = outside.appendingPathComponent("outside.png")
+            try Data([0x89, 0x50, 0x4e, 0x47]).write(to: image)
+            try Data([0x89, 0x50, 0x4e, 0x47]).write(to: outsideImage)
+            try FileManager.default.createSymbolicLink(
+                at: rootURL.appendingPathComponent("escape.png"),
+                withDestinationURL: outsideImage
+            )
+            let root = Self.root(rootURL)
+
+            XCTAssertEqual(
+                try WorkspaceFS.materializeLocalURL(root: root, relativePath: "preview.png").get(),
+                image
+            )
+            XCTAssertEqual(
+                try WorkspaceFS.loadImageData(root: root, relativePath: "preview.png").get(),
+                Data([0x89, 0x50, 0x4e, 0x47])
+            )
+            XCTAssertEqual(
+                WorkspaceFS.materializeLocalURL(root: root, relativePath: "escape.png"),
+                .failure(.pathEscape)
+            )
+            XCTAssertEqual(
+                WorkspaceFS.loadImageData(root: root, relativePath: "escape.png"),
+                .failure(.pathEscape)
+            )
+        }
+    }
+
+    func testMaterializeImageReportsOversizeAndUnsupportedType() throws {
+        try withTemporaryDirectory { directory in
+            try Data(repeating: 0, count: 9).write(to: directory.appendingPathComponent("preview.png"))
+            try Data([0, 1, 2]).write(to: directory.appendingPathComponent("archive.zip"))
+            let root = Self.root(directory)
+
+            XCTAssertEqual(
+                WorkspaceFS.materializeLocalURL(root: root, relativePath: "preview.png", maximumByteSize: 8),
+                .failure(.tooLarge)
+            )
+            XCTAssertEqual(
+                WorkspaceFS.materializeLocalURL(root: root, relativePath: "archive.zip"),
+                .failure(.unsupportedType)
+            )
+            XCTAssertEqual(
+                WorkspaceFS.loadImageData(root: root, relativePath: "preview.png", maximumByteSize: 8),
+                .failure(.tooLarge)
+            )
+            XCTAssertEqual(
+                WorkspaceFS.loadImageData(root: root, relativePath: "archive.zip"),
+                .failure(.unsupportedType)
+            )
+        }
+    }
+
     func testResolveContainedPathAllowsMissingLeafButRejectsMissingLeafBelowEscapingSymlink() throws {
         try withTemporaryDirectory { directory in
             let rootURL = directory.appendingPathComponent("root", isDirectory: true)
@@ -316,6 +376,26 @@ final class WorkspaceFSTests: XCTestCase {
         }
     }
 
+    func testWorkspacePathErrorsHaveStableLocalizedDescriptions() {
+        let expected: [(WorkspacePathError, String)] = [
+            (.remoteUnsupported, "Remote files need an active SSH connection."),
+            (.missingRoot, "The workspace folder is unavailable."),
+            (.notDirectory, "The workspace path is not a folder."),
+            (.unreadable, "Bessie could not read that file or folder."),
+            (.pathEscape, "That path is outside the open folder."),
+            (.tooLarge, "That file exceeds Bessie's preview size limit."),
+            (.notFound, "That file or folder was not found."),
+            (.unsupportedType, "That file type is not supported for preview."),
+            (.invalidImage, "That image is damaged or uses an unsupported encoding."),
+        ]
+
+        for (error, description) in expected {
+            XCTAssertEqual(error.errorDescription, description)
+            XCTAssertEqual(error.localizedDescription, description)
+        }
+        XCTAssertEqual((WorkspacePathError.tooLarge as NSError).code, 5)
+    }
+
     private static func root(_ url: URL) -> WorkspaceFileRoot {
         WorkspaceFileRoot(
             connectionID: BessieConnectionDefinition.localBessie.id,
@@ -330,8 +410,8 @@ final class WorkspaceFSTests: XCTestCase {
         let workspaceID = "workspace"
         let tabID = "tab"
         return try HerdrSessionProjection(snapshot: HerdrSnapshot(
-            version: "0.7.5",
-            protocolVersion: 17,
+            version: "0.8.0",
+            protocolVersion: 19,
             focusedWorkspaceID: workspaceID,
             focusedTabID: tabID,
             focusedPaneID: "pane-1",

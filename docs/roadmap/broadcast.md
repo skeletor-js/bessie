@@ -1,18 +1,21 @@
 # Broadcast
 
-**Status:** Deferred
-**Roadmap horizon:** Deferred (2026-08-02)
-**Product area:** Multi-agent operations
-**Implementation approval:** Not granted by this document
-**Deferred reason:** Jordan — not needed for current product direction; do not sequence.
+**Status:** Absorbed into Shepherd (2026-08-04)
+**Roadmap horizon:** No independent feature; later Shepherd milestone
+**Product area:** Shepherd multi-agent operations
+**Implementation approval:** Not granted; governed by [`shepherd.md`](shepherd.md)
 
-## Outcome
+## Decision
 
-Send one reviewed prompt or key operation to a deliberate set of real Herdr panes.
+Broadcast is no longer a standalone Bessie feature or surface. Its deliberate multi-target send capability belongs inside Shepherd's later targeting and routing milestone. This file is retained as source material; Shepherd owns sequencing, product boundaries, and eventual approval.
+
+## Retained outcome
+
+Through Shepherd, send one reviewed prompt to a deliberate set of real Herdr agent panes.
 
 ## Why this exists
 
-The design treated broadcast as a second-wave orchestration tool with filters, exclusions, variables, and a dry run. That need is not current; park the plan.
+The design treated broadcast as a second-wave orchestration tool with filters, exclusions, variables, and a dry run. A separate Broadcast destination would duplicate Shepherd's dispatch responsibility, so the safe core is retained under Shepherd instead.
 
 ## First useful slice
 
@@ -44,6 +47,6 @@ Bessie must preserve Herdr as the authority for sessions, panes, processes, agen
 - Is explicit target selection the only acceptable first release?
 - Which operation types should never be broadcast?
 
-## Graduation criteria
+## Re-entry criteria
 
-Before this idea becomes **Proposed**, validate the first useful slice against the current Herdr contracts, identify local and remote behavior, define failure and empty states, and split any high-risk side effects into separately approved milestones.
+This item does not graduate independently. Any implementation requires the corresponding Shepherd milestone to be separately approved and must preserve explicit target review, confirmation, and partial-failure reporting.

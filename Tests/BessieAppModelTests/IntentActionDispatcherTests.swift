@@ -46,4 +46,74 @@ final class IntentActionDispatcherTests: XCTestCase {
         XCTAssertEqual(second.value?["connected"], .bool(true))
         XCTAssertEqual(missing.value?["connected"], .bool(false))
     }
+
+    func testInstallProjectionDoesNotRequireClientReconnect() throws {
+        let live = AppIntentLivePort()
+        let snapshot = HerdrSnapshot(
+            version: "0.8.0",
+            protocolVersion: 19,
+            focusedWorkspaceID: "w1",
+            focusedTabID: "t1",
+            focusedPaneID: "p2",
+            workspaces: [
+                .object([
+                    "workspace_id": .string("w1"), "number": .number(1), "label": .string("alpha"),
+                    "focused": .bool(true), "pane_count": .number(2), "tab_count": .number(1),
+                    "active_tab_id": .string("t1"), "agent_status": .string("idle"),
+                ]),
+            ],
+            tabs: [
+                .object([
+                    "tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1),
+                    "label": .string("build"), "focused": .bool(true), "pane_count": .number(2),
+                    "agent_status": .string("idle"),
+                ]),
+            ],
+            panes: [
+                .object([
+                    "pane_id": .string("p1"), "terminal_id": .string("term1"),
+                    "workspace_id": .string("w1"), "tab_id": .string("t1"),
+                    "focused": .bool(false), "agent_status": .string("idle"), "revision": .number(1),
+                ]),
+                .object([
+                    "pane_id": .string("p2"), "terminal_id": .string("term2"),
+                    "workspace_id": .string("w1"), "tab_id": .string("t1"),
+                    "focused": .bool(true), "agent_status": .string("idle"), "revision": .number(1),
+                ]),
+            ],
+            layouts: [
+                .object([
+                    "workspace_id": .string("w1"), "tab_id": .string("t1"), "zoomed": .bool(false),
+                    "focused_pane_id": .string("p2"),
+                    "area": .object(["x": .number(0), "y": .number(0), "width": .number(100), "height": .number(40)]),
+                    "panes": .array([
+                        .object([
+                            "pane_id": .string("p1"), "focused": .bool(false),
+                            "rect": .object(["x": .number(0), "y": .number(0), "width": .number(49), "height": .number(40)]),
+                        ]),
+                        .object([
+                            "pane_id": .string("p2"), "focused": .bool(true),
+                            "rect": .object(["x": .number(51), "y": .number(0), "width": .number(49), "height": .number(40)]),
+                        ]),
+                    ]),
+                    "splits": .array([
+                        .object([
+                            "id": .string("split_0_root"), "direction": .string("right"), "ratio": .number(0.5),
+                            "rect": .object(["x": .number(0), "y": .number(0), "width": .number(100), "height": .number(40)]),
+                        ]),
+                    ]),
+                ]),
+            ],
+            agents: []
+        )
+        let projection = try HerdrSessionProjection(snapshot: snapshot)
+        let client = HerdrActionClient(api: HerdrSocketAPI(socketPath: "/tmp/herdr-a.sock"))
+        live.update(client: client, connectionID: "c1", projection: projection)
+
+        let optimistic = try projection.applyingLocalFocus(paneID: "p1")
+        live.installProjection(optimistic, connectionID: "c1")
+
+        XCTAssertEqual(try live.projection(connectionID: "c1").focusedPane?.id, "p1")
+        XCTAssertTrue(live.isConnected(connectionID: "c1"))
+    }
 }

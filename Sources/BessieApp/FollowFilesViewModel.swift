@@ -143,7 +143,8 @@ final class FollowFilesViewModel: ObservableObject {
         case .notDirectory: "The pane working directory is no longer available."
         case .unreadable: "Bessie cannot read this working directory."
         case .remoteUnsupported: "Reconnect the SSH tunnel to follow remote files."
-        case .pathEscape, .tooLarge, .notFound: "The workspace files are unavailable."
+        case .pathEscape, .tooLarge, .notFound, .unsupportedType, .invalidImage:
+            "The workspace files are unavailable."
         }
     }
 }

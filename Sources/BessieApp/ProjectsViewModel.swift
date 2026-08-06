@@ -3,11 +3,9 @@ import Foundation
 import SwiftUI
 
 struct ProjectCatalogSection: Identifiable, Equatable {
-    let group: String?
     let projects: [BessieStoredProject]
-    var id: String { group.map { "group:\($0)" } ?? "ungrouped" }
-    var name: String { group ?? "Ungrouped" }
-    var isUngrouped: Bool { group == nil }
+    let id = "projects"
+    let name = "Projects"
 }
 
 struct BessieProjectDraft: Identifiable {
@@ -23,18 +21,25 @@ struct BessieProjectDraft: Identifiable {
         get { project.projectDescription }
         set { project.projectDescription = newValue }
     }
-    var group: String? {
-        get { project.group }
-        set { project.group = newValue }
-    }
     var workingDirectory: String {
         get { project.workingDirectory }
         set { project.workingDirectory = newValue }
+    }
+    var folders: [BessieProjectFolder] {
+        get { project.folders }
+        set { project.folders = newValue }
     }
     var tabs: [BessieProjectTab] {
         get { project.tabs }
         set { project.tabs = newValue }
     }
+}
+
+struct ProjectLaunchReviewPresentation: Identifiable, Equatable {
+    let project: BessieProject
+    let connectionLabel: String
+
+    var id: UUID { project.id }
 }
 
 @MainActor
@@ -47,9 +52,9 @@ final class ProjectsViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var notice: String?
     @Published private(set) var conflict: BessieProjectWriteConflict?
-    @Published private(set) var launchReview: ProjectLaunchReview?
     @Published private(set) var opening: ProjectOpeningState?
     @Published private(set) var progress: BessieProjectMaterializationProgressFact?
+    @Published private(set) var launchReview: ProjectLaunchReviewPresentation?
     @Published private(set) var launchFailure: ProjectLaunchFailurePresentation?
     @Published private(set) var navigationHandoff: ProjectWorkspaceHandoff?
 
@@ -93,24 +98,15 @@ final class ProjectsViewModel: ObservableObject {
             let project = stored.project
             let commands = project.tabs.flatMap(\.panes).compactMap(\.command).joined(separator: " ")
             let haystack = [
-                project.name, project.projectDescription, project.group ?? "",
-                project.workingDirectory, commands,
+                project.name, project.projectDescription,
+                project.folders.flatMap { [$0.name, $0.path] }.joined(separator: " "), commands,
             ].joined(separator: " ").lowercased()
             return terms.allSatisfy { haystack.contains($0) }
         }
     }
 
     var sections: [ProjectCatalogSection] {
-        let grouped = Dictionary(grouping: filteredProjects) { stored in
-            let group = stored.project.group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return group.isEmpty ? nil : group
-        }
-        return grouped.map { ProjectCatalogSection(group: $0.key, projects: $0.value) }
-            .sorted { lhs, rhs in
-                if lhs.isUngrouped { return false }
-                if rhs.isUngrouped { return true }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
+        [ProjectCatalogSection(projects: filteredProjects)]
     }
 
     var validationMessages: [String] {
@@ -175,6 +171,10 @@ final class ProjectsViewModel: ObservableObject {
             notice = Self.captureMessage(for: error)
             return false
         }
+    }
+
+    func reportCaptureUnavailable(_ reason: String) {
+        notice = reason
     }
 
     func discardDraft() {
@@ -275,49 +275,30 @@ final class ProjectsViewModel: ObservableObject {
             return
         }
         let project = (try? stored.project.normalized()) ?? stored.project
-        let hasCommands = project.tabs.flatMap(\.panes).contains { $0.command?.isEmpty == false }
-        if hasCommands {
-            launchReview = ProjectLaunchReview(project: project, connectionName: connection.definition.name)
+        if project.tabs.flatMap(\.panes).contains(where: { $0.command != nil }) {
+            launchReview = ProjectLaunchReviewPresentation(
+                project: project,
+                connectionLabel: connection.definition.name
+            )
         } else {
             beginLaunch(project, connection: connection)
         }
     }
 
-    func confirmLaunch() {
-        guard let review = launchReview, let connection else { return }
+    func confirmLaunchReview() {
+        guard let review = launchReview,
+              canOpenProject(review.project.id),
+              let connection
+        else {
+            launchReview = nil
+            return
+        }
+        launchReview = nil
         beginLaunch(review.project, connection: connection)
     }
 
-    func cancelLaunchReview() { launchReview = nil }
-
-    /// Verification-only sheet presentation. Never starts materialization or touches Herdr.
-    func presentDesignPreviewLaunchReview(connectionName: String = "Local Bessie") {
-        let rootID = UUID()
-        let project = BessieProject(
-            id: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") ?? UUID(),
-            name: "Launch review proof",
-            projectDescription: "Verification fixture",
-            group: "VERIFICATION",
-            workingDirectory: FileManager.default.temporaryDirectory.path,
-            tabs: [
-                BessieProjectTab(
-                    id: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb") ?? UUID(),
-                    name: "Main",
-                    panes: [
-                        BessieProjectPane(
-                            id: rootID,
-                            label: "Proof shell",
-                            command: "printf bessie-project-open-proof",
-                            placement: .root
-                        )
-                    ]
-                )
-            ]
-        )
-        launchFailure = nil
-        opening = nil
-        progress = nil
-        launchReview = ProjectLaunchReview(project: project, connectionName: connectionName)
+    func cancelLaunchReview() {
+        launchReview = nil
     }
 
     func cancelLaunch() {
@@ -356,6 +337,26 @@ final class ProjectsViewModel: ObservableObject {
         runningInstances.first { $0.projectID == projectID }
     }
 
+    func openRunningWorkspace(_ projectID: UUID) {
+        guard let project = projects.first(where: { $0.project.id == projectID })?.project,
+              let connection,
+              let snapshot = connectionSnapshot,
+              let running = runningInstance(for: projectID),
+              running.connectionID == connection.definition.id,
+              running.socketPath == connection.socketPath,
+              running.generation == connection.generation,
+              let handoff = Self.handoff(
+                project: project,
+                connection: connection,
+                workspaceID: running.workspaceID,
+                tabIDs: running.tabIDsByRecipeID,
+                paneIDs: running.paneIDsByRecipeID,
+                snapshot: snapshot
+              )
+        else { return }
+        navigationHandoff = handoff
+    }
+
     var canRetryLaunchFailure: Bool {
         guard let presentation = launchFailure else { return false }
         return presentation.canRetry && failureMatchesCurrentConnection(presentation.failure)
@@ -391,6 +392,65 @@ final class ProjectsViewModel: ObservableObject {
         self.draft = draft
     }
 
+    func addFolders(_ urls: [URL]) {
+        guard var draft else { return }
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            let name = url.lastPathComponent.isEmpty ? "Folder" : url.lastPathComponent
+            draft.folders.append(.init(name: name, path: path))
+        }
+        self.draft = draft
+    }
+
+    func renameFolder(_ folderID: UUID, name: String) {
+        guard var draft, let index = draft.folders.firstIndex(where: { $0.id == folderID }) else { return }
+        draft.folders[index].name = name
+        self.draft = draft
+    }
+
+    func updateFolderPath(_ folderID: UUID, path: String) {
+        guard var draft, let index = draft.folders.firstIndex(where: { $0.id == folderID }) else { return }
+        draft.folders[index].path = path
+        self.draft = draft
+    }
+
+    func moveFolder(_ folderID: UUID, by offset: Int) {
+        guard var draft, let source = draft.folders.firstIndex(where: { $0.id == folderID }) else { return }
+        let destination = max(0, min(draft.folders.count - 1, source + offset))
+        guard source != destination else { return }
+        let folder = draft.folders.remove(at: source)
+        draft.folders.insert(folder, at: destination)
+        self.draft = draft
+    }
+
+    func makePrimaryFolder(_ folderID: UUID) {
+        guard var draft, draft.folders.contains(where: { $0.id == folderID }) else { return }
+        for index in draft.folders.indices {
+            draft.folders[index].isPrimary = draft.folders[index].id == folderID
+        }
+        self.draft = draft
+    }
+
+    func removeFolder(_ folderID: UUID) {
+        guard var draft, draft.folders.count > 1,
+              let removed = draft.folders.first(where: { $0.id == folderID })
+        else { return }
+        draft.folders.removeAll { $0.id == folderID }
+        if removed.isPrimary, let firstID = draft.folders.first?.id {
+            for index in draft.folders.indices {
+                draft.folders[index].isPrimary = draft.folders[index].id == firstID
+            }
+        }
+        for tabIndex in draft.tabs.indices {
+            for paneIndex in draft.tabs[tabIndex].panes.indices where
+                draft.tabs[tabIndex].panes[paneIndex].folderID == folderID
+            {
+                draft.tabs[tabIndex].panes[paneIndex].folderID = nil
+            }
+        }
+        self.draft = draft
+    }
+
     func renameTab(_ tabID: UUID, name: String) {
         guard var draft, let index = draft.tabs.firstIndex(where: { $0.id == tabID }) else { return }
         draft.tabs[index].name = name
@@ -420,7 +480,8 @@ final class ProjectsViewModel: ObservableObject {
                 placement = .split(fromPaneID: paneIDs[parentID]!, direction: direction, ratio: ratio)
             }
             return BessieProjectPane(
-                id: paneIDs[pane.id]!, label: pane.label, command: pane.command, placement: placement
+                id: paneIDs[pane.id]!, label: pane.label, command: pane.command,
+                folderID: pane.folderID, placement: placement
             )
         }
         let copy = BessieProjectTab(id: UUID(), name: "\(source.name) copy", panes: panes)
@@ -452,6 +513,10 @@ final class ProjectsViewModel: ObservableObject {
 
     func updatePaneCommand(tabID: UUID, paneID: UUID, command: String?) {
         mutatePane(tabID: tabID, paneID: paneID) { $0.command = command?.isEmpty == true ? nil : command }
+    }
+
+    func updatePaneFolder(tabID: UUID, paneID: UUID, folderID: UUID?) {
+        mutatePane(tabID: tabID, paneID: paneID) { $0.folderID = folderID }
     }
 
     func updatePaneRatio(tabID: UUID, paneID: UUID, ratio: Double) {
@@ -497,7 +562,6 @@ final class ProjectsViewModel: ObservableObject {
         connection: BessieProjectMaterializationConnection
     ) {
         guard opening == nil, self.connection == connection else { return }
-        launchReview = nil
         launchFailure = nil
         navigationHandoff = nil
         progress = nil
@@ -683,8 +747,14 @@ final class ProjectsViewModel: ObservableObject {
         switch issue.code {
         case .unsupportedSchemaVersion: "This Project uses an unsupported schema version."
         case .emptyName: issue.tabID == nil ? "Project name is required." : "Every tab needs a name."
-        case .workingDirectoryNotAbsolute: "Choose an absolute project folder."
-        case .workingDirectoryNotDirectory: "The project folder must exist and be a directory."
+        case .invalidPrimaryFolderCount: "Choose exactly one primary folder."
+        case .emptyFolderName: "Every folder needs a display name."
+        case .duplicateFolderID: "The draft contains duplicate folder identifiers."
+        case .duplicateFolderPath: "Each Project folder must be unique."
+        case .folderNotAbsolute, .workingDirectoryNotAbsolute: "Choose absolute Project folders."
+        case .folderNotDirectory, .workingDirectoryNotDirectory: "Every Project folder must exist and be a directory."
+        case .folderInaccessible: "A Project folder is not accessible. Check its permissions."
+        case .paneFolderMissing: "A pane refers to a folder that is no longer in this Project."
         case .missingTabs: "Add at least one tab."
         case .missingPanes: "Every tab needs at least one pane."
         case .duplicateTabID, .duplicatePaneID: "The draft contains duplicate internal identifiers."

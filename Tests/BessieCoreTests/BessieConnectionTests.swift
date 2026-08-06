@@ -22,6 +22,89 @@ final class BessieConnectionTests: XCTestCase {
 
         XCTAssertEqual(state.selectedConnectionID, "hermes-vps")
         XCTAssertEqual(state.connections.last?.sshHost, "hermes")
+        XCTAssertTrue(state.connections[0].connectAtLaunch)
+        XCTAssertFalse(state.connections[1].connectAtLaunch)
+    }
+
+    func testConnectAtLaunchDefaultsAndRoundTrip() throws {
+        let remote = try BessieConnectionDefinition(
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes",
+            connectAtLaunch: true
+        ).validated()
+        XCTAssertTrue(BessieConnectionDefinition.localBessie.connectAtLaunch)
+        XCTAssertFalse(BessieConnectionDefinition(name: "R", kind: .ssh, sshHost: "h").connectAtLaunch)
+
+        let state = BessieConnectionState(
+            selectedConnectionID: remote.id,
+            connections: [
+                BessieConnectionDefinition(
+                    id: BessieConnectionDefinition.localBessie.id,
+                    name: "This Mac",
+                    kind: .local,
+                    session: BessieCompatibility.sessionName,
+                    connectAtLaunch: false
+                ),
+                remote,
+            ]
+        )
+        XCTAssertFalse(state.connections[0].connectAtLaunch)
+        XCTAssertTrue(state.connections[1].connectAtLaunch)
+
+        let encoded = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(BessieConnectionState.self, from: encoded)
+        XCTAssertFalse(decoded.connections[0].connectAtLaunch)
+        XCTAssertTrue(decoded.connections[1].connectAtLaunch)
+    }
+
+    func testStartupConnectionsPreferExplicitLaunchSet() throws {
+        let remote = BessieConnectionDefinition(
+            id: "remote",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "hermes",
+            connectAtLaunch: true
+        )
+        let localOff = BessieConnectionDefinition(
+            id: BessieConnectionDefinition.localBessie.id,
+            name: "This Mac",
+            kind: .local,
+            connectAtLaunch: false
+        )
+        let startup = BessieLaunchConnections.startupConnections(
+            connections: [localOff, remote],
+            selectedConnectionID: localOff.id
+        )
+        XCTAssertEqual(startup.map(\.id), [remote.id])
+        XCTAssertEqual(
+            BessieLaunchConnections.preferredActiveConnectionID(
+                startupConnections: startup,
+                selectedConnectionID: localOff.id
+            ),
+            remote.id
+        )
+    }
+
+    func testStartupConnectionsFallBackToSelectedWhenNoneEnabled() {
+        let remote = BessieConnectionDefinition(
+            id: "remote",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "hermes",
+            connectAtLaunch: false
+        )
+        let localOff = BessieConnectionDefinition(
+            id: BessieConnectionDefinition.localBessie.id,
+            name: "This Mac",
+            kind: .local,
+            connectAtLaunch: false
+        )
+        let startup = BessieLaunchConnections.startupConnections(
+            connections: [localOff, remote],
+            selectedConnectionID: remote.id
+        )
+        XCTAssertEqual(startup.map(\.id), [remote.id])
     }
 
     func testConnectionStateKeepsLocalAndRemoteSessionsSelectable() throws {
@@ -150,6 +233,9 @@ final class BessieConnectionTests: XCTestCase {
         XCTAssertEqual(plan.localClientSocketPath, "/tmp/bessie/hermes/herdr-client.sock")
         XCTAssertEqual(plan.remoteClientSocketPath, "/home/hermes/.config/herdr/herdr-client.sock")
         XCTAssertTrue(plan.sshArguments.contains("StreamLocalBindUnlink=yes"))
+        XCTAssertTrue(plan.sshArguments.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(plan.sshArguments.contains("ControlMaster=auto"))
+        XCTAssertTrue(plan.sshArguments.contains("ControlPersist=\(RemoteHerdrBridgePlan.controlPersistSeconds)"))
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr.sock:/home/hermes/.config/herdr/herdr.sock"))
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr-client.sock:/home/hermes/.config/herdr/herdr-client.sock"))
         XCTAssertEqual(plan.sshArguments.suffix(2), ["-N", "hermes"])
@@ -167,8 +253,44 @@ final class BessieConnectionTests: XCTestCase {
         XCTAssertEqual(RemoteHerdrBridgePlan.remoteStatusCommand(for: connection), "herdr --session bessie status --json")
         XCTAssertEqual(
             RemoteHerdrBridgePlan.remoteStatusArguments(for: connection),
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "hermes", "herdr --session bessie status --json"]
+            ["-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "hermes", "herdr --session bessie status --json"]
+        )
+        XCTAssertEqual(
+            RemoteHerdrBridgePlan.remoteStatusArguments(for: connection, controlPath: "/tmp/bessie/ctrl.sock"),
+            [
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=8",
+                "-o", "ControlMaster=auto",
+                "-o", "ControlPersist=\(RemoteHerdrBridgePlan.controlPersistSeconds)",
+                "-o", "ControlPath=/tmp/bessie/ctrl.sock",
+                "hermes",
+                "herdr --session bessie status --json",
+            ]
         )
         XCTAssertFalse(RemoteHerdrBridgePlan.remoteStatusArguments(for: connection).contains { $0.contains("herdr stop") })
+    }
+
+    func testEverySSHArgumentPlanOverridesUnsafeUserHostKeyConfiguration() throws {
+        let connection = BessieConnectionDefinition(
+            id: "remote-example",
+            name: "Example",
+            kind: .ssh,
+            sshHost: "example.test"
+        )
+        let plan = try RemoteHerdrBridgePlan(
+            connection: connection,
+            localDirectory: URL(fileURLWithPath: "/tmp/bessie/example"),
+            remoteSocketPath: "/tmp/herdr.sock"
+        )
+
+        XCTAssertEqual(SSHHostKeyPolicy.requiredArguments, ["-o", "StrictHostKeyChecking=yes"])
+        XCTAssertTrue(plan.sshArguments.starts(with: SSHHostKeyPolicy.requiredArguments))
+        XCTAssertTrue(RemoteHerdrBridgePlan.remoteStatusArguments(for: connection).starts(with: SSHHostKeyPolicy.requiredArguments))
+        XCTAssertTrue(SSHRemoteFileAccess(
+            host: "example.test",
+            controlPath: "/tmp/control.sock",
+            sshExecutablePath: "/usr/bin/ssh"
+        ).commandArguments.starts(with: SSHHostKeyPolicy.requiredArguments))
     }
 }

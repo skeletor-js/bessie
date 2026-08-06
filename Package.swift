@@ -43,7 +43,11 @@ let package = Package(
         ),
         .testTarget(
             name: "BessieAppModelTests",
-            dependencies: ["BessieCore", "BessieApp"]
+            dependencies: [
+                "BessieCore",
+                "BessieApp",
+                .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+            ]
         ),
         .testTarget(
             name: "BessieCLITests",

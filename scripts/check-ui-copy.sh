@@ -42,8 +42,15 @@ forbidden_copy=(
     'Open a shell or start an agent.'
     'Choose a working directory to get started.'
     'Reduce Motion turns this off.'
+    'Remote workspace files over SSH'
+    'SSH tunnel is not ready for remote files yet.'
     '⌃S N NEW'
     '⌘K PALETTE'
+    '"Untitled pane"'
+    '"ACTIVE"'
+    '"INCLUDED"'
+    'BessieActionPopover(label: "Pane actions")'
+    'Open The Herd'
 )
 
 for phrase in "${forbidden_copy[@]}"; do
@@ -60,11 +67,17 @@ required_copy=(
     'No workspaces yet'
     'No panes in this tab'
     'No agent selected'
-    'Pane actions'
+    'Open in Zen'
     'Action failed'
     'Allow notifications'
     'App icon'
     'Resize split'
+    'Select your herd'
+    'joining the herd'
+    'Bessie is a window onto Herdr'
+    'Four states, and where they live'
+    'How should agents reach you?'
+    'Finish and open terminal'
 )
 
 for phrase in "${required_copy[@]}"; do

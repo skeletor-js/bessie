@@ -57,18 +57,48 @@ final class RuntimeSetupTests: XCTestCase {
     func testDiagnosticReportIsAllowlistedAndContainsNoArbitraryOutput() {
         let report = RuntimeDiagnosticSnapshot(stage: .apiConnection, finding: .apiUnavailable,
             runtime: HerdrRuntime(url: URL(fileURLWithPath: "/Applications/Bessie.app/Contents/Resources/Herdr/herdr"), source: .bundled),
-            observedVersion: "0.7.5", observedProtocol: 17, apiSocketPath: "/tmp/bessie.sock").sanitizedReport
+            observedVersion: "0.8.0", observedProtocol: 19, apiSocketPath: "/tmp/bessie.sock").sanitizedReport
         XCTAssertTrue(report.contains("source=bundled")); XCTAssertFalse(report.contains("PATH="))
         XCTAssertFalse(report.contains("terminal output")); XCTAssertFalse(report.contains("TOKEN"))
     }
 
-    func testOnboardingCompletesOnlyWithReadyTerminalController() {
-        var state = OnboardingState(step: .terminal)
+    func testOnboardingMovesForwardAndBackWithoutCompletingEarly() {
+        var state = OnboardingState()
+        state.advance(runtimeReady: true, sessionReady: false, workspaceReady: false, terminalControllerReady: false)
+        XCTAssertEqual(state.step, .connect)
+        state.advance(runtimeReady: true, sessionReady: true, workspaceReady: false, terminalControllerReady: false)
+        XCTAssertEqual(state.step, .howItWorks)
+        state.goBack()
+        XCTAssertEqual(state.step, .connect)
+        XCTAssertFalse(state.completed)
+    }
+
+    func testOnboardingCompletesOnlyFromReadyWithReadyTerminalController() {
+        var state = OnboardingState(step: .notifications)
         state.advance(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: false)
         XCTAssertFalse(state.completed)
         state.advance(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: true)
         XCTAssertTrue(state.completed)
         state.runAgain(); XCTAssertEqual(state, OnboardingState())
+    }
+
+    func testPendingAttemptPersistsExactIDsAndRejectsFutureSchema() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PendingOnboardingAttemptStore(url: root.appendingPathComponent("attempt.json"))
+        let attempt = try PendingOnboardingAttempt(attemptID: "attempt-1", connectionID: "remote", sessionName: "bessie-1", path: "/tmp/../tmp/work", stage: .connecting, workspaceID: "w", tabID: "t", paneID: "p")
+        try store.save(attempt)
+        XCTAssertEqual(try store.load(), attempt)
+        try Data(#"{"schemaVersion":999}"#.utf8).write(to: store.url)
+        XCTAssertThrowsError(try store.load()) { XCTAssertEqual($0 as? OnboardingPersistenceError, .unsupportedSchema(999)) }
+    }
+
+    func testAbsolutePathAndRemoteAttachCommandAreSafeAndUseSelectedCWD() throws {
+        XCTAssertThrowsError(try OnboardingPathValidator.absolute("relative"))
+        let connection = BessieConnectionDefinition(name: "Remote", kind: .ssh, sshHost: "studio", session: "old")
+        let args = try RemoteHerdrBridgePlan.remoteAttachArguments(for: connection, session: "bessie-new", directory: "/srv/my work")
+        XCTAssertTrue(args.contains("-tt")); XCTAssertEqual(args.last, "cd -- '/srv/my work' && exec herdr session attach bessie-new")
+        XCTAssertFalse(args.joined(separator: " ").contains("nohup"))
     }
 
     func testEveryFindingHasStableTypedIdentity() {
@@ -126,11 +156,11 @@ final class RuntimeSetupTests: XCTestCase {
     func testBundledValidationRequiresExactPathHashSignatureAndIdentity() throws {
         let url = URL(fileURLWithPath: "/Applications/Bessie.app/Contents/Resources/Herdr/herdr")
         let runtime = HerdrRuntime(url: url, source: .bundled)
-        let lock = BundledRuntimeLock(canonicalURL: url, sha256: "abc", versionOutput: "herdr 0.7.5", protocolVersion: 17)
+        let lock = BundledRuntimeLock(canonicalURL: url, sha256: "abc", versionOutput: "herdr 0.8.0", protocolVersion: 19)
         let validator = HerdrRuntimeValidator(
             inspect: { _ in RuntimeFileFacts(exists: true, regularFile: true, executable: true, arm64: true, sha256: "abc", signatureValid: true) },
-            identity: { _ in HerdrServerIdentity(version: "0.7.5", protocolVersion: 17) })
-        XCTAssertEqual(try validator.validate(runtime, bundledLock: lock).protocolVersion, 17)
+            identity: { _ in HerdrServerIdentity(version: "0.8.0", protocolVersion: 19) })
+        XCTAssertEqual(try validator.validate(runtime, bundledLock: lock).protocolVersion, 19)
         XCTAssertThrowsError(try validator.validate(HerdrRuntime(url: URL(fileURLWithPath: "/tmp/herdr"), source: .bundled), bundledLock: lock)) {
             XCTAssertEqual($0 as? RuntimeValidationFailure, .bundledIntegrity)
         }
@@ -140,7 +170,7 @@ final class RuntimeSetupTests: XCTestCase {
         let url = URL(fileURLWithPath: "/opt/herdr")
         let validator = HerdrRuntimeValidator(
             inspect: { _ in RuntimeFileFacts(exists: true, regularFile: true, executable: false, arm64: true, sha256: nil, signatureValid: false) },
-            identity: { _ in HerdrServerIdentity(version: "0.7.5", protocolVersion: 17) })
+            identity: { _ in HerdrServerIdentity(version: "0.8.0", protocolVersion: 19) })
         XCTAssertThrowsError(try validator.validate(HerdrRuntime(url: url, source: .custom), bundledLock: nil)) {
             XCTAssertEqual($0 as? RuntimeValidationFailure, .externalNotExecutable(url.path))
         }
@@ -158,10 +188,10 @@ final class RuntimeSetupTests: XCTestCase {
 
     func testCorruptBundledAndIncompatibleExternalRemainDistinct() {
         let bundledURL = URL(fileURLWithPath: "/bundle/herdr")
-        let lock = BundledRuntimeLock(canonicalURL: bundledURL, sha256: "expected", versionOutput: "herdr 0.7.5", protocolVersion: 17)
+        let lock = BundledRuntimeLock(canonicalURL: bundledURL, sha256: "expected", versionOutput: "herdr 0.8.0", protocolVersion: 19)
         let corrupt = HerdrRuntimeValidator(
             inspect: { _ in RuntimeFileFacts(exists: true, regularFile: true, executable: true, arm64: true, sha256: "wrong", signatureValid: true) },
-            identity: { _ in HerdrServerIdentity(version: "0.7.5", protocolVersion: 17) })
+            identity: { _ in HerdrServerIdentity(version: "0.8.0", protocolVersion: 19) })
         XCTAssertThrowsError(try corrupt.validate(HerdrRuntime(url: bundledURL, source: .bundled), bundledLock: lock)) {
             XCTAssertEqual($0 as? RuntimeValidationFailure, .bundledIntegrity)
         }

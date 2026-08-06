@@ -55,6 +55,13 @@ final class BessieIntentActionDispatcher: @unchecked Sendable {
         confirmDestructive: Bool = false
     ) throws -> HerdrSessionProjection {
         guard !actions.isEmpty else { return try live.projection(connectionID: connectionID) }
+
+        // Pure navigation/mutation batches share one Herdr snapshot. workspace.close still
+        // needs the confirmation intent path, so it stays sequential.
+        if actions.allSatisfy({ !Self.requiresConfirmationIntentPath($0) }) {
+            return try live.perform(actions, connectionID: connectionID)
+        }
+
         var projection: HerdrSessionProjection?
         for action in actions {
             if let request = BessiePilotIntentMapping.request(for: action, connectionID: connectionID) {
@@ -77,6 +84,15 @@ final class BessieIntentActionDispatcher: @unchecked Sendable {
             }
         }
         return projection!
+    }
+
+    private static func requiresConfirmationIntentPath(_ action: HerdrAction) -> Bool {
+        if case .workspaceClose = action { return true }
+        return false
+    }
+
+    func installProjection(_ projection: HerdrSessionProjection, connectionID: String) {
+        live.installProjection(projection, connectionID: connectionID)
     }
 }
 
@@ -118,19 +134,31 @@ final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
         }
     }
 
-    func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection {
+    public func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection {
+        try perform([action], connectionID: connectionID)
+    }
+
+    func perform(_ actions: [HerdrAction], connectionID: String) throws -> HerdrSessionProjection {
+        guard !actions.isEmpty else { return try projection(connectionID: connectionID) }
         let (client, requestGeneration) = try lock.withLock {
             guard let state = states[connectionID] else {
                 throw IntentDispatchError(message: "Herdr connection '\(connectionID)' is not connected.")
             }
             return (state.client, state.generation)
         }
-        let projection = try client.perform(action)
+        let projection = try client.perform(actions)
         lock.withLock {
             if states[connectionID]?.generation == requestGeneration {
                 states[connectionID]?.projection = projection
             }
         }
         return projection
+    }
+
+    /// Install a Bessie-side optimistic projection without invalidating in-flight generations.
+    func installProjection(_ projection: HerdrSessionProjection, connectionID: String) {
+        lock.withLock {
+            states[connectionID]?.projection = projection
+        }
     }
 }

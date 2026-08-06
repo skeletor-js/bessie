@@ -25,6 +25,68 @@ final class PersistenceReconnectTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(BessiePresentationState.self, from: encoded), state)
     }
 
+    func testRailCollapsePreferenceRoundTripsAndLegacyPreferencesStayExpanded() throws {
+        let preferences = BessiePreferences(railCollapsed: true)
+        XCTAssertTrue(try JSONDecoder().decode(BessiePreferences.self, from: JSONEncoder().encode(preferences)).railCollapsed)
+
+        let legacy = Data(#"{"appearance":"dark","terminalFontSize":14}"#.utf8)
+        let decoded = try JSONDecoder().decode(BessiePreferences.self, from: legacy)
+        XCTAssertFalse(decoded.railCollapsed)
+        XCTAssertEqual(decoded.appearance, .dark)
+        XCTAssertEqual(decoded.terminalFontSize, 14)
+    }
+
+    func testThemeIDsRoundTripLegacyNamedAndUnknownValuesSafely() throws {
+        for id in BessieThemeID.allCases {
+            let preferences = BessiePreferences(appearance: id)
+            XCTAssertEqual(
+                try JSONDecoder().decode(BessiePreferences.self, from: JSONEncoder().encode(preferences)).appearance,
+                id
+            )
+        }
+        for rawValue in ["system", "dark", "light"] {
+            let decoded = try JSONDecoder().decode(
+                BessiePreferences.self,
+                from: Data("{\"appearance\":\"\(rawValue)\"}".utf8)
+            )
+            XCTAssertEqual(decoded.appearance.rawValue, rawValue)
+        }
+        let unknown = try JSONDecoder().decode(
+            BessiePreferences.self,
+            from: Data(#"{"appearance":"future-theme","terminalFontSize":17}"#.utf8)
+        )
+        XCTAssertEqual(unknown.appearance, .dark)
+        XCTAssertEqual(unknown.terminalFontSize, 17)
+    }
+
+    func testPresentationStoreMigratesLegacyPreferencesAndRejectsNewerSchemaWithoutRewriting() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("presentation.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"last_workspace_id":"legacy","preferences":{"appearance":"light","notifications":"blockedAndDone","terminalFontSize":15,"paneGap":6}}"#.utf8).write(to: url)
+        let store = BessiePresentationStore(url: url)
+
+        let legacy = try store.load()
+        XCTAssertEqual(legacy.lastWorkspaceID, "legacy")
+        XCTAssertEqual(legacy.preferences.notifications, .blockedAndDone)
+        XCTAssertTrue(legacy.preferences.menuBarVisible)
+        XCTAssertEqual(legacy.preferences.menuBarBadgePolicy, .needsYou)
+        XCTAssertEqual(legacy.preferences.menuBarRowClickBehavior, .focusPane)
+
+        try store.save(legacy)
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(envelope["schemaVersion"] as? Int, BessiePresentationStore.currentSchemaVersion)
+        XCTAssertNotNil(envelope["state"])
+
+        let newer = Data(#"{"schemaVersion":999,"state":{"preferences":{}}}"#.utf8)
+        try newer.write(to: url)
+        XCTAssertThrowsError(try store.load()) { error in
+            XCTAssertEqual(error as? BessiePresentationPersistenceError, .unsupportedSchema(999))
+        }
+        XCTAssertEqual(try Data(contentsOf: url), newer)
+    }
+
     func testConnectionStatesRepresentEveryApprovedRecoverySurface() {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/herdr"), source: .path)
         let identity = HerdrServerIdentity(version: "0.7.4", protocolVersion: 16)
@@ -61,7 +123,7 @@ final class PersistenceReconnectTests: XCTestCase {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
         let statuses = ServerStatusSequence([
             HerdrServerStatus(status: "stopped", running: false, version: nil, protocolVersion: nil, socketPath: "/sessions/bessie/herdr.sock"),
-            HerdrServerStatus(status: "running", running: true, version: "0.7.5", protocolVersion: 17, socketPath: "/sessions/bessie/herdr.sock"),
+            HerdrServerStatus(status: "running", running: true, version: "0.8.0", protocolVersion: 19, socketPath: "/sessions/bessie/herdr.sock"),
         ])
         let launch = ServerLaunchRecorder()
         let states = ConnectionStateRecorder()
@@ -99,7 +161,7 @@ final class PersistenceReconnectTests: XCTestCase {
     func testInheritedHerdrSocketCannotBypassBessieSessionIsolation() async {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
         let statuses = ServerStatusSequence([
-            HerdrServerStatus(status: "running", running: true, version: "0.7.5", protocolVersion: 17, socketPath: "/sessions/review/herdr.sock"),
+            HerdrServerStatus(status: "running", running: true, version: "0.8.0", protocolVersion: 19, socketPath: "/sessions/review/herdr.sock"),
         ])
         let states = ConnectionStateRecorder()
         let runner = HerdrConnectionRunner(
@@ -131,9 +193,24 @@ final class PersistenceReconnectTests: XCTestCase {
     func testBessieSpecificSocketOverrideReplacesGenericHerdrSocketForDiagnostics() async {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/approved/herdr"), source: .explicitOverride)
         let statuses = ServerStatusSequence([
-            HerdrServerStatus(status: "running", running: true, version: "0.7.5", protocolVersion: 17, socketPath: "/diagnostics/herdr.sock"),
+            HerdrServerStatus(status: "running", running: true, version: "0.8.0", protocolVersion: 19, socketPath: "/diagnostics/herdr.sock"),
         ])
         let states = ConnectionStateRecorder()
+        let inspectCounter = InspectCounter()
+        let validator = HerdrRuntimeValidator(
+            inspect: { _ in
+                inspectCounter.increment()
+                return RuntimeFileFacts(
+                    exists: true,
+                    regularFile: true,
+                    executable: true,
+                    arm64: true,
+                    sha256: "deadbeef",
+                    signatureValid: true
+                )
+            },
+            identity: { _ in HerdrServerIdentity(version: "0.8.0", protocolVersion: 19) }
+        )
         let runner = HerdrConnectionRunner(
             repositoryRoot: URL(fileURLWithPath: "/repo"),
             environment: [
@@ -146,7 +223,8 @@ final class PersistenceReconnectTests: XCTestCase {
             probe: HerdrRuntimeProbe(statusProvider: { _, environment in
                 statuses.record(environment: environment)
                 return try statuses.next()
-            })
+            }),
+            validator: validator
         )
 
         await runner.run { state in
@@ -155,9 +233,9 @@ final class PersistenceReconnectTests: XCTestCase {
         }
 
         XCTAssertEqual(states.values.map(\.label), ["Connecting"])
-        XCTAssertEqual(statuses.environments.count, 1)
-        XCTAssertEqual(statuses.environments[0]["HERDR_SESSION"], "bessie")
-        XCTAssertEqual(statuses.environments[0]["HERDR_SOCKET_PATH"], "/diagnostics/herdr.sock")
+        // Socket override is the source of truth: no status CLI and no local integrity inspect.
+        XCTAssertEqual(statuses.environments.count, 0)
+        XCTAssertEqual(inspectCounter.count, 0)
     }
 
     func testAutoStartCanBeDisabledForDiagnostics() async {
@@ -185,6 +263,13 @@ final class PersistenceReconnectTests: XCTestCase {
         XCTAssertEqual(states.values.map(\.label), ["Herdr stopped"])
         XCTAssertNil(launch.runtime)
     }
+}
+
+private final class InspectCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func increment() { lock.withLock { value += 1 } }
 }
 
 private final class ConnectionStateRecorder: @unchecked Sendable {
@@ -237,8 +322,8 @@ private final class ServerLaunchRecorder: @unchecked Sendable {
 
 private extension HerdrSnapshot {
     static let fixture = HerdrSnapshot(
-        version: "0.7.5",
-        protocolVersion: 17,
+        version: "0.8.0",
+        protocolVersion: 19,
         focusedWorkspaceID: nil,
         focusedTabID: nil,
         focusedPaneID: nil,

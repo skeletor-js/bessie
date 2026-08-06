@@ -40,7 +40,7 @@ Use the design system under workstream `source-material/design-system/` for asse
 - First target: macOS 14+ on Apple Silicon.
 - UI: SwiftUI for app surfaces plus AppKit for window/focus/terminal hosting.
 - Terminal dependency: exact `libghostty-spm` `1.3.2` / `GhosttyTerminal` product.
-- Herdr compatibility baseline: Herdr `0.7.5`, protocol `17`, source `b4112743cff42452b5d18558bf2d55bbbfff8c69`.
+- Herdr compatibility baseline: Herdr `0.8.0`, protocol `19`, source `346411fa21afd297f5ed3b3fa56f9e3fbf7654b7`.
 - Start with a narrow pure-Swift `BessieCore` adapter around public Herdr surfaces. Keep protocols and models independent enough to replace the transport with shared Rust later; do not add Rust FFI merely to satisfy the earlier recommendation.
 - Bootstrap with `session.snapshot`, subscribe to public events as invalidation hints, and resnapshot. A bounded polling fallback is acceptable for recovery, but not a Bessie-owned source of truth.
 - One writable `herdr terminal session control` process per visible pane; feed terminal frames into an `InMemoryTerminalSession`.
@@ -79,6 +79,7 @@ For UI verification, launch the built app on the Mac, capture a screenshot, and 
 - Do not delete, skip, weaken, narrow, or relabel checks to manufacture a pass.
 - Avoid speculative abstractions and dependencies. Prefer one honest vertical slice over decorative dead UI.
 - Keep the repo uncommitted unless Jordan explicitly asks for commits.
+- When opening Amp workers for Bessie, create each worker in its own new Herdr tab; do not split multiple Amp panes into the current tab.
 
 ## Agent surfaces
 

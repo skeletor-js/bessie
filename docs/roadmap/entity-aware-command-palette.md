@@ -1,10 +1,9 @@
 # Entity-aware command palette
 
-**Status:** Deferred
-**Roadmap horizon:** Deferred (2026-08-02)
+**Status:** Unparked into Pre-v1 by the 2026-08-04 UI redesign amendment
+**Roadmap horizon:** Pre-v1
 **Product area:** Command palette
-**Implementation approval:** Not granted
-**Deferred reason:** Jordan occam-loop — defer until navigation friction demands it.
+**Implementation approval:** Granted by [`../plans/2026-08-04-001-feat-pre-v1-ui-redesign-plan.md`](../plans/2026-08-04-001-feat-pre-v1-ui-redesign-plan.md) U6/U12.
 
 ## Outcome
 

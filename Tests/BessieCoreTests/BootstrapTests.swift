@@ -39,7 +39,7 @@ private final class RecordingHerdrAPI: HerdrAPI, @unchecked Sendable {
     }
 
     func ping() throws -> HerdrServerIdentity {
-        HerdrServerIdentity(version: "0.7.5", protocolVersion: 17)
+        HerdrServerIdentity(version: "0.8.0", protocolVersion: 19)
     }
 
     func subscribe() throws -> any HerdrEventSubscription {
@@ -75,8 +75,8 @@ private final class RecordingSubscription: HerdrEventSubscription, @unchecked Se
 private extension HerdrSnapshot {
     static func fixture(focusedWorkspaceID: String?) -> HerdrSnapshot {
         HerdrSnapshot(
-            version: "0.7.5",
-            protocolVersion: 17,
+            version: "0.8.0",
+            protocolVersion: 19,
             focusedWorkspaceID: focusedWorkspaceID,
             focusedTabID: nil,
             focusedPaneID: nil,

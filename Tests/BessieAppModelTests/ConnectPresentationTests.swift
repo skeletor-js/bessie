@@ -23,7 +23,7 @@ final class ConnectPresentationTests: XCTestCase {
     func testConnectedPresentationReportsAuthoritativeSnapshotCounts() {
         let runtime = HerdrRuntime(url: URL(fileURLWithPath: "/herdr"), source: .path)
         let snapshot = HerdrSnapshot(
-            version: "0.7.5", protocolVersion: 17,
+            version: "0.8.0", protocolVersion: 19,
             focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p1",
             workspaces: [.object([:])], tabs: [.object([:]), .object([:])],
             panes: [.object([:]), .object([:]), .object([:])], layouts: [], agents: []

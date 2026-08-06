@@ -43,27 +43,30 @@ final class ProcessLaunchTests: XCTestCase {
     }
 
     func testAgentFailureKeepsCreatedShellPaneAndNeverClosesIt() throws {
-        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell])
+        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell, .launchAfterShell])
         api.failMethod = "agent.start"
         let waits = RetryWaitRecorder()
         let launcher = HerdrProcessLauncher(api: api, wait: waits.record)
 
         let result = try launcher.launch(
-            placement: .split(targetPaneID: "p1", direction: .right, cwd: "/tmp"),
+            placement: .split(targetPaneID: "p1", direction: .right, cwd: "/tmp", name: "worker"),
             process: .agent(kind: "codex", name: "codex", args: [], timeoutMilliseconds: 30_000)
         )
 
         XCTAssertEqual(result.paneID, "p2")
         XCTAssertFalse(result.agentStarted)
         XCTAssertEqual(result.agentError, "agent executable missing")
-        XCTAssertEqual(api.calls, ["session.snapshot", "pane.split", "session.snapshot", "agent.start"])
+        XCTAssertEqual(api.calls, [
+            "session.snapshot", "pane.split", "session.snapshot",
+            "pane.rename", "session.snapshot", "agent.start",
+        ])
         XCTAssertEqual(waits.values, [])
         XCTAssertFalse(api.calls.contains("pane.close"))
         XCTAssertEqual(result.projection.panes.map(\.id).sorted(), ["p1", "p2"])
     }
 
     func testAgentStartWaitsForFreshPaneToReachInteractiveShell() throws {
-        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell, .launchAfterShell])
+        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell, .launchAfterShell, .launchAfterShell])
         api.agentStartErrors = [
             .server(code: "agent_pane_unavailable", message: "no live terminal yet"),
             .server(code: "agent_pane_busy", message: "not an available shell yet"),
@@ -72,7 +75,7 @@ final class ProcessLaunchTests: XCTestCase {
         let launcher = HerdrProcessLauncher(api: api, wait: waits.record)
 
         let result = try launcher.launch(
-            placement: .split(targetPaneID: "p1", direction: .down, cwd: "/tmp"),
+            placement: .split(targetPaneID: "p1", direction: .down, cwd: "/tmp", name: "worker"),
             process: .agent(kind: "codex", name: "codex", args: [], timeoutMilliseconds: 30_000)
         )
 
@@ -81,8 +84,22 @@ final class ProcessLaunchTests: XCTestCase {
         XCTAssertEqual(waits.values, [0.25, 0.5])
         XCTAssertEqual(api.calls, [
             "session.snapshot", "pane.split", "session.snapshot",
+            "pane.rename", "session.snapshot",
             "agent.start", "agent.start", "agent.start", "session.snapshot",
         ])
+    }
+
+    func testNewTabCreationPassesTheRequiredNameToHerdr() throws {
+        let api = LaunchRecordingAPI(snapshots: [.launchBefore, .launchAfterShell])
+        let launcher = HerdrProcessLauncher(api: api)
+
+        _ = try launcher.launch(
+            placement: .newTab(workspaceID: "w1", cwd: "/tmp", name: "tests"),
+            process: .shell
+        )
+
+        XCTAssertEqual(api.requests.first?.method, "tab.create")
+        XCTAssertEqual(api.requests.first?.params["label"], .string("tests"))
     }
 }
 
@@ -93,12 +110,14 @@ private struct FixtureAvailability: AgentAvailabilityChecking {
 
 private final class LaunchRecordingAPI: HerdrMutationAPI, @unchecked Sendable {
     var calls: [String] = []
+    var requests: [HerdrActionRequest] = []
     var failMethod: String?
     var agentStartErrors: [HerdrClientError] = []
     private var snapshots: [HerdrSnapshot]
     init(snapshots: [HerdrSnapshot]) { self.snapshots = snapshots }
     func request(method: String, params: [String: JSONValue]) throws -> JSONValue {
         calls.append(method)
+        requests.append(HerdrActionRequest(method: method, params: params))
         if method == "agent.start", !agentStartErrors.isEmpty { throw agentStartErrors.removeFirst() }
         if method == failMethod { throw HerdrClientError.server(code: "agent_start_failed", message: "agent executable missing") }
         return .object([:])
@@ -131,7 +150,7 @@ private extension HerdrSnapshot {
     static let launchAfterShell = launchFixture(panes: ["p1", "p2"])
     static func launchFixture(panes paneIDs: [String]) -> HerdrSnapshot {
         HerdrSnapshot(
-            version: "0.7.5", protocolVersion: 17,
+            version: "0.8.0", protocolVersion: 19,
             focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: paneIDs.last,
             workspaces: [.object(["workspace_id": .string("w1"), "number": .number(1), "label": .string("main"), "focused": .bool(true), "pane_count": .number(Double(paneIDs.count)), "tab_count": .number(1), "active_tab_id": .string("t1"), "agent_status": .string("idle")])],
             tabs: [.object(["tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1), "label": .string("shell"), "focused": .bool(true), "pane_count": .number(Double(paneIDs.count)), "agent_status": .string("idle")])],

@@ -151,7 +151,7 @@ private final class LockedTokenSource: @unchecked Sendable {
 
 private extension HerdrSnapshot {
     static let intentFixture = HerdrSnapshot(
-        version: "0.7.5", protocolVersion: 17,
+        version: "0.8.0", protocolVersion: 19,
         focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p2",
         workspaces: [.object(["workspace_id": .string("w1"), "number": .number(1), "label": .string("main"), "focused": .bool(true), "pane_count": .number(2), "tab_count": .number(1), "active_tab_id": .string("t1"), "agent_status": .string("idle")])],
         tabs: [.object(["tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1), "label": .string("shell"), "focused": .bool(true), "pane_count": .number(2), "agent_status": .string("idle")])],

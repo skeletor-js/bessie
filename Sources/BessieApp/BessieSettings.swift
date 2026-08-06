@@ -8,7 +8,11 @@ import UserNotifications
 
 @MainActor
 final class BessieSettingsModel: ObservableObject {
-    @Published var preferences: BessiePreferences { didSet { persist() } }
+    @Published var preferences: BessiePreferences {
+        didSet {
+            persist()
+        }
+    }
     @Published private(set) var lastWorkspaceIDByConnectionID: [String: String]
     private let legacyLastWorkspaceID: String?
     @Published private(set) var connections: [BessieConnectionDefinition]
@@ -17,11 +21,16 @@ final class BessieSettingsModel: ObservableObject {
     @Published private(set) var runtimeSelection: HerdrRuntimeSelection
     @Published private(set) var onboarding = OnboardingState()
     @Published private(set) var runtimePersistenceError: String?
+    @Published private(set) var onboardingCompletionError: String?
+    @Published private(set) var presentationPersistenceError: String?
+    @Published private(set) var addConnectionRequested = false
+    @Published private(set) var setupEntryGeneration = 0
+    private var completionBeforeSetupEntry = false
     private let store: BessiePresentationStore
     private let connectionStore: BessieConnectionStore
     private let runtimeStore: HerdrRuntimeSelectionStore
 
-    init() {
+    convenience init() {
         let environment = ProcessInfo.processInfo.environment
         let url: URL
         if let path = environment["BESSIE_PRESENTATION_PATH"] {
@@ -31,15 +40,32 @@ final class BessieSettingsModel: ObservableObject {
                 .appendingPathComponent("Bessie", isDirectory: true)
                 .appendingPathComponent("presentation.json")
         }
-        store = BessiePresentationStore(url: url)
-        let state = try? store.load()
-        preferences = state?.preferences ?? BessiePreferences()
-        legacyLastWorkspaceID = state?.lastWorkspaceID
-        lastWorkspaceIDByConnectionID = state?.lastWorkspaceIDByConnectionID ?? [:]
         let connectionURL = environment["BESSIE_CONNECTIONS_PATH"].map(URL.init(fileURLWithPath:))
             ?? url.deletingLastPathComponent().appendingPathComponent("connections.json")
-        connectionStore = BessieConnectionStore(url: connectionURL)
-        runtimeStore = HerdrRuntimeSelectionStore(url: url.deletingLastPathComponent().appendingPathComponent("runtime-selection.json"))
+        self.init(
+            presentationURL: url,
+            connectionsURL: connectionURL,
+            runtimeSelectionURL: url.deletingLastPathComponent().appendingPathComponent("runtime-selection.json")
+        )
+    }
+
+    init(presentationURL: URL, connectionsURL: URL, runtimeSelectionURL: URL) {
+        store = BessiePresentationStore(url: presentationURL)
+        let state: BessiePresentationState?
+        do {
+            state = try store.load()
+            presentationPersistenceError = nil
+        } catch {
+            state = nil
+            presentationPersistenceError = error.localizedDescription
+            BessieDiagnosticLog.append("Presentation load failed without rewrite: \(String(reflecting: error))")
+        }
+        let loadedPreferences = state?.preferences ?? BessiePreferences()
+        preferences = loadedPreferences
+        legacyLastWorkspaceID = state?.lastWorkspaceID
+        lastWorkspaceIDByConnectionID = state?.lastWorkspaceIDByConnectionID ?? [:]
+        connectionStore = BessieConnectionStore(url: connectionsURL)
+        runtimeStore = HerdrRuntimeSelectionStore(url: runtimeSelectionURL)
         runtimeSelection = runtimeStore.load()
         let connectionState: BessieConnectionState
         do {
@@ -52,17 +78,46 @@ final class BessieSettingsModel: ObservableObject {
         selectedConnectionID = connectionState.selectedConnectionID
         connectionError = nil
         onboarding.completed = state?.firstRealTerminalCompletionVersion == BessiePresentationState.firstRealTerminalCompletionVersion
-        if onboarding.completed { onboarding.step = .terminal }
+        if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
+           let number = Int(artboard), (9...13).contains(number) {
+            onboarding.completed = false
+            onboarding.step = number <= 10 ? .connect : OnboardingState.Step(rawValue: number - 9) ?? .connect
+        } else if onboarding.completed { onboarding.step = .notifications }
         BessieDiagnosticLog.append("Connections selected=\(selectedConnectionID) count=\(connections.count)")
     }
 
     private func persist() {
-        try? store.save(BessiePresentationState(
-            lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
-            lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
-            preferences: preferences,
-            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil
-        ))
+        guard presentationPersistenceError == nil else { return }
+        do { try store.save(presentationState) }
+        catch { presentationPersistenceError = error.localizedDescription }
+    }
+
+    /// Drive AppKit appearance so adaptive palette colors and window chrome follow
+    /// the preference, not only SwiftUI's preferredColorScheme.
+    static func applyAppAppearance(
+        selection: BessieThemeID,
+        effectiveScheme: ColorScheme,
+        palette: BessiePalette
+    ) {
+        guard let app = NSApp else { return }
+        switch selection {
+        case .system:
+            app.appearance = nil
+        default:
+            app.appearance = NSAppearance(named: effectiveScheme == .light ? .aqua : .darkAqua)
+        }
+        let background = NSColor(palette.window)
+        for window in app.windows where window.styleMask.contains(.titled) {
+            window.backgroundColor = background
+            window.contentView?.needsDisplay = true
+            window.contentView?.subviews.forEach { $0.needsDisplay = true }
+            window.invalidateShadow()
+        }
+    }
+
+    func commitThemeSelection(_ selection: BessieThemeID) {
+        guard preferences.appearance != selection else { return }
+        preferences.appearance = selection
     }
 
     var lastWorkspaceID: String? {
@@ -90,6 +145,13 @@ final class BessieSettingsModel: ObservableObject {
     func selectConnection(_ id: String) {
         guard connections.contains(where: { $0.id == id }) else { return }
         selectedConnectionID = id
+        persistConnections()
+    }
+
+    func setConnectAtLaunch(connectionID: String, enabled: Bool) {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        guard connections[index].connectAtLaunch != enabled else { return }
+        connections[index].connectAtLaunch = enabled
         connectionError = nil
         persistConnections()
     }
@@ -101,7 +163,8 @@ final class BessieSettingsModel: ObservableObject {
                 name: name,
                 kind: .ssh,
                 sshHost: sshHost,
-                session: session
+                session: session,
+                connectAtLaunch: false
             ).validated()
             connections.append(connection)
             selectedConnectionID = connection.id
@@ -122,19 +185,42 @@ final class BessieSettingsModel: ObservableObject {
         persistConnections()
     }
 
-    func clearConnectionError() { connectionError = nil }
-
-    func selectRuntime(_ selection: HerdrRuntimeSelection) {
-        do {
-            try runtimeStore.save(selection)
-            runtimePersistenceError = nil
-            runtimeSelection = selection
-        } catch {
-            runtimePersistenceError = error.localizedDescription
-        }
+    func registerOnboardingConnection(_ connection: BessieConnectionDefinition) throws {
+        let connection = try connection.validated()
+        guard connection.id != BessieConnectionDefinition.localBessie.id else { return }
+        if let index = connections.firstIndex(where: { $0.id == connection.id }) { connections[index] = connection }
+        else { connections.append(connection) }
+        selectedConnectionID = connection.id
+        persistConnections()
     }
 
-    func runSetupAgain() { onboarding.runAgain(); persist() }
+    func clearConnectionError() { connectionError = nil }
+
+    func requestAddConnection() { addConnectionRequested = true }
+
+    func consumeAddConnectionRequest() { addConnectionRequested = false }
+
+    func runSetupAgain() {
+        completionBeforeSetupEntry = onboarding.completed
+        onboarding.runAgain()
+        setupEntryGeneration += 1
+        persist()
+    }
+
+    var canCancelSetupBeforeMaterialization: Bool { completionBeforeSetupEntry }
+
+    func cancelSetupAgainBeforeMaterialization() {
+        guard completionBeforeSetupEntry else { return }
+        onboarding = OnboardingState(step: .notifications, completed: true)
+        completionBeforeSetupEntry = false
+        persist()
+    }
+
+    func goBackInSetup() {
+        onboarding.goBack()
+        onboardingCompletionError = nil
+        persist()
+    }
 
     func advanceSetup(runtimeReady: Bool, sessionReady: Bool, workspaceReady: Bool, terminalControllerReady: Bool) {
         onboarding.advance(runtimeReady: runtimeReady, sessionReady: sessionReady, workspaceReady: workspaceReady,
@@ -143,9 +229,44 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     func terminalBecameReady() {
-        onboarding.step = .terminal
-        onboarding.advance(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: true)
-        persist()
+        if onboarding.step == .notifications { onboardingCompletionError = nil }
+    }
+
+    @discardableResult
+    func finishSetup(connected: Bool, hasWorkspace: Bool, terminalControllerReady: Bool) -> Bool {
+        guard presentationPersistenceError == nil else {
+            onboardingCompletionError = presentationPersistenceError
+            return false
+        }
+        guard connected, hasWorkspace, terminalControllerReady else {
+            onboardingCompletionError = "Connect to Herdr, open a workspace, and wait for the terminal before finishing."
+            return false
+        }
+        let previous = onboarding
+        onboarding = OnboardingState(step: .notifications, completed: true)
+        do {
+            try store.save(presentationState)
+            onboardingCompletionError = nil
+            return true
+        } catch {
+            onboarding = previous
+            onboardingCompletionError = "Bessie couldn't save setup completion. \(error.localizedDescription)"
+            BessieDiagnosticLog.append("Onboarding completion persistence failed: \(String(reflecting: error))")
+            return false
+        }
+    }
+
+    func reportOnboardingFocusFailure() {
+        onboardingCompletionError = "Bessie couldn't focus the ready terminal. Try Finish again."
+    }
+
+    private var presentationState: BessiePresentationState {
+        BessiePresentationState(
+            lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
+            lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
+            preferences: preferences,
+            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil
+        )
     }
 
     private func persistConnections() {
@@ -160,8 +281,8 @@ final class BessieSettingsModel: ObservableObject {
 @MainActor
 enum BessieAppIconController {
     static func apply(_ icon: BessieAppIcon) {
-        let resource = icon == .dark ? "BessieDark" : "BessieLight"
-        guard let url = BessieResources.url(forResource: resource, withExtension: "icns"),
+        let resource = icon == .dark ? "BessieIconDark" : "BessieIconLight"
+        guard let url = BessieResources.url(forResource: resource, withExtension: "png"),
               let image = NSImage(contentsOf: url)
         else { return }
         NSApplication.shared.applicationIconImage = image
@@ -171,6 +292,7 @@ enum BessieAppIconController {
 
 struct BessieSettingsView: View {
     @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var themeCoordinator: BessieThemeCoordinator
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @EnvironmentObject private var fleet: ConnectionFleetViewModel
     @State private var showAddConnection = false
@@ -191,24 +313,27 @@ struct BessieSettingsView: View {
             if embedded {
                 VStack(spacing: 0) {
                     BessieTopBar(title: "Settings") {
-                        Button("Reset to defaults") { model.preferences = BessiePreferences() }
+                        Button("Reset to defaults") { themeCoordinator.resetPreferencesToDefaults() }
                             .buttonStyle(BessieQuietButtonStyle())
                     }
                     settingsScroll
                 }
             } else {
-                ZStack {
-                    BessieCowprintTexture(base: BessieDesign.window, crop: .settings)
-                    settingsScroll
-                        .padding(9)
-                        .bessieSurface(base: BessieDesign.background, crop: .settings)
-                }
+                settingsScroll
+                    .padding(9)
+                    .bessieSurface(base: BessieDesign.background)
                 .frame(width: 720, height: 620)
             }
         }
         .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
         .task { notifications.refreshAuthorization() }
+        .onAppear {
+            if model.addConnectionRequested { prepareAddConnection() }
+        }
+        .onChange(of: model.addConnectionRequested) { _, requested in
+            if requested { prepareAddConnection() }
+        }
         .sheet(isPresented: $showAddConnection) { addConnectionSheet }
         .confirmationDialog(
             "Remove SSH connection?",
@@ -233,8 +358,17 @@ struct BessieSettingsView: View {
     private var settingsScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                BessieSectionLabel("CONNECTIONS")
-                    .padding(.bottom, 7)
+                BessieSettingsSectionLabel(icon: .play, title: "General")
+
+                BessieGeneralSettingsControls()
+
+                BessieSettingsSectionLabel(icon: .hardDrives, title: "Herds") {
+                    Button { prepareAddConnection() } label: { BessieIconView(icon: .plus, size: 13) }
+                        .buttonStyle(BessieSettingsIconButtonStyle())
+                        .help("Add a herd")
+                        .accessibilityLabel("Add a herd")
+                }
+                .padding(.top, BessieSettingsLayout.sectionSpacing)
 
                 VStack(spacing: 0) {
                     ForEach(model.connections) { connection in
@@ -245,172 +379,42 @@ struct BessieSettingsView: View {
                     }
                 }
                 .background(BessieDesign.panel)
-                .overlay {
-                    RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
-                        .stroke(BessieDesign.border, lineWidth: 1)
-                }
+                .overlay { RoundedRectangle(cornerRadius: BessieDesign.controlRadius).stroke(BessieDesign.border) }
                 .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
 
-                HStack {
-                    if let error = model.connectionError {
-                        Text(error)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(BessieDesign.subtle)
-                            .lineLimit(2)
-                    }
-                    Spacer()
-                    Button("Add SSH connection") {
-                        connectionName = ""
-                        sshHost = ""
-                        herdrSession = ""
-                        model.clearConnectionError()
-                        showAddConnection = true
-                    }
-                    .buttonStyle(BessieSecondaryButtonStyle())
-                }
-                .padding(.top, 10)
-
-                Text("SSH connections use an already-running remote Herdr session. Disconnecting Bessie leaves remote Herdr and its processes running.")
+                Text(model.connectionError ?? "Choose Start at launch for herds that should connect when Bessie opens. Others start when you select them.")
                     .font(.system(size: 10.5))
-                    .foregroundStyle(BessieDesign.subtle)
-                    .padding(.top, 9)
+                    .foregroundStyle(BessieDesign.faint)
+                    .padding(.top, 7)
 
-                BessieSectionLabel("APPEARANCE")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
+                BessieSettingsSectionLabel(icon: .terminalWindow, title: "Terminal")
+                    .padding(.top, BessieSettingsLayout.sectionSpacing)
 
-                BessieSettingRow(label: "Theme", hint: "System follows your Mac appearance.") {
-                    Picker("Theme", selection: $model.preferences.appearance) {
-                        ForEach(BessieAppearance.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
-                }
+                BessieTerminalSettingsControls()
 
-                BessieSettingRow(label: "Density", hint: "Adjusts chrome, rows, and card spacing.") {
-                    Picker("Density", selection: $model.preferences.density) {
-                        ForEach(BessieDensity.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 190)
-                }
+                BessieSettingsSectionLabel(icon: .bell, title: "Notifications")
+                    .padding(.top, BessieSettingsLayout.sectionSpacing)
 
-                BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
-                    Picker("App icon", selection: $model.preferences.appIcon) {
-                        ForEach(BessieAppIcon.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 190)
-                }
+                BessieNotificationSettingsControls(target: activeNotificationTarget)
 
-                BessieSectionLabel("COWPRINT")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
+                BessieSettingsSectionLabel(icon: .listBullets, title: "Menu bar")
+                    .padding(.top, BessieSettingsLayout.sectionSpacing)
 
-                BessieSettingRow(label: "Cowprint texture") {
-                    Toggle("", isOn: $model.preferences.cowprintEnabled)
-                        .labelsHidden()
-                        .accessibilityLabel("Cowprint texture")
-                        .toggleStyle(.switch)
-                }
+                BessieMenuBarSettingsControls()
 
-                BessieSettingRow(label: "Contrast") {
-                    Slider(value: $model.preferences.cowPrintIntensity, in: 0.015...0.10)
-                        .frame(width: 220)
-                        .accessibilityLabel("Cowprint contrast")
-                }
+                BessieSettingsSectionLabel(icon: .paintBrush, title: "Appearance")
+                    .padding(.top, BessieSettingsLayout.sectionSpacing)
 
-                BessieSettingRow(label: "Cowprint motion") {
-                    Toggle("", isOn: $model.preferences.cowPrintMotion)
-                        .labelsHidden()
-                        .accessibilityLabel("Cowprint motion")
-                        .toggleStyle(.switch)
-                }
+                BessieAppearanceSettingsControls()
 
-                BessieSectionLabel("TERMINAL")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
-
-                BessieSettingRow(label: "Font size") {
-                    Stepper("\(Int(model.preferences.terminalFontSize)) pt", value: $model.preferences.terminalFontSize, in: 10...24)
-                        .font(.system(size: 11, design: .monospaced))
-                        .accessibilityLabel("Terminal font size")
-                        .accessibilityValue("\(Int(model.preferences.terminalFontSize)) points")
-                }
-
-                BessieSettingRow(label: "Pane spacing") {
-                    Stepper("\(Int(model.preferences.paneGap)) pt", value: $model.preferences.paneGap, in: 0...16)
-                        .font(.system(size: 11, design: .monospaced))
-                        .accessibilityLabel("Pane spacing")
-                        .accessibilityValue("\(Int(model.preferences.paneGap)) points")
-                }
-
-                BessieSectionLabel("NOTIFICATIONS")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
-
-                BessieSettingRow(label: "Notify me", hint: "Only when the pane isn't active.") {
-                    Picker("Notify me", selection: $model.preferences.notifications) {
-                        ForEach(BessieNotifications.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 190)
-                }
-
-                if model.preferences.notifications != .off {
-                    BessieSettingRow(label: "Permission") {
-                        notificationPermissionControl
-                    }
-                    if let error = notifications.authorizationError {
-                        Text(error)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(BessieDesign.strong)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
-                    }
-                }
-                if let error = notifications.operationError {
-                    HStack(spacing: 12) {
-                        Text(error)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(BessieDesign.strong)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("Dismiss") { notifications.clearOperationError() }
-                            .buttonStyle(BessieQuietButtonStyle())
-                    }
-                    .padding(.top, 8)
-                }
-
-                BessieSectionLabel("STARTUP")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
-
-                BessieSettingRow(label: "On startup") {
-                    Picker("On startup", selection: $model.preferences.startupBehavior) {
-                        ForEach(BessieStartupBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 190)
-                }
-
-                BessieSectionLabel("VERSIONS")
-                    .padding(.top, 28)
-                    .padding(.bottom, 7)
+                BessieSettingsSectionLabel(icon: .wrench, title: "Advanced & diagnostics")
+                    .padding(.top, BessieSettingsLayout.sectionSpacing)
 
                 VStack(spacing: 0) {
                     BessieDiagnosticRow(
-                        label: runtimeDiagnostic == nil ? "Required Herdr" : "Active Herdr",
-                        value: runtimeDiagnostic.map {
-                            "\($0.observedVersion ?? "Unknown") · protocol \($0.observedProtocol.map(String.init) ?? "Unknown") · \($0.runtime?.source.rawValue ?? "unresolved")"
-                        } ?? "\(BessieCompatibility.herdrVersion) · protocol \(BessieCompatibility.protocolVersion)"
+                        label: "Bessie",
+                        value: "\(appVersion) · libghostty 1.3.2"
                     )
-                    Divider().overlay(BessieDesign.border)
-                    BessieDiagnosticRow(label: "Terminal", value: "libghostty 1.3.2")
                 }
                 .background(BessieDesign.panel)
                 .overlay {
@@ -419,82 +423,132 @@ struct BessieSettingsView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
 
-                RuntimeSettingsView()
-                    .padding(.top, 28)
+                if let error = model.presentationPersistenceError {
+                    Text(error)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(BessieDesign.strong)
+                        .padding(.top, 10)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Run setup again") { model.runSetupAgain() }
+                        .buttonStyle(BessieSecondaryButtonStyle())
+                    Button("Copy diagnostics") { copyDiagnostics() }
+                        .buttonStyle(BessieQuietButtonStyle())
+                }
+                .padding(.top, 12)
 
 
             }
-            .frame(maxWidth: 720, alignment: .leading)
-            .padding(.horizontal, 44)
-            .padding(.top, 30)
-            .padding(.bottom, 60)
+            .padding(.horizontal, BessieSettingsLayout.horizontalPadding)
+            .padding(.top, BessieSettingsLayout.topPadding)
+            .padding(.bottom, BessieSettingsLayout.bottomPadding)
+            .frame(maxWidth: BessieSettingsLayout.maximumWidth, alignment: .leading)
         }
         .background(Color.clear)
+    }
+
+    private var activeNotificationTarget: RoutedPaneTarget? {
+        guard let model = fleet.activeModel,
+              let projection = model.projection,
+              let pane = projection.focusedPane,
+              let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: pane.id)
+        else { return nil }
+        return RoutedPaneTarget(
+            connectionID: model.activeConnection.id,
+            workspaceID: target.workspaceID,
+            tabID: target.tabID,
+            paneID: target.paneID
+        )
+    }
+
+    private func copyDiagnostics() {
+        let runtime = runtimeDiagnostic?.observedProtocol.map(String.init) ?? "unknown"
+        let text = "Bessie \(appVersion)\nHerdr protocol \(runtime)\nlibghostty 1.3.2\nConnections \(model.connections.count)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
     }
 
     private func connectionRow(_ connection: BessieConnectionDefinition) -> some View {
         let health = fleet.connectionHealth.first { $0.connectionID == connection.id }
         let selected = model.selectedConnectionID == connection.id
-        return HStack(spacing: 12) {
-            Image(systemName: connection.kind == .local ? "laptopcomputer" : "network")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(BessieDesign.strong)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 3) {
+        let detail: String = {
+            if connection.kind == .local {
+                let phase = health?.isUsable == true ? "healthy" : (health?.phase.lowercased() ?? "not started")
+                return "included runtime · \(phase)"
+            }
+            return "ssh · \(health?.detail ?? health?.phase ?? "not started")"
+        }()
+        return HStack(spacing: 10) {
+            Circle().fill(health?.isUsable == true ? BessieDesign.strong : BessieDesign.subtle).frame(width: 6, height: 6)
+                .accessibilityLabel(health?.isUsable == true ? "Healthy" : "Unavailable")
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
                     Text(ConnectionDisplayLabel(connection: connection).short)
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundStyle(BessieDesign.strong)
-                    Text(connection.kind == .local ? "LOCAL" : "SSH")
-                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(BessieDesign.subtle)
+                    if selected { Text("active").font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(BessieDesign.strong) }
                 }
-                Text("\(connection.detail) · \(connection.kind == .local ? "Local files" : "Remote files over SSH")")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(BessieDesign.subtle)
-                    .lineLimit(1)
-                Text("\(health?.phase ?? "Not started") · \(health?.detail ?? "Waiting for connection status")")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(health?.isUsable == true ? BessieDesign.text : BessieDesign.subtle)
+                Text(detail)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(BessieDesign.faint)
                     .lineLimit(1)
             }
             Spacer()
-            if connection.kind == .local {
-                Text("INCLUDED")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(BessieDesign.strong)
-            }
-            Button(selected ? "ACTIVE" : "SELECT") { model.selectConnection(connection.id) }
-                .buttonStyle(BessieQuietButtonStyle())
-                .disabled(selected)
+            Toggle(
+                "Start at launch",
+                isOn: Binding(
+                    get: { connection.connectAtLaunch },
+                    set: { model.setConnectAtLaunch(connectionID: connection.id, enabled: $0) }
+                )
+            )
+            .toggleStyle(BessieSettingsSwitchStyle())
+            .labelsHidden()
+            .help("Start this herd when Bessie opens")
+            .accessibilityLabel("Start \(connection.name) at launch")
+            Text("Launch")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(connection.connectAtLaunch ? BessieDesign.strong : BessieDesign.faint)
+                .accessibilityHidden(true)
             if health?.canRetry == true {
-                Button("Retry") { fleet.retry(connectionID: connection.id) }
-                    .buttonStyle(BessieQuietButtonStyle())
+                Button(health?.phase == "Not started" ? "Connect" : "Retry") {
+                    if health?.phase == "Not started" {
+                        model.selectConnection(connection.id)
+                        _ = fleet.activate(connectionID: connection.id)
+                    } else {
+                        fleet.retry(connectionID: connection.id)
+                    }
+                }
+                .buttonStyle(BessieSecondaryButtonStyle())
             }
+            if !selected { Button("Set active") { model.selectConnection(connection.id) }.buttonStyle(BessieQuietButtonStyle()) }
             if connection.kind == .ssh {
                 Button { connectionPendingRemoval = connection } label: {
-                    Image(systemName: "trash")
-                        .frame(width: 24, height: 24)
+                    BessieIconView(icon: .dotsThree, size: 16)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(BessieDesign.subtle)
-                .accessibilityLabel("Remove \(connection.name)")
+                .buttonStyle(BessieSettingsIconButtonStyle())
+                .accessibilityLabel("More options for \(connection.name)")
+                .accessibilityHint("Opens removal options")
             }
         }
-        .padding(.horizontal, 13)
-        .frame(minHeight: 72)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 52)
     }
 
     private var addConnectionSheet: some View {
         VStack(alignment: .leading, spacing: 0) {
             BessieSectionLabel("NEW SSH CONNECTION")
                 .padding(.bottom, 18)
-            connectionField("Name", placeholder: "Hermes VPS", text: $connectionName)
-            connectionField("SSH host", placeholder: "hermes", text: $sshHost)
+            connectionField("Name", placeholder: "Studio Mac", text: $connectionName)
+            connectionField("SSH host", placeholder: "studio-mac", text: $sshHost)
                 .padding(.top, 14)
             connectionField("Herdr session", placeholder: "default", text: $herdrSession)
                 .padding(.top, 14)
-            Text("Uses your OpenSSH config and key agent. Bessie never stores a password. Leave the session blank for Herdr's default session.")
+            Text("Use a Host alias from ~/.ssh/config; OpenSSH handles the destination, user, key, and agent. The Herdr session is optional. Bessie Project files store launch folders and layout, never passwords or secrets.")
                 .font(.system(size: 10.5))
                 .lineSpacing(2)
                 .foregroundStyle(BessieDesign.subtle)
@@ -524,6 +578,15 @@ struct BessieSettingsView: View {
         .preferredColorScheme(model.preferences.appearance.preferredColorScheme)
     }
 
+    private func prepareAddConnection() {
+        model.consumeAddConnectionRequest()
+        connectionName = ""
+        sshHost = ""
+        herdrSession = ""
+        model.clearConnectionError()
+        showAddConnection = true
+    }
+
     private func connectionField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
@@ -539,13 +602,132 @@ struct BessieSettingsView: View {
         }
     }
 
-    @ViewBuilder private var notificationPermissionControl: some View {
+}
+
+struct BessieGeneralSettingsControls: View {
+    @EnvironmentObject private var model: BessieSettingsModel
+
+    var body: some View {
+        BessieSettingRow(label: "On startup", hint: "What Bessie opens when it launches.") {
+            BessieMiniSegments(selection: $model.preferences.startupBehavior, values: BessieStartupBehavior.allCases) { $0.title }
+        }
+    }
+}
+
+struct BessieTerminalSettingsControls: View {
+    @EnvironmentObject private var model: BessieSettingsModel
+
+    var body: some View {
+        Group {
+            BessieSettingRow(label: "Font size", hint: "Applies to every pane.") {
+                BessieSettingsStepper(value: $model.preferences.terminalFontSize, range: 10...24, rangeLabel: "10–24", label: "Terminal font size")
+            }
+            BessieSettingRow(label: "Pane spacing", hint: "The gap between tiled panes.") {
+                BessieSettingsStepper(value: $model.preferences.paneGap, range: 0...16, rangeLabel: "0–16", label: "Pane spacing")
+            }
+        }
+    }
+}
+
+struct BessieAppearanceSettingsControls: View {
+    @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var themeCoordinator: BessieThemeCoordinator
+
+    var body: some View {
+        Group {
+            BessieSettingRow(label: "Theme", hint: "System follows your Mac appearance.") {
+                Picker("Theme", selection: themeCoordinator.binding()) {
+                    ForEach(BessieThemeRegistry.selectableIDs, id: \.self) { id in
+                        HStack(spacing: 7) {
+                            BessieThemeSwatches(id: id)
+                            Text(id.title)
+                            Spacer()
+                            Text(id.schemeLabel)
+                                .foregroundStyle(BessieDesign.subtle)
+                        }
+                        .tag(id)
+                        .accessibilityLabel("\(id.title), \(id.schemeLabel)")
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 220)
+                .accessibilityLabel("Theme")
+            }
+            BessieSettingRow(label: "Density", hint: "Adjusts chrome, rows, and card spacing.") {
+                BessieMiniSegments(selection: $model.preferences.density, values: BessieDensity.allCases) { $0.title }
+            }
+            BessieSettingRow(label: "App icon", hint: "Used in the Dock and app switcher.") {
+                BessieMiniSegments(selection: $model.preferences.appIcon, values: BessieAppIcon.allCases) { $0.title }
+            }
+            BessieSettingRow(label: "Cowprint texture") {
+                Toggle("", isOn: $model.preferences.cowprintEnabled)
+                    .labelsHidden()
+                    .accessibilityLabel("Cowprint texture")
+                    .toggleStyle(BessieSettingsSwitchStyle())
+            }
+        }
+    }
+}
+
+struct BessieMenuBarSettingsControls: View {
+    @EnvironmentObject private var model: BessieSettingsModel
+
+    var body: some View {
+        Group {
+            BessieSettingRow(label: "Show in the menu bar", hint: "The menu bar is how Bessie reaches you when it is not focused.") {
+                Toggle("", isOn: $model.preferences.menuBarVisible).labelsHidden().toggleStyle(BessieSettingsSwitchStyle())
+            }
+            BessieSettingRow(label: "Badge shows", hint: "The number beside the cow.") {
+                BessieMiniSegments(selection: $model.preferences.menuBarBadgePolicy, values: BessieMenuBarBadgePolicy.allCases) { $0.title }
+            }
+            BessieSettingRow(label: "Clicking a row") {
+                BessieMiniSegments(selection: $model.preferences.menuBarRowClickBehavior, values: BessieMenuBarRowClickBehavior.allCases) { $0.title }
+            }
+        }
+    }
+}
+
+struct BessieNotificationSettingsControls: View {
+    @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var notifications: BessieNotificationCoordinator
+    let target: RoutedPaneTarget?
+    var showsPolicy = true
+
+    var body: some View {
+        Group {
+            if showsPolicy {
+                BessieSettingRow(label: "Notify me", hint: "Only when the pane isn't active.") {
+                    BessieMiniSegments(selection: $model.preferences.notifications, values: BessieNotifications.allCases) { $0.title }
+                }
+            }
+            BessieSettingRow(label: "Permission") { permissionControl }
+            BessieSettingRow(
+                label: "Test notification",
+                hint: "Uses synthetic content and never includes terminal output, connection details, or secrets."
+            ) {
+                Button("Send test notification") {
+                    Task { await notifications.sendTestNotification(target: target) }
+                }
+                .buttonStyle(BessieSecondaryButtonStyle())
+                .disabled(notifications.testNotificationStatus == .sending)
+            }
+            if let message = statusMessage {
+                Text(message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(BessieDesign.strong)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+            }
+        }
+    }
+
+    @ViewBuilder private var permissionControl: some View {
         switch notifications.authorizationStatus {
         case .notDetermined:
             Button("Allow notifications") { notifications.requestAuthorization() }
                 .buttonStyle(BessieSecondaryButtonStyle())
         case .denied:
-            Button("Open System Settings") { notifications.openSystemSettings() }
+            Button("Open Bessie Notification Settings") { notifications.openNotificationSettings() }
                 .buttonStyle(BessieSecondaryButtonStyle())
         case .authorized, .provisional, .ephemeral:
             Text("Allowed")
@@ -557,14 +739,147 @@ struct BessieSettingsView: View {
                 .foregroundStyle(BessieDesign.subtle)
         }
     }
+
+    private var statusMessage: String? {
+        switch notifications.testNotificationStatus {
+        case .idle: notifications.authorizationError ?? notifications.operationError
+        case .sending: "Sending test notification…"
+        case .delivered: "Authorized and sent to Notification Center. If no banner appeared, check Bessie's alert style in System Settings."
+        case .denied: "Permission denied. Open Bessie Notification Settings to allow alerts, sounds, and banners."
+        case .failed(let message): message
+        }
+    }
+}
+
+enum BessieSettingsLayout {
+    static let maximumWidth: CGFloat = 780
+    static let topPadding: CGFloat = 26
+    static let horizontalPadding: CGFloat = 40
+    static let bottomPadding: CGFloat = 70
+    static let sectionSpacing: CGFloat = 30
+    static let labelColumnWidth: CGFloat = 252
+    static let columnGap: CGFloat = 22
+    static let rowVerticalPadding: CGFloat = 17
+    static let switchWidth: CGFloat = 38
+    static let switchHeight: CGFloat = 22
+}
+
+private struct BessieSettingsSectionLabel<Trailing: View>: View {
+    let icon: BessieIcon
+    let title: String
+    @ViewBuilder let trailing: Trailing
+
+    init(icon: BessieIcon, title: String, @ViewBuilder trailing: () -> Trailing) {
+        self.icon = icon
+        self.title = title
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            BessieIconView(icon: icon, size: 14)
+            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced))
+            Spacer()
+            trailing
+        }
+        .foregroundStyle(BessieDesign.subtle)
+        .frame(height: 24)
+    }
+}
+
+private extension BessieSettingsSectionLabel where Trailing == EmptyView {
+    init(icon: BessieIcon, title: String) { self.init(icon: icon, title: title) { EmptyView() } }
+}
+
+private struct BessieSettingsIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(BessieDesign.subtle)
+            .frame(width: 24, height: 24)
+            .background(configuration.isPressed ? BessieDesign.selected : BessieSemanticColor.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct BessieMiniSegments<Value: Hashable>: View {
+    @Binding var selection: Value
+    let values: [Value]
+    let title: (Value) -> String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(values, id: \.self) { value in
+                Button(title(value)) { selection = value }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5, weight: selection == value ? .medium : .regular))
+                    .foregroundStyle(selection == value ? BessieDesign.strong : BessieDesign.subtle)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(selection == value ? BessieDesign.selected : BessieSemanticColor.clear)
+                    .accessibilityAddTraits(selection == value ? .isSelected : [])
+            }
+        }
+        .background(BessieDesign.inset)
+        .overlay { RoundedRectangle(cornerRadius: 5).stroke(BessieDesign.border) }
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+private struct BessieSettingsSwitchStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            Capsule()
+                .fill(configuration.isOn ? BessieDesign.strong : BessieDesign.inset)
+                .overlay(alignment: configuration.isOn ? .trailing : .leading) {
+                    Circle().fill(configuration.isOn ? BessieDesign.background : BessieDesign.subtle)
+                        .frame(width: 16, height: 16).padding(3)
+                }
+                .overlay { Capsule().stroke(BessieDesign.border) }
+                .frame(width: BessieSettingsLayout.switchWidth, height: BessieSettingsLayout.switchHeight)
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
+    }
+}
+
+private struct BessieSettingsStepper: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let rangeLabel: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                stepButton(icon: .minus, delta: -1, disabled: value <= range.lowerBound)
+                Text("\(Int(value)) pt")
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minWidth: 64, minHeight: 28)
+                    .background(BessieDesign.inset)
+                    .overlay { RoundedRectangle(cornerRadius: 4).stroke(BessieDesign.border) }
+                stepButton(icon: .plus, delta: 1, disabled: value >= range.upperBound)
+            }
+            Text(rangeLabel).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(BessieDesign.faint)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(Int(value)) points")
+    }
+
+    private func stepButton(icon: BessieIcon, delta: Double, disabled: Bool) -> some View {
+        Button { value = min(range.upperBound, max(range.lowerBound, value + delta)) } label: {
+            BessieIconView(icon: icon, size: 12)
+        }
+        .buttonStyle(BessieSettingsIconButtonStyle())
+        .disabled(disabled)
+        .accessibilityLabel(delta < 0 ? "Decrease \(label)" : "Increase \(label)")
+    }
 }
 
 private struct BessieSettingRow<Control: View>: View {
     let label: String
     let hint: String?
     @ViewBuilder let control: Control
-    @Environment(\.bessieDensity) private var density
-
     init(label: String, hint: String? = nil, @ViewBuilder control: () -> Control) {
         self.label = label
         self.hint = hint
@@ -572,7 +887,7 @@ private struct BessieSettingRow<Control: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 24) {
+        HStack(alignment: .center, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(label)
                     .font(.system(size: 13, weight: .medium))
@@ -582,13 +897,15 @@ private struct BessieSettingRow<Control: View>: View {
                         .font(.system(size: 11.5))
                         .lineSpacing(2)
                         .foregroundStyle(BessieDesign.subtle)
-                        .frame(maxWidth: 360, alignment: .leading)
+                        .frame(maxWidth: BessieSettingsLayout.labelColumnWidth, alignment: .leading)
                 }
             }
-            Spacer(minLength: 20)
+            .frame(width: BessieSettingsLayout.labelColumnWidth, alignment: .leading)
+            Spacer().frame(width: BessieSettingsLayout.columnGap)
             control
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.vertical, density.settingsRowPadding)
+        .padding(.vertical, BessieSettingsLayout.rowVerticalPadding)
         .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
 }
@@ -616,8 +933,38 @@ private extension BessieStartupBehavior {
     var title: String { switch self { case .lastWorkspace: "Reopen last workspace"; case .workspaceChooser: "Show workspaces" } }
 }
 
-private extension BessieAppearance {
-    var title: String { switch self { case .system: "System"; case .dark: "Dark"; case .light: "Light" } }
+extension BessieThemeID {
+    var title: String {
+        switch self {
+        case .system: "System"
+        case .dark: "Bessie Dark"
+        case .light: "Bessie Light"
+        case .catppuccinLatte: "Catppuccin Latte"
+        case .catppuccinFrappe: "Catppuccin Frappé"
+        case .catppuccinMacchiato: "Catppuccin Macchiato"
+        case .catppuccinMocha: "Catppuccin Mocha"
+        }
+    }
+
+    var schemeLabel: String {
+        if self == .system { return "Adaptive" }
+        return BessieThemeRegistry.preferredColorScheme(for: self) == .light ? "Light" : "Dark"
+    }
+}
+
+private struct BessieThemeSwatches: View {
+    let id: BessieThemeID
+
+    var body: some View {
+        let preview = BessieThemeRegistry.definition(for: id, systemScheme: .dark).preview
+        HStack(spacing: 0) {
+            ForEach(Array(preview.enumerated()), id: \.offset) { _, color in
+                Rectangle().fill(color).frame(width: 8, height: 12)
+            }
+        }
+        .overlay { Rectangle().stroke(BessieDesign.borderStrong, lineWidth: 0.5) }
+        .accessibilityHidden(true)
+    }
 }
 
 private extension BessieDensity {
@@ -628,14 +975,22 @@ private extension BessieAppIcon {
     var title: String { switch self { case .dark: "Dark"; case .light: "Light" } }
 }
 
-private extension BessieNotifications {
+extension BessieNotifications {
     var title: String {
         switch self {
         case .off: "Off"
         case .blockedOnly: "When work needs me"
-        case .blockedAndDone: "Needs me and done"
+        case .blockedAndDone: "Needs me and settled"
         }
     }
+}
+
+private extension BessieMenuBarBadgePolicy {
+    var title: String { switch self { case .needsYou: "Needs you"; case .needsYouAndUnknown: "Needs you + Unknown"; case .nothing: "Nothing" } }
+}
+
+private extension BessieMenuBarRowClickBehavior {
+    var title: String { switch self { case .focusPane: "Focus pane"; case .openBessie: "Open Bessie" } }
 }
 
 struct BessieWindowSnapshotProbe: NSViewRepresentable {
@@ -652,11 +1007,12 @@ struct BessieWindowSnapshotProbe: NSViewRepresentable {
         let preview = ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased()
         let capturesSheet = preview == "new-process"
             || preview == "command-palette"
-            || preview == "project-capture"
             || preview == "project-launch-review"
+            || preview == "menu-bar"
+        let captureRole = preview == "menu-bar" ? "menu-bar" : "sheet"
         guard ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_PATH"] != nil,
               ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_TRIGGER"] == nil,
-              (capturesSheet ? role == "sheet" : role == "main")
+              (capturesSheet ? role == captureRole : role == "main")
         else { return view }
         let delay = Double(ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_DELAY"] ?? "3") ?? 3
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
@@ -696,8 +1052,8 @@ enum BessieWindowSnapshot {
         }
     }
 
-    static func capture(window requestedWindow: NSWindow? = nil) {
-        guard let path = ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_PATH"],
+    static func capture(window requestedWindow: NSWindow? = nil, path requestedPath: String? = nil) {
+        guard let path = requestedPath ?? ProcessInfo.processInfo.environment["BESSIE_WINDOW_SNAPSHOT_PATH"],
               let window = requestedWindow ?? NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible),
               let content = window.contentView,
               content.bounds.width > 0,
@@ -706,8 +1062,61 @@ enum BessieWindowSnapshot {
 
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
-        let bitmap: NSBitmapImageRep?
-        if let image = captureWindowImage(windowNumber: window.windowNumber),
+        var bitmap: NSBitmapImageRep?
+        if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "08",
+           let requested = ProcessInfo.processInfo.environment["BESSIE_CAPTURE_FRAME"]?.split(separator: "x"),
+           requested.count == 2, let width = Int(requested[0]), let height = Int(requested[1]),
+           let scrollView = largestScrollView(in: content),
+           let document = scrollView.documentView,
+           let documentBitmap = document.bitmapImageRepForCachingDisplay(in: document.bounds),
+           let windowImage = captureWindowImage(windowNumber: window.windowNumber) {
+            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                document.cacheDisplay(in: document.bounds, to: documentBitmap)
+            }
+            guard let stitched = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+            ), let context = NSGraphicsContext(bitmapImageRep: stitched) else { return }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                NSColor(BessieDesign.background.currentColor).setFill()
+                NSRect(x: 0, y: 0, width: width, height: height).fill()
+                let windowWidth = min(windowImage.width, width)
+                let windowHeight = min(windowImage.height, height)
+                NSBitmapImageRep(cgImage: windowImage).draw(in: NSRect(
+                    x: 0, y: height - windowHeight, width: windowWidth, height: windowHeight
+                ))
+
+                let scrollFrame = scrollView.convert(scrollView.bounds, to: content)
+                let titlebarHeight = max(0, windowHeight - Int(content.bounds.height))
+                let documentTop = CGFloat(titlebarHeight) + 72
+                let documentWidth = min(CGFloat(documentBitmap.pixelsWide), scrollFrame.width)
+                let documentHeight = min(CGFloat(documentBitmap.pixelsHigh), CGFloat(height) - documentTop)
+                let documentRect = NSRect(
+                    x: scrollFrame.minX,
+                    y: CGFloat(height) - documentTop - documentHeight,
+                    width: documentWidth,
+                    height: documentHeight
+                )
+                NSColor(BessieDesign.background.currentColor).setFill()
+                documentRect.fill()
+                documentBitmap.draw(in: documentRect, from: NSRect(
+                    x: 0,
+                    y: CGFloat(documentBitmap.pixelsHigh) - documentHeight,
+                    width: documentWidth,
+                    height: documentHeight
+                ), operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            guard let bitmapData = stitched.bitmapData else { return }
+            for y in 0..<height {
+                let row = bitmapData.advanced(by: y * stitched.bytesPerRow)
+                for x in 0..<width { row[x * 4 + 3] = 255 }
+            }
+            bitmap = stitched
+        } else if let image = captureWindowImage(windowNumber: window.windowNumber),
            image.width >= Int(content.bounds.width.rounded(.down)),
            image.height >= Int(content.bounds.height.rounded(.down)) {
             bitmap = NSBitmapImageRep(cgImage: image)
@@ -718,11 +1127,70 @@ enum BessieWindowSnapshot {
         } else {
             bitmap = nil
         }
+        if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "15",
+           let requested = ProcessInfo.processInfo.environment["BESSIE_CAPTURE_FRAME"]?.split(separator: "x"),
+           requested.count == 2, let width = Int(requested[0]), let height = Int(requested[1]),
+           let source = bitmap,
+           let composed = NSBitmapImageRep(
+               bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+           ), let context = NSGraphicsContext(bitmapImageRep: composed) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            NSColor(BessieDesign.desk.currentColor).setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            let sourceWidth = min(source.pixelsWide, width - 28)
+            let sourceHeight = min(source.pixelsHigh, height - 32)
+            source.draw(in: NSRect(
+                x: width - sourceWidth - 14,
+                y: height - sourceHeight - 32,
+                width: sourceWidth,
+                height: sourceHeight
+            ))
+            NSGraphicsContext.restoreGraphicsState()
+            bitmap = composed
+        } else if let requested = ProcessInfo.processInfo.environment["BESSIE_CAPTURE_FRAME"]?.split(separator: "x"),
+           requested.count == 2, let width = Int(requested[0]), let height = Int(requested[1]),
+           let source = bitmap,
+           let normalized = NSBitmapImageRep(
+               bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+           ), let context = NSGraphicsContext(bitmapImageRep: normalized) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            NSColor(BessieDesign.background.currentColor).setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            source.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+            NSGraphicsContext.restoreGraphicsState()
+            if let bitmapData = normalized.bitmapData {
+                for y in 0..<height {
+                    let row = bitmapData.advanced(by: y * normalized.bytesPerRow)
+                    for x in 0..<width { row[x * 4 + 3] = 255 }
+                }
+            }
+            bitmap = normalized
+        }
         guard let png = bitmap?.representation(using: .png, properties: [:]) else { return }
         let url = URL(fileURLWithPath: path)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? png.write(to: url, options: .atomic)
         BessieDiagnosticLog.append("Window snapshot path=\(path) width=\(Int(content.bounds.width)) height=\(Int(content.bounds.height))")
+    }
+
+    private static func largestScrollView(in view: NSView) -> NSScrollView? {
+        var scrollViews: [NSScrollView] = []
+        func visit(_ candidate: NSView) {
+            if let scrollView = candidate as? NSScrollView, scrollView.documentView != nil {
+                scrollViews.append(scrollView)
+            }
+            candidate.subviews.forEach(visit)
+        }
+        visit(view)
+        return scrollViews.max {
+            ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+        }
     }
 
     private static func captureWindowImage(windowNumber: Int) -> CGImage? {
@@ -738,4 +1206,5 @@ enum BessieWindowSnapshot {
             (CGWindowImageOption.boundsIgnoreFraming.union(.bestResolution)).rawValue
         )?.takeRetainedValue()
     }
+
 }

@@ -9,7 +9,7 @@
 
 ## 1. Outcome
 
-1. User always understands **which connection** an agent/pane belongs to (Herd/Attention/workspace chrome).
+1. User always understands **which connection** an agent/pane belongs to (Herd/workspace chrome).
 2. Settings: clear list of connections, add SSH, remove non-local, select active, show health summary.
 3. Onboarding/first-run mentions remote only as advanced path; local bundled default remains primary.
 4. SSH attach reliability: honest errors; reconnect; no stop remote Herdr on disconnect.

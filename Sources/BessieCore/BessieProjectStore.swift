@@ -40,6 +40,7 @@ public struct BessieProjectCatalogIssue: Equatable, Sendable {
     public enum Kind: String, Equatable, Sendable {
         case corrupt
         case unsupportedSchemaVersion
+        case migrationFailed
         case filenameMismatch
         case duplicateEmbeddedID
     }
@@ -92,6 +93,8 @@ public enum BessieProjectStoreError: Error, Equatable, Sendable {
     case duplicateEmbeddedID(UUID)
     case staleWrite(BessieProjectWriteConflict)
     case filenameMismatch(filename: String, embeddedProjectID: UUID)
+    case unsafeProjectFile(filename: String, reason: String)
+    case migrationFailed(filename: String, reason: String)
     case trashRecoveryFailed(filename: String, ownerError: String, recoveryError: String)
 }
 
@@ -129,7 +132,7 @@ public struct BessieProjectStore: Sendable {
         guard FileManager.default.fileExists(atPath: rootURL.path) else {
             return BessieProjectCatalog(projects: [], issues: [])
         }
-        return try withStoreLock(exclusive: false) { try unlockedList() }
+        return try withStoreLock(exclusive: true) { try unlockedList() }
     }
 
     private func unlockedList() throws -> BessieProjectCatalog {
@@ -159,6 +162,18 @@ public struct BessieProjectStore: Sendable {
                     kind: .unsupportedSchemaVersion,
                     filename: url.lastPathComponent,
                     message: "Unsupported project schema version \(version)."
+                ))
+            } catch let BessieProjectStoreError.unsafeProjectFile(_, reason) {
+                issues.append(.init(
+                    kind: .corrupt,
+                    filename: url.lastPathComponent,
+                    message: reason
+                ))
+            } catch let BessieProjectStoreError.migrationFailed(_, reason) {
+                issues.append(.init(
+                    kind: .migrationFailed,
+                    filename: url.lastPathComponent,
+                    message: "Project migration failed. \(reason)"
                 ))
             } catch {
                 issues.append(.init(
@@ -198,7 +213,7 @@ public struct BessieProjectStore: Sendable {
         guard FileManager.default.fileExists(atPath: rootURL.path) else {
             throw BessieProjectStoreError.notFound(id)
         }
-        return try withStoreLock(exclusive: false) {
+        return try withStoreLock(exclusive: true) {
             let matches = try unlockedList().projects.filter { $0.project.id == id }
             guard !matches.isEmpty else { throw BessieProjectStoreError.notFound(id) }
             if let canonical = matches.first(where: { $0.sourceURL == canonicalURL(for: id) }) {
@@ -278,7 +293,7 @@ public struct BessieProjectStore: Sendable {
             name: source.project.name,
             projectDescription: source.project.projectDescription,
             group: source.project.group,
-            workingDirectory: source.project.workingDirectory,
+            folders: source.project.folders,
             tabs: source.project.tabs,
             createdAt: now(),
             updatedAt: now()
@@ -378,8 +393,17 @@ public struct BessieProjectStore: Sendable {
     }
 
     private func loadFile(at url: URL) throws -> BessieStoredProject {
-        let sourceURL = url.standardizedFileURL.resolvingSymlinksInPath()
-        let data = try Data(contentsOf: sourceURL)
+        let sourceURL = url.standardizedFileURL
+        if try sourceURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
+            throw BessieProjectStoreError.unsafeProjectFile(
+                filename: sourceURL.lastPathComponent,
+                reason: "Project catalog entries cannot be symbolic links."
+            )
+        }
+        var data = try Data(contentsOf: sourceURL)
+        if try BessieProjectCodec.schemaVersion(in: data) == 1 {
+            data = try migrateVersionOneFile(data, at: sourceURL)
+        }
         let project = try BessieProjectCodec.decode(data).normalizedForCatalog()
         let revision = try fileRevision(at: sourceURL, updatedAt: project.updatedAt)
         let filenameID = UUID(uuidString: sourceURL.deletingPathExtension().lastPathComponent)
@@ -389,6 +413,73 @@ public struct BessieProjectStore: Sendable {
             sourceURL: sourceURL,
             filenameMismatch: filenameID != project.id
         )
+    }
+
+    private func migrateVersionOneFile(_ originalData: Data, at sourceURL: URL) throws -> Data {
+        let backupURL = sourceURL.appendingPathExtension("v1-backup")
+        let temporaryURL = rootURL.appendingPathComponent(".\(UUID().uuidString).migration.tmp")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        do {
+            let migrated = try BessieProjectMigration.migrate(originalData)
+            _ = try migrated.normalizedForCatalog()
+            let migratedData = try BessieProjectCodec.encode(migrated)
+            let decoded = try BessieProjectCodec.decode(migratedData)
+            _ = try decoded.normalizedForCatalog()
+            guard decoded == migrated else {
+                throw BessieProjectStoreError.migrationFailed(
+                    filename: sourceURL.lastPathComponent,
+                    reason: "The validated schema-v2 representation did not match the migrated project."
+                )
+            }
+            try migratedData.write(to: temporaryURL, options: .withoutOverwriting)
+
+            if FileManager.default.fileExists(atPath: backupURL.path) {
+                guard try Data(contentsOf: backupURL) == originalData else {
+                    throw BessieProjectStoreError.migrationFailed(
+                        filename: sourceURL.lastPathComponent,
+                        reason: "A different migration backup already exists at \(backupURL.lastPathComponent)."
+                    )
+                }
+            } else {
+                try originalData.write(to: backupURL, options: .withoutOverwriting)
+            }
+
+            do {
+                try atomicReplace(temporaryURL, sourceURL)
+                let installedData = try Data(contentsOf: sourceURL)
+                _ = try BessieProjectCodec.decode(installedData).normalizedForCatalog()
+                return installedData
+            } catch {
+                let ownerError = error
+                do {
+                    try restoreMigrationBackup(backupURL, to: sourceURL)
+                } catch {
+                    throw BessieProjectStoreError.migrationFailed(
+                        filename: sourceURL.lastPathComponent,
+                        reason: "Replacement failed (\(ownerError.localizedDescription)); restoring the schema-v1 backup also failed (\(error.localizedDescription))."
+                    )
+                }
+                throw BessieProjectStoreError.migrationFailed(
+                    filename: sourceURL.lastPathComponent,
+                    reason: "Replacement failed and was rolled back: \(ownerError.localizedDescription)"
+                )
+            }
+        } catch let error as BessieProjectStoreError {
+            throw error
+        } catch {
+            throw BessieProjectStoreError.migrationFailed(
+                filename: sourceURL.lastPathComponent,
+                reason: error.localizedDescription
+            )
+        }
+    }
+
+    private func restoreMigrationBackup(_ backupURL: URL, to sourceURL: URL) throws {
+        let restoreURL = rootURL.appendingPathComponent(".\(UUID().uuidString).rollback.tmp")
+        defer { try? FileManager.default.removeItem(at: restoreURL) }
+        try Data(contentsOf: backupURL).write(to: restoreURL, options: .withoutOverwriting)
+        try BessieProjectStore.replaceAtomically(restoreURL, sourceURL)
     }
 
     private func fileRevision(at url: URL, updatedAt: Date) throws -> BessieProjectRevision {

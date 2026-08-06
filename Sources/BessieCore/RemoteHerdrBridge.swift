@@ -1,6 +1,11 @@
 import Darwin
 import Foundation
 
+public enum SSHHostKeyPolicy {
+    /// Explicitly overrides unsafe user SSH configuration. Changed or unknown keys fail closed.
+    public static let requiredArguments = ["-o", "StrictHostKeyChecking=yes"]
+}
+
 public struct RemoteHerdrBridgePlan: Equatable, Sendable {
     public let connection: BessieConnectionDefinition
     public let localSocketPath: String
@@ -8,6 +13,10 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
     public let localControlPath: String
     public let remoteSocketPath: String
     public let remoteClientSocketPath: String
+
+    /// Keep the multiplexed master briefly after Bessie tears down its -N helper so
+    /// the next launch can skip a cold TCP/SSH handshake.
+    public static let controlPersistSeconds = 600
 
     public init(connection: BessieConnectionDefinition, localDirectory: URL, remoteSocketPath: String) throws {
         self.connection = try connection.validated()
@@ -25,15 +34,16 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
 
     public var sshArguments: [String] {
         guard let host = connection.sshHost else { return [] }
-        return [
+        return SSHHostKeyPolicy.requiredArguments + [
             "-o", "BatchMode=yes",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "StreamLocalBindUnlink=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
-            "-o", "ControlMaster=yes",
-            "-o", "ControlPersist=no",
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=\(Self.controlPersistSeconds)",
             "-o", "ControlPath=\(localControlPath)",
+            "-o", "ConnectTimeout=8",
             "-L", "\(localSocketPath):\(remoteSocketPath)",
             "-L", "\(localClientSocketPath):\(remoteClientSocketPath)",
             "-N", host,
@@ -45,14 +55,36 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
         return "herdr\(session) status --json"
     }
 
-    public static func remoteStatusArguments(for connection: BessieConnectionDefinition) -> [String] {
+    public static func remoteStatusArguments(
+        for connection: BessieConnectionDefinition,
+        controlPath: String? = nil
+    ) -> [String] {
         guard let host = connection.sshHost else { return [] }
-        return [
+        var args = SSHHostKeyPolicy.requiredArguments + [
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=8",
-            host,
-            remoteStatusCommand(for: connection),
         ]
+        if let controlPath, !controlPath.isEmpty {
+            args += [
+                "-o", "ControlMaster=auto",
+                "-o", "ControlPersist=\(controlPersistSeconds)",
+                "-o", "ControlPath=\(controlPath)",
+            ]
+        }
+        args += [host, remoteStatusCommand(for: connection)]
+        return args
+    }
+
+    /// Bootstrap only. A forced PTY is required by Herdr attach; `cd --` is
+    /// positional-shell quoted and the selected directory is validated first.
+    public static func remoteAttachArguments(for connection: BessieConnectionDefinition, session: String, directory: String) throws -> [String] {
+        let validated = try connection.validated()
+        guard let host = validated.sshHost, BessieConnectionDefinition.isSafeSession(session) else {
+            throw BessieConnectionError.invalidSession
+        }
+        let cwd = try OnboardingPathValidator.absolute(directory)
+        let quoted = "'" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return SSHHostKeyPolicy.requiredArguments + ["-o", "BatchMode=yes", "-tt", host, "cd -- \(quoted) && exec herdr session attach \(session)"]
     }
 }
 
@@ -90,31 +122,106 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
             .appendingPathComponent("bessie-\(NSUserName())", isDirectory: true)
     }
 
-    deinit { stop() }
+    deinit { stop(removeCacheDirectory: false) }
 
     public func start() throws -> String {
-        stop()
-        let status = try remoteStatus()
+        let directory = cacheRoot.appendingPathComponent(safeID, isDirectory: true)
+        try prepareDirectory(directory)
+
+        // 1) Healthy existing forwards (same process or ControlPersist master) — no SSH spawn.
+        if let ready = readySocketPath(in: directory) {
+            lock.withLock { localDirectory = directory }
+            return ready
+        }
+
+        // 2) Cached remote socket: open/reuse tunnel without a status round-trip.
+        if let cachedRemote = cachedRemoteSocketPath(in: directory) {
+            do {
+                if let ready = try openTunnel(remoteSocketPath: cachedRemote, directory: directory) {
+                    return ready
+                }
+            } catch {
+                // Stale cache or flaky master — fall through to a fresh status probe.
+            }
+        }
+
+        // 3) Cold path: status (multiplexed when a control master already exists), then tunnel.
+        let status = try remoteStatus(controlPath: directory.appendingPathComponent("ssh-control.sock").path)
         guard status.running, let remoteSocket = status.socket, !remoteSocket.isEmpty else {
             throw BessieConnectionError.remoteHerdrUnavailable(
                 "Start the selected Herdr session on \(connection.sshHost ?? "the remote host"), then try again."
             )
         }
+        storeCachedRemoteSocketPath(remoteSocket, in: directory)
+        if let ready = try openTunnel(remoteSocketPath: remoteSocket, directory: directory) {
+            return ready
+        }
+        throw BessieConnectionError.tunnelFailed("Timed out waiting for local sockets.")
+    }
 
-        let directory = cacheRoot.appendingPathComponent(safeID, isDirectory: true)
-        stopStaleTunnel(in: directory)
+    public func stop() {
+        stop(removeCacheDirectory: false)
+    }
+
+    /// Tears down the local -N helper. Keeps the ControlPersist master and cached remote
+    /// socket path so the next connect can skip status + cold handshake.
+    private func stop(removeCacheDirectory: Bool) {
+        let state = lock.withLock { () -> (Process?, URL?) in
+            defer {
+                tunnelProcess = nil
+                if removeCacheDirectory { localDirectory = nil }
+            }
+            return (tunnelProcess, localDirectory)
+        }
+        if let process = state.0, process.isRunning {
+            process.terminate()
+            for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { Self.killAndReap(process) }
+        }
+        if removeCacheDirectory, let directory = state.1 {
+            try? fileManager.removeItem(at: directory)
+        }
+    }
+
+    private var safeID: String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let mapped = connection.id.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" }
+        return String(mapped)
+    }
+
+    private func prepareDirectory(_ directory: URL) throws {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheRoot.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        for name in ["herdr.sock", "herdr-client.sock", "ssh-control.sock"] {
-            try? fileManager.removeItem(at: directory.appendingPathComponent(name))
-        }
+        lock.withLock { localDirectory = directory }
+    }
+
+    private func readySocketPath(in directory: URL) -> String? {
+        let localSocketPath = directory.appendingPathComponent("herdr.sock").path
+        let localClientSocketPath = directory.appendingPathComponent("herdr-client.sock").path
+        guard fileManager.fileExists(atPath: localSocketPath),
+              fileManager.fileExists(atPath: localClientSocketPath),
+              (try? HerdrSocketAPI(socketPath: localSocketPath).ping()) != nil
+        else { return nil }
+        return localSocketPath
+    }
+
+    private func openTunnel(remoteSocketPath: String, directory: URL) throws -> String? {
         let plan = try RemoteHerdrBridgePlan(
             connection: connection,
             localDirectory: directory,
-            remoteSocketPath: remoteSocket
+            remoteSocketPath: remoteSocketPath
         )
 
+        // Drop only stale local socket nodes; keep control master when ControlPersist holds it.
+        for name in ["herdr.sock", "herdr-client.sock"] {
+            let path = directory.appendingPathComponent(name).path
+            if fileManager.fileExists(atPath: path) {
+                try? fileManager.removeItem(atPath: path)
+            }
+        }
+
+        // If a master is already up, a short-lived -N with ControlMaster=auto attaches forwards.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sshPath)
         process.arguments = plan.sshArguments
@@ -128,10 +235,24 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
             tunnelProcess = process
             localDirectory = directory
         }
-        for _ in 0..<60 {
+
+        // Tight early poll; ping only once both local sockets exist.
+        let intervals: [TimeInterval] = [
+            0.0, 0.02, 0.02, 0.03, 0.05, 0.05, 0.05,
+            0.1, 0.1, 0.1, 0.1, 0.1, 0.1,
+            0.15, 0.15, 0.2, 0.2, 0.25, 0.25, 0.3, 0.3, 0.4, 0.5, 0.5,
+        ]
+        for delay in intervals {
+            if delay > 0 { Thread.sleep(forTimeInterval: delay) }
             if !process.isRunning {
+                // ControlPersist master may still own forwards after helper exits — check sockets.
+                if fileManager.fileExists(atPath: plan.localSocketPath),
+                   fileManager.fileExists(atPath: plan.localClientSocketPath),
+                   (try? HerdrSocketAPI(socketPath: plan.localSocketPath).ping()) != nil {
+                    return plan.localSocketPath
+                }
                 let reason = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "SSH exited."
-                stop()
+                lock.withLock { tunnelProcess = nil }
                 throw BessieConnectionError.tunnelFailed(reason.trimmingCharacters(in: .whitespacesAndNewlines))
             }
             if fileManager.fileExists(atPath: plan.localSocketPath),
@@ -139,48 +260,31 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
                (try? HerdrSocketAPI(socketPath: plan.localSocketPath).ping()) != nil {
                 return plan.localSocketPath
             }
-            Thread.sleep(forTimeInterval: 0.1)
         }
-        stop()
-        throw BessieConnectionError.tunnelFailed("Timed out waiting for local sockets.")
+        stop(removeCacheDirectory: false)
+        return nil
     }
 
-    public func stop() {
-        let state = lock.withLock { () -> (Process?, URL?) in
-            defer { tunnelProcess = nil; localDirectory = nil }
-            return (tunnelProcess, localDirectory)
-        }
-        if let process = state.0, process.isRunning {
-            process.terminate()
-            for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
-            if process.isRunning { Self.killAndReap(process) }
-        }
-        if let directory = state.1 { try? fileManager.removeItem(at: directory) }
+    private func cachedRemoteSocketPath(in directory: URL) -> String? {
+        let url = directory.appendingPathComponent("remote-socket.path")
+        guard let value = try? String(contentsOf: url, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.hasPrefix("/")
+        else { return nil }
+        return value
     }
 
-    private var safeID: String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
-        let mapped = connection.id.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" }
-        return String(mapped)
+    private func storeCachedRemoteSocketPath(_ path: String, in directory: URL) {
+        let url = directory.appendingPathComponent("remote-socket.path")
+        try? path.write(to: url, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private func stopStaleTunnel(in directory: URL) {
-        let controlPath = directory.appendingPathComponent("ssh-control.sock").path
-        guard fileManager.fileExists(atPath: controlPath), let host = connection.sshHost else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: sshPath)
-        process.arguments = ["-S", controlPath, "-O", "exit", host]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        for _ in 0..<40 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning { Self.killAndReap(process) }
-    }
-
-    private func remoteStatus() throws -> RemoteStatus {
+    private func remoteStatus(controlPath: String?) throws -> RemoteStatus {
         let data = try runRemote(
-            arguments: RemoteHerdrBridgePlan.remoteStatusArguments(for: connection),
-            timeout: 12
+            arguments: RemoteHerdrBridgePlan.remoteStatusArguments(for: connection, controlPath: controlPath),
+            timeout: 10
         )
         do { return try JSONDecoder().decode(RemoteStatusEnvelope.self, from: data).server }
         catch { throw BessieConnectionError.remoteHerdrUnavailable("Invalid status response: \(error.localizedDescription)") }
@@ -196,7 +300,7 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         do { try process.run() }
         catch { throw BessieConnectionError.sshFailed(error.localizedDescription) }
         let deadline = Date(timeIntervalSinceNow: timeout)
-        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         if process.isRunning {
             process.terminate()
             for _ in 0..<20 where process.isRunning { Thread.sleep(forTimeInterval: 0.05) }

@@ -1,12 +1,12 @@
 # Richer Herd dashboard — execution plan (ce-plan)
 
 **Date:** 2026-08-02  
-**Status:** Implementation-ready  
-**V1 slice:** E (pair with Attention)  
-**Branch:** `feat/v1-e-herd-attention` (shared with Attention plan)  
+**Status:** Integrated baseline; slice M consolidation required  
+**V1 slice:** E baseline + M correction  
+**Branch:** `feat/v1-e-herd-attention` (historical integrated branch)  
 **Goal-loop ready:** Yes after D merges preferred; can start pure Core filter extract anytime  
 **Depends on:** [v1-shared-substrate](2026-08-02-v1-shared-substrate.md) §2–3; prefer D merged to reduce `ProductSurfaces` conflict  
-**Companion:** [attention](2026-08-02-attention-queue-and-resolution.md)
+**Superseding decision:** Standalone Attention is removed; [its useful behavior folds into Herd](2026-08-02-attention-queue-and-resolution.md).
 
 ## 1. Outcome (Occam bar B)
 
@@ -19,6 +19,7 @@ The Herd is a trustworthy multi-connection ops list:
 5. Local + remote agents in **one list**; connection chip always when `fleet.models.count > 1` (or always for clarity — prefer always show short label).
 6. Ordering: blocked → working → done → idle → unknown; secondary connection name; tertiary identity.
 7. Honest empty/degraded: no agents vs no match vs connection errors visible without faking offline-all.
+8. No standalone Attention destination: Needs you, count, Open pane, next-needs-you, notifications, and Zen blocked cues share Herd's blocked-only predicate.
 
 ## 2. Current substrate
 
@@ -115,7 +116,8 @@ Degraded: if a connection model is disconnected/erroring, show a slim banner lis
 
 ### M4 — Verify
 
-- check.sh; Mac screenshot optional; no filter regression.
+- Remove standalone Attention surface/models/routes and rename next-attention language.
+- Check.sh; Mac screenshot required for final M acceptance; no filter regression.
 
 ## 6. Acceptance
 
@@ -126,19 +128,31 @@ Degraded: if a connection model is disconnected/erroring, show a slim banner lis
 5. Local+remote appear together when both connected.
 6. No Collie overhaul, no LLM activity, no new approve actions.
 7. check.sh green.
+8. No Attention destination or duplicate Attention list model remains.
 
 ## 7. Non-goals
 
-Snooze, search, virtualization, custom sort UI, interrupt-from-card, menu bar.
+Snooze, search, virtualization, custom sort UI, interrupt-from-card, menu bar, graphical approve.
+
+## 7a. Visual contract (slice L — do not expand E)
+
+Logic/builders for Herd are **done** (see §10). Remaining visual quieting is **slice L** only:
+
+- One quiet Open control (not white primary on every card).
+- Connection label once; no uppercase LOCAL/LIVE soup.
+- Empty detail line is a next step, not a repeated title.
+- Sentence case on card actions.
+
+Do not reopen filter semantics or add card approve actions under L.
 
 ## 8. Pause conditions
 
 - Fleet cannot supply connection name for an agent → stop.
 - Product wants Needs you = blocked+done → ask Jordan (default blocked only).
 
-## 9. Parallelism
+## 9. Consolidation
 
-Same branch as Attention. Do not parallel separate Herd/Attention worktrees.
+Treat the old Herd and Attention implementation as one correction unit. Remove the duplicate Attention list rather than maintaining two worktrees or two presentation models.
 
 ## 10. Implementation evidence — 2026-08-02
 

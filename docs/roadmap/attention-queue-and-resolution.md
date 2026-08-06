@@ -1,48 +1,37 @@
-# Attention queue and resolution
+# Standalone Attention surface
 
-**Status:** Approved
-**Roadmap horizon:** V1 (Occam: Needs-you + Open pane only)
-**Product area:** Attention
-**Implementation approval:** Granted (Occam-locked 2026-08-02)
+**Status:** Removed from V1; absorbed into The Herd
+**Decision:** Jordan, 2026-08-03
+**Product area:** The Herd / Needs you
+**Execution:** [`../plans/2026-08-02-attention-queue-and-resolution.md`](../plans/2026-08-02-attention-queue-and-resolution.md) and [`../plans/2026-08-03-v1-acceptance-remediation.md`](../plans/2026-08-03-v1-acceptance-remediation.md) §7
 
 ## Outcome
 
-Make attention items triageable and resolvable while preserving the real terminal as the universal fallback.
+V1 does not ship a separate Attention destination. All useful needs-you behavior lives in The Herd:
 
-## Why this exists
+- blocked-first All view;
+- blocked-only **Needs you** filter and count;
+- strong blocked state treatment;
+- exact Open pane routing;
+- next-needs-you command;
+- Herd/Zen blocked cues;
+- coherent blocked notifications.
 
-The current surface safely opens blocked and completed panes, but the designs include history, snoozing, structured questions, failures, and typed resolution.
+## Why
 
-## First useful slice
+Herdr currently exposes `blocked` as an agent state, not a durable attention-item object. A separate inbox duplicates a filtered Herd and creates pressure to invent Bessie-owned history, age, snooze, dismissal, seen, and resolution state.
 
-- Add Open, Resolved, and All presentation views for locally observed items.
-- Add age, count, seen/dismiss, and snooze presentation state.
-- Add keyboard navigation and next-attention routing.
-- Add a zoomed attention mode around the exact real terminal.
+Removing the surface is simpler and more faithful to Herdr.
 
-## Possible later scope
+## V1 removal contract
 
-- Structured questions and suggested answers.
-- Failure classification and retry actions.
-- Completion review cards.
-- Typed allow-once, allow-for-session, and deny actions.
+- Remove the sidebar destination and `AttentionSurface`.
+- Remove duplicate Attention models/builders/fleet arrays/tests.
+- Remove Attention as a generic notification failure destination.
+- Rename next-attention language to next needs you.
+- Persist no Attention records.
+- Keep done in Herd and optional completion notifications, not Needs you.
 
-## Sources of truth and dependencies
+## Future re-entry condition
 
-Native presentation work can ship first; durable history and graphical resolution require typed upstream event and action contracts.
-
-Bessie must preserve Herdr as the authority for sessions, panes, processes, agents, and durable session state. Any additional owner—filesystem, Git, agent integration, companion plugin, or provider—must be named explicitly in the eventual implementation plan.
-
-## Principal risks
-
-- Screen scraping approvals would be unsafe.
-- Client-local resolved state can disagree with another client unless clearly labeled.
-
-## Open questions
-
-- Which presentation state is useful before durable event IDs exist?
-- What exact provenance must accompany every graphical action?
-
-## Graduation criteria
-
-Before this idea becomes **Proposed**, validate the first useful slice against the current Herdr contracts, identify local and remote behavior, define failure and empty states, and split any high-risk side effects into separately approved milestones.
+Reconsider a dedicated Attention product only after Herdr exposes durable typed attention objects with identity, reason/type, timestamps, lifecycle, and safe typed resolution actions.

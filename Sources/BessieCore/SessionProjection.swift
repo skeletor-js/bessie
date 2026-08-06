@@ -54,6 +54,19 @@ public struct PaneProjection: Codable, Equatable, Identifiable, Sendable {
         if let cwd, !cwd.isEmpty { return cwd }
         return nil
     }
+
+    public var presentationTitle: String {
+        for candidate in [label, agent, title] {
+            if let candidate, !candidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return candidate
+            }
+        }
+        if let effectiveCWD {
+            let folder = URL(fileURLWithPath: effectiveCWD).lastPathComponent
+            if !folder.isEmpty { return folder }
+        }
+        return "Shell"
+    }
 }
 
 public struct LayoutRect: Codable, Equatable, Sendable {
@@ -127,9 +140,7 @@ public struct HerdrSessionProjection: Equatable, Sendable {
         panes = try snapshot.panes.map(Self.decode)
         let panesByID = Dictionary(panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let authoritativeAgents: [AgentProjection] = try snapshot.agents.map(Self.decode)
-        let authoritativeIDs = Set(authoritativeAgents.map(\.id))
-        let legacyAgents = panes.filter { $0.agent != nil && !authoritativeIDs.contains($0.id) }.map(AgentProjection.init(pane:))
-        agents = authoritativeAgents.map { $0.merging(pane: panesByID[$0.id]) } + legacyAgents
+        agents = authoritativeAgents.map { $0.merging(pane: panesByID[$0.id]) }
         let decodedLayouts: [WireLayout] = try snapshot.layouts.map(Self.decode)
         layouts = try Dictionary(uniqueKeysWithValues: decodedLayouts.map { layout in
             (layout.tabID, try Self.project(layout))
@@ -144,6 +155,137 @@ public struct HerdrSessionProjection: Equatable, Sendable {
     }
     public var focusedPane: PaneProjection? {
         panes.first { $0.id == snapshot.focusedPaneID } ?? panes.first { $0.focused }
+    }
+
+    /// Bessie-local focus rewrite used for optimistic navigation before Herdr's
+    /// snapshot returns. Does not invent entities — only retargets focus flags.
+    public func applyingLocalFocus(
+        workspaceID: String? = nil,
+        tabID: String? = nil,
+        paneID: String? = nil
+    ) throws -> HerdrSessionProjection {
+        let resolvedPane = paneID.flatMap { id in panes.first { $0.id == id } }
+        let resolvedTabID = tabID
+            ?? resolvedPane?.tabID
+            ?? snapshot.focusedTabID
+        let resolvedWorkspaceID = workspaceID
+            ?? resolvedPane?.workspaceID
+            ?? tabs.first { $0.id == resolvedTabID }?.workspaceID
+            ?? snapshot.focusedWorkspaceID
+        let resolvedPaneID = paneID
+            ?? (resolvedTabID.flatMap { tab in
+                panes.first { $0.tabID == tab && $0.focused }?.id
+                    ?? panes.first { $0.tabID == tab }?.id
+            })
+            ?? snapshot.focusedPaneID
+
+        let nextSnapshot = HerdrSnapshot(
+            version: snapshot.version,
+            protocolVersion: snapshot.protocolVersion,
+            focusedWorkspaceID: resolvedWorkspaceID,
+            focusedTabID: resolvedTabID,
+            focusedPaneID: resolvedPaneID,
+            workspaces: Self.rewritingFocused(
+                snapshot.workspaces,
+                idKey: "workspace_id",
+                focusedID: resolvedWorkspaceID
+            ),
+            tabs: Self.rewritingFocused(
+                snapshot.tabs,
+                idKey: "tab_id",
+                focusedID: resolvedTabID
+            ),
+            panes: Self.rewritingFocused(
+                snapshot.panes,
+                idKey: "pane_id",
+                focusedID: resolvedPaneID
+            ),
+            layouts: Self.rewritingLayoutFocus(
+                snapshot.layouts,
+                tabID: resolvedTabID,
+                paneID: resolvedPaneID
+            ),
+            agents: snapshot.agents
+        )
+        return try HerdrSessionProjection(snapshot: nextSnapshot)
+    }
+
+    /// Collapse a navigation action list against the current authoritative focus so
+    /// already-focused workspace/tab/pane hops skip useless Herdr RPCs.
+    public func prunedNavigationActions(_ actions: [HerdrAction]) -> [HerdrAction] {
+        actions.filter { action in
+            switch action {
+            case .workspaceFocus(let id):
+                return focusedWorkspace?.id != id
+            case .tabFocus(let id):
+                return focusedTab?.id != id
+            case .paneFocus(let id):
+                return focusedPane?.id != id
+            default:
+                return true
+            }
+        }
+    }
+
+    public func applyingNavigationActions(_ actions: [HerdrAction]) throws -> HerdrSessionProjection? {
+        var workspaceID = snapshot.focusedWorkspaceID
+        var tabID = snapshot.focusedTabID
+        var paneID = snapshot.focusedPaneID
+        var sawFocus = false
+        for action in actions {
+            switch action {
+            case .workspaceFocus(let id):
+                workspaceID = id
+                sawFocus = true
+            case .tabFocus(let id):
+                tabID = id
+                if let tab = tabs.first(where: { $0.id == id }) {
+                    workspaceID = tab.workspaceID
+                }
+                sawFocus = true
+            case .paneFocus(let id):
+                paneID = id
+                if let pane = panes.first(where: { $0.id == id }) {
+                    tabID = pane.tabID
+                    workspaceID = pane.workspaceID
+                }
+                sawFocus = true
+            default:
+                return nil
+            }
+        }
+        guard sawFocus else { return nil }
+        return try applyingLocalFocus(workspaceID: workspaceID, tabID: tabID, paneID: paneID)
+    }
+
+    private static func rewritingFocused(
+        _ values: [JSONValue],
+        idKey: String,
+        focusedID: String?
+    ) -> [JSONValue] {
+        values.map { value in
+            guard case .object(var object) = value,
+                  case .string(let id) = object[idKey]
+            else { return value }
+            object["focused"] = .bool(id == focusedID)
+            return .object(object)
+        }
+    }
+
+    private static func rewritingLayoutFocus(
+        _ values: [JSONValue],
+        tabID: String?,
+        paneID: String?
+    ) -> [JSONValue] {
+        guard let tabID, let paneID else { return values }
+        return values.map { value in
+            guard case .object(var object) = value,
+                  case .string(let layoutTabID) = object["tab_id"],
+                  layoutTabID == tabID
+            else { return value }
+            object["focused_pane_id"] = .string(paneID)
+            return .object(object)
+        }
     }
 
     public func confirmationForClosingWorkspace(id: String) -> CloseConfirmation {

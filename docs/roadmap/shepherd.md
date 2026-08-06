@@ -7,7 +7,7 @@
 **Implementation plan (draft):** [`../plans/2026-08-02-shepherd.md`](../plans/2026-08-02-shepherd.md)
 **Related plans:**
 - [`new-agent-launch-flow.md`](new-agent-launch-flow.md) — graphical launch sheet; Shepherd is NL handoff into the same Herdr launch substrate
-- [`broadcast.md`](broadcast.md) — multi-target send; out of Shepherd v1 (single dispatch)
+- [`broadcast.md`](broadcast.md) — retained source material; absorbed into Shepherd's later targeting and broadcast milestone
 - [`attention-queue-and-resolution.md`](attention-queue-and-resolution.md) — owns alerts / needs-you; Shepherd does **not**
 - [`cross-agent-plans.md`](cross-agent-plans.md) — normalized in-flight work; may feed richer status later
 - [`agent-integrations-and-identity.md`](agent-integrations-and-identity.md) — catalog honesty and provenance
@@ -30,6 +30,8 @@ The user can:
 
 Shepherd is **not** a general-purpose coding agent, not an always-on supervisor, and not the attention system.
 
+**Broadcast is part of Shepherd, not a separate product surface.** Shepherd v1 remains single-dispatch; a later separately approved milestone may target existing agents or send one reviewed brief to an explicit set of agents.
+
 > **Shepherd is the dog whistle, not the dog:** call the herd and leave. (Asking where the sheep went is a later whistle.)
 
 ## Why this exists
@@ -49,7 +51,7 @@ Shipping it **with Bessie** matters because the job is fluency in **this** app a
 | Role | Owner |
 | --- | --- |
 | Labor (implement, edit, test, commit) | Real Herdr agents (Claude Code, Codex, Amp, Hermes, Grok, shells, …) |
-| Alerts / needs-you | Bessie Attention (and related surfaces) |
+| Alerts / needs-you | The Herd's Needs you filter and related cues |
 | Handoff (v1) / “where did it go?” (later) | **Shepherd** (invoke-only) |
 | Live sessions, panes, processes | **Herdr** |
 
@@ -67,7 +69,7 @@ No persistent Shepherd agent session, no standing meta-thread, no background She
 
 ### 3. v1 is handoff, not recall
 
-Shepherd v1 does **not** answer status questions. Optional later: status-on-ask from live Herdr + a thin handoff ledger. Until then, the user uses Herd/Attention/panes for “what’s going on?”
+Shepherd v1 does **not** answer status questions. Optional later: status-on-ask from live Herdr + a thin handoff ledger. Until then, the user uses Herd and panes for “what’s going on?”
 
 ### 4. Default agent and default spawn location are configuration
 
@@ -223,16 +225,20 @@ Prove before UI promises:
 - “What’s going on with X?” from live projection (+ optional thin ledger)
 - Still invoke-only; still not Attention
 
-### Milestone 7 — Use-case routing (separate approval)
+### Milestone 7 — Targeting, routing, and broadcast (separate approval)
 
 - Optional router suggests agent kind by task class
-- Still single dispatch; still no Shepherd labor
+- Target an existing agent when identity and capability are trustworthy
+- Resolve natural-language multi-agent requests into an explicit target set
+- Preview the exact prompt and every destination before a required confirmation
+- Exclude incompatible or blocked targets and report partial failures
+- No raw-key or command broadcast in the first multi-target slice
+- Still no Shepherd labor
 - User default remains fallback
 
 ### Later (explicitly not scheduled here)
 
 - Multi-agent fan-out / map-reduce (Puck-style)
-- Broadcast integration
 - Shepherd-driven interrupts or approvals
 - Persistent Shepherd sessions or home-base meta-agent
 - Shepherd-owned push/alerts
@@ -280,7 +286,7 @@ Prove before UI promises:
 - Shepherd notifications / alert ownership
 - General-purpose tools (browser, arbitrary shell as Shepherd, MCP marketplace)
 - Coding agent runtime forked into Bessie
-- Broadcast, fan-out, auto-router (until M6+)
+- Existing-agent targeting, broadcast, fan-out, and auto-routing (until separately approved M7)
 - Graphical approval resolution
 - Replacing Attention, Herd dashboard, or New pane
 

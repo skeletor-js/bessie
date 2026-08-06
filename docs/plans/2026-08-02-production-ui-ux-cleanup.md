@@ -40,7 +40,7 @@ Bessie quits and windows like a normal Mac app while keeping the Herdr survival 
 2. Double-click = **zoom** (not fullscreen toggle) unless system fullscreen is already user-controlled via traffic lights — do not fight green-button fullscreen; double-click uses `performZoom`.
 3. Do **not** add quit as a Bessie router "command" that returns `nil` from the monitor — quit must reach AppKit.
 4. Prefer **explicit passthrough allowlist** for system chords + ensure main menu Quit exists with `q` + command.
-5. Chrome cull is **safe removal only** — no Herd/Attention/Workspace feature deletion.
+5. Chrome cull is **safe removal only** — no Herd/Workspace feature deletion. The later slice M product decision explicitly removes standalone Attention and supersedes this older D boundary for that surface only.
 
 ## 4. Architecture approach
 
@@ -119,7 +119,7 @@ Manual audit of primary destinations in `ProductSurfaces.swift` + settings:
 | `scripts/check.sh` | Optional grep anchors for AppDelegate / policy symbols |
 | `docs/plans/2026-08-02-production-ui-ux-cleanup.md` | Append verification evidence when done |
 
-Avoid drive-by refactors of Herd/Attention beyond chrome cull.
+Avoid drive-by refactors of Herd beyond chrome cull. Slice M separately owns Attention removal and Herd consolidation.
 
 ## 6. Milestones
 
@@ -306,7 +306,8 @@ Stop and ask Jordan if:
 
 - Menu-bar status item (Deferred)
 - Entity-aware palette (Deferred)
-- Appearance Dark/Light (slice I)
+- Appearance Dark/Light tokens (slice I)
+- Brand shell / case / badges / onboarding·Trouble restyle (slice L — [`2026-08-03-brand-shell-and-chrome-hygiene.md`](2026-08-03-brand-shell-and-chrome-hygiene.md))
 - Herd filter bug (slice E) — unless a one-line fix is needed for compile; prefer E
 - Shortcut customization UI
 

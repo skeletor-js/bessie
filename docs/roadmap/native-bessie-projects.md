@@ -1,6 +1,6 @@
 # Native Bessie Projects
 
-**Status:** Complete for V1 Projects scope (Milestones 0–6); notarization deferred  
+**Status:** Original V1 scope complete; schema-v2 multi-folder remediation approved
 **Roadmap horizon:** V1, immediately after bundled-runtime/onboarding/Trouble  
 **Product area:** Reusable workspace launch  
 **Implementation approval:** Final concept and staged-loop approval granted by Jordan on 2026-08-01  
@@ -27,6 +27,10 @@ The recipe is Bessie-native product configuration. The resulting workspace is al
 - Materialization through public Herdr workspace, tab, pane, and input APIs.
 - Exact returned-ID tracking, fresh-snapshot verification, and partial-workspace recovery.
 - Save an authoritatively observable live workspace shape as a reviewed project draft.
+
+## V1 acceptance extension: multiple folders
+
+Project schema v2 adds one primary folder plus ordered additional folders. Each pane may select one Project folder as its cwd, and launch must still materialize ordinary Herdr-owned objects through public APIs. The unexplained Group field leaves V1 UI; schema-v1 records migrate without destructive data loss. Execution and acceptance live in [`../plans/2026-08-03-v1-acceptance-remediation.md`](../plans/2026-08-03-v1-acceptance-remediation.md) §4.
 
 ## Product boundary
 

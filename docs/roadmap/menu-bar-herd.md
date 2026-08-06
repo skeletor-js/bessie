@@ -1,14 +1,12 @@
 # Menu-bar Herd and Mac push notifications
 
-**Status:** Deferred
-**Roadmap horizon:** Deferred (2026-08-02) for status item; notification polish remains V1
+**Status:** Unparked into Pre-v1 by the 2026-08-04 UI redesign amendment
+**Roadmap horizon:** Pre-v1
 **Product area:** macOS menu bar, notifications, ambient supervision
-**Implementation approval:** Notification polish approved; menu bar not granted
-**Deferred reason:** Jordan occam-loop — defer NSStatusItem; polish existing push only.
+**Implementation approval:** Granted by [`../plans/2026-08-04-001-feat-pre-v1-ui-redesign-plan.md`](../plans/2026-08-04-001-feat-pre-v1-ui-redesign-plan.md) U10/U12. Older defer language below is historical where it conflicts.
 **Related plans:**
-- [`attention-queue-and-resolution.md`](attention-queue-and-resolution.md) — in-window triage; menu bar is the away-from-window surface
+- [`richer-herd-dashboard.md`](richer-herd-dashboard.md) — in-window status and Needs you triage; menu bar would be the away-from-window surface
 - [`activity-timeline.md`](activity-timeline.md) — deeper history; digests already partially exist in-app and are **not** the first menu-bar milestone
-- [`richer-herd-dashboard.md`](richer-herd-dashboard.md) — full window Herd
 - Design assets: workstream `source-material/macos-icons/bessie-menubar*.png`
 
 ## Outcome

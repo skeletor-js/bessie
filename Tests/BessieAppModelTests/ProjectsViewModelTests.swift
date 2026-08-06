@@ -18,7 +18,7 @@ final class ProjectsViewModelTests: XCTestCase {
         if let root { try? FileManager.default.removeItem(at: root) }
     }
 
-    func testCatalogSearchAndGroupingCoverMetadataAndCommands() throws {
+    func testCatalogSearchCoversMetadataFoldersAndCommandsWithoutExposingLegacyGroups() throws {
         let store = makeStore()
         _ = try store.create(project(name: "Ledger", description: "Accounting", group: "Backend", command: "swift test"))
         _ = try store.create(project(name: "Website", description: "Marketing", group: nil, command: "npm run dev"))
@@ -35,8 +35,8 @@ final class ProjectsViewModelTests: XCTestCase {
         model.searchQuery = workingDirectory.path
         XCTAssertEqual(model.filteredProjects.count, 3)
         model.searchQuery = ""
-        XCTAssertEqual(model.sections.map(\.name), ["Backend", "Ungrouped", "Ungrouped"])
-        XCTAssertEqual(Set(model.sections.map(\.id)).count, 3)
+        XCTAssertEqual(model.sections.map(\.name), ["Projects"])
+        XCTAssertEqual(model.sections.first?.projects.count, 3)
     }
 
     func testOfflineCreateEditDuplicateArchiveAndDeleteUseInjectedStore() throws {
@@ -137,6 +137,35 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertTrue(model.validationMessages.isEmpty)
     }
 
+    func testEditorManagesOrderedFoldersAndPaneReferencesWithoutMutatingExistingRuntime() throws {
+        let additional = root.appendingPathComponent("additional", isDirectory: true)
+        let third = root.appendingPathComponent("third", isDirectory: true)
+        try FileManager.default.createDirectory(at: additional, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: third, withIntermediateDirectories: true)
+        let model = ProjectsViewModel(store: makeStore())
+        model.beginCreate(workingDirectory: workingDirectory.path)
+        let primaryID = try XCTUnwrap(model.draft?.folders.first?.id)
+        let paneID = try XCTUnwrap(model.draft?.tabs.first?.panes.first?.id)
+        let tabID = try XCTUnwrap(model.draft?.tabs.first?.id)
+
+        model.addFolders([additional, third])
+        let additionalID = try XCTUnwrap(model.draft?.folders[1].id)
+        model.renameFolder(additionalID, name: "API")
+        model.moveFolder(additionalID, by: 1)
+        model.makePrimaryFolder(additionalID)
+        model.updatePaneFolder(tabID: tabID, paneID: paneID, folderID: primaryID)
+
+        XCTAssertEqual(model.draft?.folders.map(\.path), [workingDirectory.path, third.path, additional.path])
+        XCTAssertEqual(model.draft?.project.primaryFolder?.id, additionalID)
+        XCTAssertEqual(model.draft?.project.workingDirectory(for: model.draft!.tabs[0].panes[0]), workingDirectory.path)
+        XCTAssertTrue(model.validationMessages.isEmpty)
+
+        model.removeFolder(primaryID)
+        XCTAssertNil(model.draft?.tabs[0].panes[0].folderID)
+        XCTAssertEqual(model.draft?.project.workingDirectory(for: model.draft!.tabs[0].panes[0]), additional.path)
+        XCTAssertTrue(model.validationMessages.isEmpty)
+    }
+
     func testOpenIsDisabledWhenDisconnectedIncompatibleOrInvalid() throws {
         let store = makeStore()
         let valid = try store.create(project(name: "Valid"))
@@ -149,14 +178,14 @@ final class ProjectsViewModelTests: XCTestCase {
 
         XCTAssertFalse(model.canOpenProject(valid.project.id))
 
-        model.updateConnection(connection(identity: .init(version: "0.7.4", protocolVersion: 17)), snapshot: .launchFixture)
+        model.updateConnection(connection(identity: .init(version: "0.7.4", protocolVersion: 19)), snapshot: .launchFixture)
         XCTAssertFalse(model.canOpenProject(valid.project.id))
 
         let remote = BessieProjectMaterializationConnection(
             definition: .init(name: "Remote", kind: .ssh, sshHost: "example", session: "bessie"),
             socketPath: "/tmp/bessie-project-tests.sock",
             generation: connection().generation,
-            identity: .init(version: "0.7.5", protocolVersion: 17)
+            identity: .init(version: "0.8.0", protocolVersion: 19)
         )
         model.updateConnection(remote, snapshot: .launchFixture)
         XCTAssertFalse(model.canOpenProject(valid.project.id))
@@ -166,32 +195,40 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertFalse(model.canOpenProject(invalidProject.id))
     }
 
-    func testCommandProjectRequiresReviewBeforeLaunchAndShowsExactFacts() throws {
+    func testCommandProjectRequiresReviewBeforeLaunch() async throws {
         let store = makeStore()
         let stored = try store.create(project(name: "Reviewed", command: "swift test --filter Exact"))
+        let service = FakeProjectLaunchService()
+        service.result = .success(materializationResult(project: stored.project))
+        let model = ProjectsViewModel(store: store, launchService: service)
+        model.load()
+        model.updateConnection(connection(), snapshot: .launchFixture)
+
+        model.requestOpen(stored.project.id)
+        XCTAssertEqual(model.launchReview?.project.id, stored.project.id)
+        XCTAssertEqual(model.launchReview?.connectionLabel, "This Mac")
+        XCTAssertEqual(service.launchCount, 0)
+
+        model.confirmLaunchReview()
+        await eventually { service.launchCount == 1 }
+
+        XCTAssertNil(model.launchReview)
+        XCTAssertEqual(service.launchCount, 1)
+    }
+
+    func testCancelCommandProjectReviewDoesNotLaunch() throws {
+        let store = makeStore()
+        let stored = try store.create(project(name: "Reviewed", command: "printf safe"))
         let service = FakeProjectLaunchService()
         let model = ProjectsViewModel(store: store, launchService: service)
         model.load()
         model.updateConnection(connection(), snapshot: .launchFixture)
 
         model.requestOpen(stored.project.id)
+        model.cancelLaunchReview()
 
-        let review = try XCTUnwrap(model.launchReview)
-        XCTAssertEqual(review.connectionName, "This Mac")
-        XCTAssertEqual(review.project.workingDirectory, workingDirectory.resolvingSymlinksInPath().path)
-        XCTAssertEqual(review.project.tabs.first?.panes.first?.command, "swift test --filter Exact")
+        XCTAssertNil(model.launchReview)
         XCTAssertEqual(service.launchCount, 0)
-    }
-
-    func testDesignPreviewLaunchReviewShowsExactCommandWithoutMaterializing() {
-        let service = FakeProjectLaunchService()
-        let model = ProjectsViewModel(store: makeStore(), launchService: service)
-        model.presentDesignPreviewLaunchReview(connectionName: "Local proof")
-        XCTAssertEqual(model.launchReview?.connectionName, "Local proof")
-        XCTAssertEqual(model.launchReview?.project.name, "Launch review proof")
-        XCTAssertEqual(model.launchReview?.project.tabs.first?.panes.first?.command, "printf bessie-project-open-proof")
-        XCTAssertEqual(service.launchCount, 0)
-        XCTAssertNil(model.opening)
     }
 
     func testProgressAndCompleteLaunchNavigateByExactReturnedIDs() async throws {
@@ -211,6 +248,11 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(model.navigationHandoff?.tabID, "runtime-tab-exact")
         XCTAssertEqual(model.navigationHandoff?.paneID, "runtime-pane-exact")
         XCTAssertEqual(model.runningInstance(for: stored.project.id)?.workspaceID, "runtime-workspace-exact")
+
+        model.consumeNavigationHandoff()
+        model.openRunningWorkspace(stored.project.id)
+        XCTAssertEqual(model.navigationHandoff?.workspaceID, "runtime-workspace-exact")
+        XCTAssertEqual(service.launchCount, 1)
 
         model.updateConnection(connection(), snapshot: .emptyLaunchFixture)
         XCTAssertNil(model.runningInstance(for: stored.project.id))
@@ -234,6 +276,25 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(model.launchFailure?.failure.ownerError, .cancelled)
     }
 
+    func testInFlightLaunchRejectsDuplicateMaterializationRequest() async throws {
+        let store = makeStore()
+        let stored = try store.create(project(name: "Single launch"))
+        let service = FakeProjectLaunchService()
+        service.waitForCancellation = true
+        let model = ProjectsViewModel(store: store, launchService: service)
+        model.load()
+        model.updateConnection(connection(), snapshot: .launchFixture)
+
+        model.requestOpen(stored.project.id)
+        await eventually { model.isOpening(stored.project.id) && service.launchCount == 1 }
+        XCTAssertFalse(model.canOpenProject(stored.project.id))
+        model.requestOpen(stored.project.id)
+
+        XCTAssertEqual(service.launchCount, 1)
+        model.cancelLaunch()
+        await eventually { model.launchFailure != nil }
+    }
+
     func testPartialFailureSurfacesExactIDsCommandStateAndDisablesUnsafeRetry() async throws {
         let store = makeStore()
         let stored = try store.create(project(name: "Partial", command: "make run"))
@@ -244,7 +305,7 @@ final class ProjectsViewModelTests: XCTestCase {
         model.updateConnection(connection(), snapshot: .launchFixture)
 
         model.requestOpen(stored.project.id)
-        model.confirmLaunch()
+        model.confirmLaunchReview()
         await eventually { model.launchFailure != nil }
 
         let failure = try XCTUnwrap(model.launchFailure)
@@ -289,11 +350,14 @@ final class ProjectsViewModelTests: XCTestCase {
     }
 
     func testCommandPaletteContainsProjectsNavigation() {
+        let herd = BessieKeyboardShortcutRouter.commands.first { $0.command == .showHerd }
         let command = BessieKeyboardShortcutRouter.commands.first { $0.command == .projectsPicker }
         let capture = BessieKeyboardShortcutRouter.commands.first { $0.command == .saveCurrentWorkspaceAsProject }
-        XCTAssertEqual(command?.title, "Open Projects")
+        XCTAssertEqual(herd?.title, "The herd")
+        XCTAssertTrue(herd?.matches("home agents") == true)
+        XCTAssertEqual(command?.title, "Manage projects")
         XCTAssertTrue(command?.matches("project recipes") == true)
-        XCTAssertEqual(capture?.title, "Save current workspace as project…")
+        XCTAssertEqual(capture?.title, "Create project from current workspace…")
         XCTAssertTrue(capture?.matches("capture panes") == true)
         XCTAssertEqual(ProductDestination.navigationTarget(for: .projectsPicker), .projects)
     }
@@ -351,7 +415,7 @@ final class ProjectsViewModelTests: XCTestCase {
         )
     }
 
-    private func connection(identity: HerdrServerIdentity = .init(version: "0.7.5", protocolVersion: 17))
+    private func connection(identity: HerdrServerIdentity = .init(version: "0.8.0", protocolVersion: 19))
         -> BessieProjectMaterializationConnection
     {
         BessieProjectMaterializationConnection(
@@ -485,8 +549,8 @@ private extension BessieProjectStore {
 
 private extension HerdrSnapshot {
     static let emptyLaunchFixture = HerdrSnapshot(
-        version: "0.7.5",
-        protocolVersion: 17,
+        version: "0.8.0",
+        protocolVersion: 19,
         focusedWorkspaceID: nil,
         focusedTabID: nil,
         focusedPaneID: nil,
@@ -498,8 +562,8 @@ private extension HerdrSnapshot {
     )
 
     static let launchFixture = HerdrSnapshot(
-        version: "0.7.5",
-        protocolVersion: 17,
+        version: "0.8.0",
+        protocolVersion: 19,
         focusedWorkspaceID: "runtime-workspace-exact",
         focusedTabID: "runtime-tab-exact",
         focusedPaneID: "runtime-pane-exact",
@@ -526,7 +590,7 @@ private extension HerdrSnapshot {
 
     static func captureLaunchFixture(workingDirectory: String) -> HerdrSnapshot {
         HerdrSnapshot(
-        version: "0.7.5", protocolVersion: 17,
+        version: "0.8.0", protocolVersion: 19,
         focusedWorkspaceID: "captured-workspace", focusedTabID: "captured-tab", focusedPaneID: "captured-pane",
         workspaces: [.object([
             "workspace_id": .string("captured-workspace"), "number": .number(1),

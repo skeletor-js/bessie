@@ -38,7 +38,7 @@ public enum RootResolution: String, Equatable, Sendable {
     case unauthorized
 }
 
-public enum WorkspacePathError: Error, Equatable, Sendable {
+public enum WorkspacePathError: Error, Equatable, LocalizedError, Sendable {
     case remoteUnsupported
     case missingRoot
     case notDirectory
@@ -46,6 +46,22 @@ public enum WorkspacePathError: Error, Equatable, Sendable {
     case pathEscape
     case tooLarge
     case notFound
+    case unsupportedType
+    case invalidImage
+
+    public var errorDescription: String? {
+        switch self {
+        case .remoteUnsupported: "Remote files need an active SSH connection."
+        case .missingRoot: "The workspace folder is unavailable."
+        case .notDirectory: "The workspace path is not a folder."
+        case .unreadable: "Bessie could not read that file or folder."
+        case .pathEscape: "That path is outside the open folder."
+        case .tooLarge: "That file exceeds Bessie's preview size limit."
+        case .notFound: "That file or folder was not found."
+        case .unsupportedType: "That file type is not supported for preview."
+        case .invalidImage: "That image is damaged or uses an unsupported encoding."
+        }
+    }
 }
 
 public enum FilePreviewKind: String, Equatable, Sendable {
@@ -88,10 +104,11 @@ public enum WorkspaceFS {
         if connection.kind == .ssh {
             guard let remoteAccess else { return .failure(.remoteUnsupported) }
             do {
-                let home = try SSHRemoteFileClient(access: remoteAccess).homeDirectory()
-                let st = try SSHRemoteFileClient(access: remoteAccess).stat(home)
+                let client = SSHRemoteFileClient(access: remoteAccess)
+                let home = try client.canonicalPath(client.homeDirectory())
+                let st = try client.stat(home)
                 guard st.exists, st.isDirectory else { return .failure(.notDirectory) }
-                let git = try SSHRemoteFileClient(access: remoteAccess).findGitTopLevel(from: home)
+                let git = try client.findGitTopLevel(from: home)
                 return .success(WorkspaceFileRoot(
                     connectionID: connection.id,
                     workspaceID: "files-home",
@@ -190,11 +207,12 @@ public enum WorkspaceFS {
         if let remoteAccess {
             let client = SSHRemoteFileClient(access: remoteAccess)
             do {
-                let st = try client.stat(candidate)
+                let canonicalCandidate = try client.canonicalPath(candidate)
+                let st = try client.stat(canonicalCandidate)
                 guard st.exists else { return .failure(.notDirectory) }
                 guard st.isDirectory else { return .failure(.notDirectory) }
-                let git = try client.findGitTopLevel(from: candidate)
-                let rootURL = URL(fileURLWithPath: candidate, isDirectory: true)
+                let git = try client.findGitTopLevel(from: canonicalCandidate)
+                let rootURL = URL(fileURLWithPath: canonicalCandidate, isDirectory: true)
                 return .success(WorkspaceFileRoot(
                     connectionID: connection.id,
                     workspaceID: resolvedWorkspaceID,
@@ -269,9 +287,14 @@ public enum WorkspaceFS {
             case .failure(let error): return .failure(error)
             case .success(let abs):
                 do {
-                    let st = try SSHRemoteFileClient(access: remote).stat(abs)
+                    let client = SSHRemoteFileClient(access: remote)
+                    let canonicalPath = try client.canonicalPath(abs)
+                    guard Self.containsPath(canonicalPath, in: root.absoluteRootPath) else {
+                        return .failure(.pathEscape)
+                    }
+                    let st = try client.stat(canonicalPath)
                     guard st.exists else { return .failure(.notFound) }
-                    return .success(URL(fileURLWithPath: abs, isDirectory: st.isDirectory))
+                    return .success(URL(fileURLWithPath: canonicalPath, isDirectory: st.isDirectory))
                 } catch let error as WorkspacePathError {
                     return .failure(error)
                 } catch {
@@ -328,17 +351,63 @@ public enum WorkspaceFS {
         return .success(standardized)
     }
 
-    public static func materializeLocalURL(root: WorkspaceFileRoot, relativePath: String, maximumByteSize: Int = 40 * 1_024 * 1_024) -> Result<URL, WorkspacePathError> {
-        if let remote = root.remote {
-            switch absolutePath(root: root, relativePath: relativePath) {
-            case .failure(let error): return .failure(error)
-            case .success(let abs):
-                do { return .success(try SSHRemoteFileClient(access: remote).downloadToTemporaryFile(abs, maximumByteSize: maximumByteSize)) }
-                catch let error as WorkspacePathError { return .failure(error) }
-                catch { return .failure(.unreadable) }
+    public static func materializeLocalURL(
+        root: WorkspaceFileRoot,
+        relativePath: String,
+        maximumByteSize: Int = 40 * 1_024 * 1_024
+    ) -> Result<URL, WorkspacePathError> {
+        do {
+            let meta = try fileMeta(
+                root: root,
+                relativePath: relativePath,
+                maximumByteSize: maximumByteSize
+            ).get()
+            guard meta.kind == .image || meta.kind == .video else {
+                return .failure(.unsupportedType)
             }
+            let resolved = try resolveFile(root: root, relativePath: relativePath).get()
+            if let remote = root.remote {
+                return .success(try SSHRemoteFileClient(access: remote).downloadToTemporaryFile(
+                    resolved.path,
+                    maximumByteSize: maximumByteSize
+                ))
+            }
+            return .success(resolved)
+        } catch let error as WorkspacePathError {
+            return .failure(error)
+        } catch {
+            return .failure(.unreadable)
         }
-        return resolveFile(root: root, relativePath: relativePath)
+    }
+
+    public static func loadImageData(
+        root: WorkspaceFileRoot,
+        relativePath: String,
+        maximumByteSize: Int = 40 * 1_024 * 1_024
+    ) -> Result<Data, WorkspacePathError> {
+        do {
+            let meta = try fileMeta(
+                root: root,
+                relativePath: relativePath,
+                maximumByteSize: maximumByteSize
+            ).get()
+            guard meta.kind == .image else { return .failure(.unsupportedType) }
+            if let remote = root.remote {
+                return .success(try SSHRemoteFileClient(access: remote).readContainedFile(
+                    rootPath: root.absoluteRootPath,
+                    relativePath: relativePath,
+                    maximumByteSize: maximumByteSize
+                ))
+            }
+            let url = try resolveFile(root: root, relativePath: relativePath).get()
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard data.count <= maximumByteSize else { return .failure(.tooLarge) }
+            return .success(data)
+        } catch let error as WorkspacePathError {
+            return .failure(error)
+        } catch {
+            return .failure(.unreadable)
+        }
     }
 
     public static func relativePath(of candidate: URL, under root: URL) -> String? {
@@ -356,7 +425,7 @@ public enum WorkspaceFS {
     ) -> Result<FileContentMeta, WorkspacePathError> {
         do {
             if let remote = root.remote {
-                let abs = try absolutePath(root: root, relativePath: relativePath).get()
+                let abs = try resolveFile(root: root, relativePath: relativePath).get().path
                 let st = try SSHRemoteFileClient(access: remote).stat(abs)
                 guard st.exists else { return .failure(.notFound) }
                 if st.isDirectory {
@@ -474,6 +543,10 @@ public enum WorkspaceFS {
         let candidateComponents = candidate.pathComponents
         guard candidateComponents.count >= rootComponents.count else { return false }
         return candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents)
+    }
+
+    private static func containsPath(_ candidate: String, in root: String) -> Bool {
+        contains(URL(fileURLWithPath: candidate), in: URL(fileURLWithPath: root))
     }
 
     private static func findGitTopLevel(from root: URL) -> URL? {
