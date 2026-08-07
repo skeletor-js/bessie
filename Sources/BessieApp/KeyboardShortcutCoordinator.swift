@@ -4,9 +4,23 @@ import SwiftUI
 
 @MainActor
 final class BessieKeyboardShortcutCoordinator: ObservableObject {
+    enum PaletteEventPolicy: Equatable {
+        case action(CommandPaletteKeyboard.Action)
+        case buffer(String)
+        case passThrough
+        case consume
+    }
+
+    private struct PaletteRouting {
+        let isSearchFocused: () -> Bool
+        let bufferPrintableCharacters: (String) -> Void
+        let handle: (CommandPaletteKeyboard.Action) -> Void
+    }
+
     private var monitor: Any?
     private var handler: ((BessieShortcutCommand) -> Void)?
     private var isZenActive: () -> Bool = { false }
+    private var paletteRouting: PaletteRouting?
 
     func start(isZenActive: @escaping () -> Bool = { false }, handler: @escaping (BessieShortcutCommand) -> Void) {
         self.isZenActive = isZenActive
@@ -23,14 +37,35 @@ final class BessieKeyboardShortcutCoordinator: ObservableObject {
         self.handler = handler
     }
 
+    func enterCommandPalette(
+        isSearchFocused: @escaping () -> Bool,
+        bufferPrintableCharacters: @escaping (String) -> Void,
+        handle: @escaping (CommandPaletteKeyboard.Action) -> Void
+    ) {
+        paletteRouting = PaletteRouting(
+            isSearchFocused: isSearchFocused,
+            bufferPrintableCharacters: bufferPrintableCharacters,
+            handle: handle
+        )
+    }
+
+    func exitCommandPalette() {
+        paletteRouting = nil
+    }
+
     func stop() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         handler = nil
+        paletteRouting = nil
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard event.window?.sheetParent == nil else { return event }
+        if let paletteRouting {
+            guard event.window?.identifier == BessieWindowCoordinator.mainWindowIdentifier else { return event }
+            return routePaletteEvent(event, routing: paletteRouting)
+        }
         if Self.shouldExitZen(keyCode: event.keyCode, isZenActive: isZenActive()) {
             handler?(.exitZen)
             return nil
@@ -61,6 +96,95 @@ final class BessieKeyboardShortcutCoordinator: ObservableObject {
             else { return event }
             return nil
         }
+    }
+
+    private func routePaletteEvent(_ event: NSEvent, routing: PaletteRouting) -> NSEvent? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let firstResponder = event.window?.firstResponder
+        let hasMarkedText = (firstResponder as? any NSTextInputClient)?.hasMarkedText() ?? false
+        let searchHasFocus = routing.isSearchFocused() && Self.isEditableTextResponder(firstResponder)
+        let unmodified = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        let pasteboardText = flags.contains(.command) && unmodified == "v"
+            ? NSPasteboard.general.string(forType: .string)
+            : nil
+        let policy = Self.paletteEventPolicy(
+            keyCode: event.keyCode,
+            characters: event.characters,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            command: flags.contains(.command),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            shift: flags.contains(.shift),
+            hasMarkedText: hasMarkedText,
+            isSearchFocused: searchHasFocus,
+            pasteboardText: pasteboardText
+        )
+        switch policy {
+        case .action(let action):
+            routing.handle(action)
+            return nil
+        case .buffer(let characters):
+            routing.bufferPrintableCharacters(characters)
+            return nil
+        case .passThrough:
+            return event
+        case .consume:
+            return nil
+        }
+    }
+
+    static func paletteEventPolicy(
+        keyCode: UInt16,
+        characters: String?,
+        charactersIgnoringModifiers: String?,
+        command: Bool,
+        option: Bool,
+        control: Bool,
+        shift: Bool,
+        hasMarkedText: Bool,
+        isSearchFocused: Bool,
+        pasteboardText: String?
+    ) -> PaletteEventPolicy {
+        if hasMarkedText, !command {
+            return .passThrough
+        }
+
+        let unmodified = charactersIgnoringModifiers?.lowercased() ?? ""
+        if command, shift, !option, !control, unmodified == "p" {
+            return .action(.dismiss)
+        }
+
+        let action = CommandPaletteKeyboard.action(
+            keyCode: keyCode,
+            command: command,
+            option: option,
+            control: control,
+            shift: shift
+        )
+        if action != .ignore { return .action(action) }
+
+        if command {
+            guard !option, !control, !shift else { return .consume }
+            if ["q", "h", "m"].contains(unmodified) { return .passThrough }
+            if ["a", "c", "v", "x", "z"].contains(unmodified) {
+                if isSearchFocused { return .passThrough }
+                if unmodified == "v", let pasteboardText, !pasteboardText.isEmpty {
+                    return .buffer(pasteboardText)
+                }
+            }
+            return .consume
+        }
+        if control { return .consume }
+
+        if let characters,
+           !characters.isEmpty,
+           characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) {
+            return isSearchFocused ? .passThrough : .buffer(characters)
+        }
+
+        // Once focused, the TextField keeps ordinary editing/navigation keys.
+        // Before focus they are consumed so no background control can react.
+        return isSearchFocused ? .passThrough : .consume
     }
 
     /// App/product shortcuts use one policy everywhere in the main window.
@@ -156,293 +280,5 @@ final class BessieKeyboardShortcutCoordinator: ObservableObject {
             command: flags.contains(.command),
             shift: flags.contains(.shift)
         )
-    }
-}
-
-struct BessieCommandPalette: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @FocusState private var searchFocused: Bool
-    @State private var query = ""
-    @StateObject private var keyRouting = BessieCommandPaletteKeyRouting()
-    let close: () -> Void
-    let entities: [CommandPaletteEntity]
-    let noConnections: Bool
-    let perform: (CommandPaletteRouteIntent) -> Void
-
-    static let width: CGFloat = 560
-    static let scrimOpacity = 0.28
-    static let inputFontSize: CGFloat = 16
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 11) {
-                BessieIconView(icon: .magnifyingGlass, size: 17)
-                    .foregroundStyle(BessieDesign.subtle)
-                TextField("Search commands", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: Self.inputFontSize))
-                    .focused($searchFocused)
-                    .accessibilityLabel("Search commands, panes, workspaces, Projects, and herds")
-                Text("esc")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(BessieDesign.subtle)
-                    .padding(.horizontal, 6)
-                    .frame(height: 20)
-                    .background(BessieDesign.inset)
-                    .clipShape(RoundedRectangle(cornerRadius: 2))
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-
-            Rectangle().fill(BessieDesign.border).frame(height: 1)
-
-            if keyRouting.results.isEmpty {
-                VStack(spacing: 8) {
-                    BessieIconView(icon: .magnifyingGlass, size: 24)
-                        .foregroundStyle(BessieDesign.faint)
-                    Text(noConnections && query.isEmpty ? "No herds connected" : "No matching panes, workspaces, Projects, herds, or commands")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(BessieDesign.subtle)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(keyRouting.results.enumerated()), id: \.element.id) { index, item in
-                                BessieCommandPaletteRow(item: item, selected: index == keyRouting.selection) {
-                                    run(item.route)
-                                }
-                                .id(index)
-                                .onHover { hovering in
-                                    if hovering { keyRouting.selection = index }
-                                }
-                            }
-                        }
-                        .padding(6)
-                    }
-                    .onChange(of: keyRouting.selection) { _, value in
-                        if reduceMotion {
-                            proxy.scrollTo(value, anchor: .center)
-                        } else {
-                            withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(value, anchor: .center) }
-                        }
-                    }
-                }
-            }
-
-            Rectangle().fill(BessieDesign.border).frame(height: 1)
-            HStack(spacing: 16) {
-                Text("↑↓ move")
-                Text("↵ open")
-                Text("⌘↵ open in a new tab")
-                Spacer()
-                Text("panes · workspaces · projects · commands")
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(BessieDesign.faint)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-        }
-        .frame(width: Self.width)
-        .frame(maxHeight: 520)
-        .bessieSurface(base: BessieDesign.panel)
-        .overlay {
-            Rectangle().stroke(BessieDesign.borderStrong, lineWidth: 1)
-        }
-        .background(BessieWindowSnapshotProbe(role: "sheet"))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Command palette")
-        .onAppear {
-            keyRouting.onActivate = { run($0) }
-            keyRouting.onDismiss = close
-            let initialQuery = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "07" ? "sch" : ""
-            query = initialQuery
-            keyRouting.update(query: initialQuery, entities: entities)
-            keyRouting.start()
-        }
-        .task {
-            // Wait until SwiftUI has mounted the field before making it first responder.
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            searchFocused = true
-        }
-        .onDisappear {
-            keyRouting.stop()
-        }
-        .onChange(of: query) { _, newQuery in
-            keyRouting.update(query: newQuery, entities: entities)
-        }
-        .onChange(of: entities) { _, newEntities in
-            keyRouting.update(query: query, entities: newEntities)
-        }
-        .onKeyPress(.downArrow) {
-            keyRouting.moveSelection(by: 1)
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            keyRouting.moveSelection(by: -1)
-            return .handled
-        }
-        .onKeyPress(phases: .down) { press in
-            guard press.key == .return else { return .ignored }
-            keyRouting.activate(alternate: press.modifiers.contains(.command))
-            return .handled
-        }
-        .onKeyPress(.escape) {
-            close()
-            return .handled
-        }
-    }
-
-    private func run(_ route: CommandPaletteRouteIntent) {
-        keyRouting.stop()
-        close()
-        DispatchQueue.main.async { perform(route) }
-    }
-}
-
-/// Owns palette list selection + local key monitor so arrow keys work while the
-/// search field is first responder (SwiftUI TextField otherwise swallows them).
-@MainActor
-final class BessieCommandPaletteKeyRouting: ObservableObject {
-    @Published var selection = 0
-    @Published private(set) var results: [CommandPaletteEntity] = []
-    var onActivate: (CommandPaletteRouteIntent) -> Void = { _ in }
-    var onDismiss: () -> Void = {}
-    private var monitor: Any?
-    private var dispatchGate = CommandPaletteDispatchGate()
-
-    func update(query: String, entities: [CommandPaletteEntity]) {
-        let selectedID = results.indices.contains(selection) ? results[selection].id : nil
-        let nextResults = CommandPaletteSearch().results(query: query, entities: entities)
-        results = nextResults
-        if let selectedID, let preservedIndex = nextResults.firstIndex(where: { $0.id == selectedID }) {
-            selection = preservedIndex
-        } else {
-            selection = 0
-        }
-    }
-
-    func moveSelection(by delta: Int) {
-        selection = CommandPaletteKeyboard.movedSelection(
-            current: selection,
-            delta: delta,
-            count: results.count
-        )
-    }
-
-    func activate(alternate: Bool) {
-        guard let route = takeActivationRoute(alternate: alternate) else { return }
-        onActivate(route)
-    }
-
-    func start() {
-        stop()
-        dispatchGate = CommandPaletteDispatchGate()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let action = CommandPaletteKeyboard.action(
-                keyCode: event.keyCode,
-                command: flags.contains(.command),
-                option: flags.contains(.option),
-                control: flags.contains(.control),
-                shift: flags.contains(.shift)
-            )
-            switch action {
-            case .ignore:
-                return event
-            case .moveSelection(let delta):
-                MainActor.assumeIsolated {
-                    self.moveSelection(by: delta)
-                }
-                return nil
-            case .activate(let alternate):
-                let route = MainActor.assumeIsolated {
-                    self.takeActivationRoute(alternate: alternate)
-                }
-                if let route {
-                    DispatchQueue.main.async { self.onActivate(route) }
-                }
-                return nil
-            case .dismiss:
-                DispatchQueue.main.async { self.onDismiss() }
-                return nil
-            }
-        }
-    }
-
-    private func takeActivationRoute(alternate: Bool) -> CommandPaletteRouteIntent? {
-        guard results.indices.contains(selection) else { return nil }
-        return dispatchGate.take(results[selection], alternate: alternate)
-    }
-
-    func stop() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
-            self.monitor = nil
-        }
-    }
-}
-
-private struct BessieCommandPaletteRow: View {
-    let item: CommandPaletteEntity
-    let selected: Bool
-    let action: () -> Void
-
-    private var state: AgentSemanticState {
-        AgentSemanticState(herdrValue: item.state ?? "unknown")
-    }
-
-    private var icon: BessieIcon {
-        switch item.kind {
-        case .pane: .terminalWindow
-        case .workspace: .squaresFour
-        case .project: .stack
-        case .connection: .hardDrives
-        case .command: item.title.localizedCaseInsensitiveContains("split") ? .squareSplitHorizontal : .terminalWindow
-        }
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                if item.state != nil {
-                    BessieStatusGlyph(state: state)
-                } else {
-                    BessieIconView(icon: icon, size: 15)
-                        .foregroundStyle(selected ? BessieDesign.accent : BessieDesign.subtle)
-                }
-                (Text(item.title).foregroundStyle(BessieDesign.strong)
-                    + Text(item.detail.isEmpty ? "" : " · \(item.detail)").foregroundStyle(BessieDesign.subtle))
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                Spacer(minLength: 12)
-                Text([item.location, item.shortcut].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(BessieDesign.faint)
-                    .lineLimit(1)
-                if item.kind == .pane {
-                    BessieProviderMark(provider: item.keywords.first)
-                }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 9)
-            .background(selected ? BessieDesign.accentSoft : BessieSemanticColor.clear)
-            .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(selected ? "Selected" : "Not selected")
-        .accessibilityHint(item.alternateRoute == nil ? "Open" : "Open, or press Command Return for the advertised alternate route")
-    }
-
-    private var accessibilityLabel: String {
-        let status = item.state.map { ", \(HerdPresentationStatus(state: AgentSemanticState(herdrValue: $0)).rawValue)" } ?? ""
-        let location = item.location.map { ", \($0)" } ?? ""
-        return "\(item.kind.rawValue.capitalized): \(item.title)\(status), \(item.detail)\(location)"
     }
 }

@@ -28,12 +28,18 @@ final class WorkspaceFilesViewModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let validURL = directory.appendingPathComponent("valid.png")
         let invalidURL = directory.appendingPathComponent("invalid.png")
-        let image = NSImage(size: NSSize(width: 2, height: 2))
-        image.lockFocus()
-        NSColor.systemBlue.setFill()
-        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
-        image.unlockFocus()
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: validURL)
         try Data("not an image".utf8).write(to: invalidURL)
         let root = WorkspaceFileRoot(connectionID: "local", workspaceID: "workspace", rootURL: directory, gitTopLevel: nil, resolution: .herdrCwd)

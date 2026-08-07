@@ -154,7 +154,9 @@ struct OnboardingView: View {
 
     private var connectContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            connectionCard(connection: .localBessie, icon: .desktop, title: "Local herd")
+            if let local = settings.enabledConnections.first(where: { $0.kind == .local }) {
+                connectionCard(connection: local, icon: .desktop, title: "Local herd")
+            }
             remoteConnectionCard
             if settings.selectedConnection.kind == .ssh {
                 VStack(alignment: .leading, spacing: 5) {
@@ -192,7 +194,7 @@ struct OnboardingView: View {
     }
 
     private var remoteConnectionCard: some View {
-        let remotes = settings.connections.filter { $0.kind == .ssh }
+        let remotes = settings.enabledConnections.filter { $0.kind == .ssh }
         let selected = settings.selectedConnection.kind == .ssh
         return Group {
             if remotes.isEmpty {

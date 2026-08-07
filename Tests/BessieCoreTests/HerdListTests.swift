@@ -152,6 +152,18 @@ final class HerdListTests: XCTestCase {
         XCTAssertEqual(rail.rows(in: .shells).first?.title, "tools")
     }
 
+    func testRailExcludesDisabledConnectionEvenWithFreshProjection() throws {
+        let projection = try HerdrSessionProjection(snapshot: .railFixture)
+        var disabled = BessieConnectionDefinition.localBessie
+        disabled.enabled = false
+
+        let rail = HerdRailProjection(connections: [
+            HerdRailConnectionInput(connection: disabled, projection: projection, isFresh: true),
+        ])
+
+        XCTAssertTrue(rail.rows.isEmpty)
+    }
+
     func testRailWorkspaceFilterIsIndependentOfOpenPaneSelection() throws {
         let projection = try HerdrSessionProjection(snapshot: .railFixture)
         let fresh = HerdRailConnectionInput(connection: .localBessie, projection: projection, isFresh: true)

@@ -44,6 +44,163 @@ final class SettingsAndNotificationsTests: XCTestCase {
         XCTAssertFalse(reloaded.connections.first(where: { $0.id == BessieConnectionDefinition.localBessie.id })?.connectAtLaunch == true)
     }
 
+    func testSettingsDisablesSelectedLocalAndRepairsSelectedAndDefaultToRemote() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        XCTAssertTrue(model.addConnection(name: "Hermes VPS", sshHost: "hermes", session: "bessie"))
+        let remoteID = try XCTUnwrap(model.connections.first(where: { $0.kind == .ssh })?.id)
+        model.selectConnection(BessieConnectionDefinition.localBessie.id)
+        model.setDefaultProjectConnection(BessieConnectionDefinition.localBessie.id)
+
+        XCTAssertTrue(model.setConnectionEnabled(
+            connectionID: BessieConnectionDefinition.localBessie.id,
+            enabled: false
+        ))
+
+        XCTAssertFalse(model.connections[0].enabled)
+        XCTAssertEqual(model.selectedConnectionID, remoteID)
+        XCTAssertEqual(model.defaultProjectConnectionID, remoteID)
+        XCTAssertEqual(try BessieConnectionStore(url: connectionsURL).load().selectedConnectionID, remoteID)
+        XCTAssertEqual(try BessieConnectionStore(url: connectionsURL).load().defaultProjectConnectionID, remoteID)
+    }
+
+    func testSettingsRejectsDisablingOrRemovingFinalEnabledHerdWithoutMutation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        try BessieConnectionStore(url: connectionsURL).save(BessieConnectionState())
+        let before = try Data(contentsOf: connectionsURL)
+
+        XCTAssertFalse(model.setConnectionEnabled(
+            connectionID: BessieConnectionDefinition.localBessie.id,
+            enabled: false
+        ))
+        XCTAssertEqual(model.connections, [.localBessie])
+        XCTAssertEqual(model.selectedConnectionID, BessieConnectionDefinition.localBessie.id)
+        XCTAssertEqual(model.defaultProjectConnectionID, BessieConnectionDefinition.localBessie.id)
+        XCTAssertEqual(try Data(contentsOf: connectionsURL), before)
+        XCTAssertTrue(model.connectionError?.contains("at least one herd") == true)
+
+        let remote = BessieConnectionDefinition(
+            id: "remote-only",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        try BessieConnectionStore(url: connectionsURL).save(try BessieConnectionState.validated(
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id,
+            connections: [local, remote]
+        ))
+        let remoteOnly = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        let remoteBefore = try Data(contentsOf: connectionsURL)
+
+        XCTAssertFalse(remoteOnly.removeConnection(remote.id))
+        XCTAssertEqual(remoteOnly.connections, [local, remote])
+        XCTAssertEqual(remoteOnly.selectedConnectionID, remote.id)
+        XCTAssertEqual(remoteOnly.defaultProjectConnectionID, remote.id)
+        XCTAssertEqual(try Data(contentsOf: connectionsURL), remoteBefore)
+    }
+
+    func testConnectionStoreWriteFailureDoesNotPublishCandidateState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+
+        XCTAssertFalse(model.addConnection(name: "Hermes VPS", sshHost: "hermes", session: "bessie"))
+        XCTAssertEqual(model.connections, [.localBessie])
+        XCTAssertEqual(model.selectedConnectionID, BessieConnectionDefinition.localBessie.id)
+        XCTAssertEqual(model.defaultProjectConnectionID, BessieConnectionDefinition.localBessie.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: connectionsURL.path))
+        XCTAssertTrue(model.connectionError?.contains("couldn't save") == true)
+    }
+
+    func testUnreadableZeroEnabledConfigurationFailsClosedWithoutStartingOrRewritingLocal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        let invalid = Data(#"{"selected_connection_id":"local-bessie","default_project_connection_id":"local-bessie","connections":[{"id":"local-bessie","name":"This Mac","kind":"local","enabled":false,"connect_at_launch":true}]}"#.utf8)
+        try invalid.write(to: connectionsURL)
+
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+
+        XCTAssertTrue(model.connectionConfigurationLoadFailed)
+        XCTAssertTrue(model.connections.isEmpty)
+        XCTAssertTrue(model.enabledConnections.isEmpty)
+        XCTAssertEqual(model.selectedConnectionID, "")
+        XCTAssertFalse(model.addConnection(name: "Remote", sshHost: "hermes", session: nil))
+        XCTAssertEqual(try Data(contentsOf: connectionsURL), invalid)
+        XCTAssertTrue(model.connectionError?.contains("left the unreadable file untouched") == true)
+    }
+
+    func testActiveMigrationMarkerMakesSettingsFailClosedWithoutReadingOrRewritingConnections() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        try BessieConnectionStore(url: connectionsURL).save(BessieConnectionState())
+        let source = try Data(contentsOf: connectionsURL)
+        try Data("{}".utf8).write(
+            to: BessieConfigurationLease.activeMigrationMarkerURL(for: connectionsURL)
+        )
+
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+
+        XCTAssertTrue(model.connectionConfigurationLoadFailed)
+        XCTAssertTrue(model.connections.isEmpty)
+        XCTAssertTrue(model.connectionError?.contains("migration is in progress") == true)
+        XCTAssertFalse(BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+            connectionConfigurationLoadFailed: model.connectionConfigurationLoadFailed
+        ))
+        XCTAssertEqual(try Data(contentsOf: connectionsURL), source)
+    }
+
+    func testOperationalStartupPolicyAllowsNormalConfiguration() {
+        XCTAssertTrue(BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+            connectionConfigurationLoadFailed: false
+        ))
+    }
+
     func testSettingsDefaultsAndMenuBarPreferencesPersistAndReset() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

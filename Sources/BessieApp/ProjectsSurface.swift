@@ -235,10 +235,9 @@ struct ProjectsSurface: View {
 extension View {
     func projectConnectionSync(
         model: ProjectsViewModel,
-        connection: BessieProjectMaterializationConnection?,
-        snapshot: HerdrSnapshot
+        fleet: ConnectionFleetViewModel
     ) -> some View {
-        modifier(ProjectConnectionSyncModifier(model: model, connection: connection, snapshot: snapshot))
+        modifier(ProjectConnectionSyncModifier(model: model, fleet: fleet))
     }
 
     func projectLaunchPresentation(
@@ -251,19 +250,50 @@ extension View {
 
 private struct ProjectConnectionSyncModifier: ViewModifier {
     @ObservedObject var model: ProjectsViewModel
-    let connection: BessieProjectMaterializationConnection?
-    let snapshot: HerdrSnapshot
+    @ObservedObject var fleet: ConnectionFleetViewModel
+    @EnvironmentObject private var settings: BessieSettingsModel
 
     func body(content: Content) -> some View {
         content
-            .onAppear { model.updateConnection(connection, snapshot: snapshot) }
-            .onDisappear { model.updateConnection(nil, snapshot: nil) }
-            .onChange(of: connection) { _, connection in
-                model.updateConnection(connection, snapshot: snapshot)
+            .onAppear {
+                model.configureLaunchTargetReadiness(
+                    resolve: { [weak fleet] connectionID in
+                        guard let fleet else {
+                            throw ProjectLaunchTargetReadinessError.notConfigured(
+                                connectionID: connectionID
+                            )
+                        }
+                        return try await fleet.waitForProjectLaunchTarget(
+                            connectionID: connectionID
+                        )
+                    },
+                    reportFailure: { [weak fleet] message in
+                        fleet?.reportRouteFailure(message)
+                    }
+                )
+                synchronize()
             }
-            .onChange(of: snapshot) { _, snapshot in
-                model.updateConnection(connection, snapshot: snapshot)
+            .onReceive(fleet.objectWillChange) { _ in
+                Task { @MainActor in
+                    await Task.yield()
+                    synchronize()
+                }
             }
+            .onReceive(settings.objectWillChange) { _ in
+                Task { @MainActor in
+                    await Task.yield()
+                    synchronize()
+                }
+            }
+    }
+
+    private func synchronize() {
+        model.updateConnections(
+            definitions: settings.connections,
+            targets: fleet.projectLaunchTargets,
+            activeConnectionID: fleet.activeConnectionID,
+            defaultProjectConnectionID: settings.defaultProjectConnectionID
+        )
     }
 }
 
@@ -432,10 +462,11 @@ private struct ProjectLaunchFailureView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(partial.workspaceID == nil ? "Project did not open" : "Project opened partially")
                 .font(.system(size: 18, weight: .semibold))
-            Text("Bessie stopped at \(projectStageName(presentation.failure.stage)). Herdr objects that were created remain alive.")
+            Text(presentation.actionableMessage)
                 .font(.system(size: 11.5))
                 .foregroundStyle(BessieDesign.subtle)
-            failureFact("Owner error", String(describing: presentation.failure.ownerError))
+            failureFact("Stopped at", projectStageName(presentation.failure.stage))
+            failureFact("Technical detail", String(describing: presentation.failure.ownerError))
             failureFact("Attempt", String(describing: presentation.failure.attempt))
             failureFact("Workspace ID", partial.workspaceID ?? "Not returned")
             failureFact("Known tab IDs", partial.tabIDsByRecipeID.values.sorted().joined(separator: ", ").nilIfEmpty ?? "None")

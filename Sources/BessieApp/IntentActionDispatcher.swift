@@ -110,6 +110,9 @@ final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
 
     private let lock = NSLock()
     private var states: [String: State] = [:]
+    private var configuredConnections: [BessieConnectionDefinition] = []
+    private var selectedConnectionID: String?
+    private var defaultProjectConnectionID: String?
 
     func update(client: HerdrActionClient?, connectionID: String, projection: HerdrSessionProjection?) {
         lock.withLock {
@@ -125,9 +128,42 @@ final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
         lock.withLock { connectionID.map { states[$0] != nil } ?? !states.isEmpty }
     }
 
+    func updateConnectionContext(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        defaultProjectConnectionID: String
+    ) {
+        lock.withLock {
+            configuredConnections = connections
+            self.selectedConnectionID = selectedConnectionID
+            self.defaultProjectConnectionID = defaultProjectConnectionID
+            let enabledIDs = Set(connections.lazy.filter(\.enabled).map(\.id))
+            states = states.filter { enabledIDs.contains($0.key) }
+        }
+    }
+
+    func connectionContexts(connectionID: String?) -> [BessieIntentConnectionContext] {
+        lock.withLock {
+            configuredConnections.compactMap { connection in
+                guard connectionID == nil || connection.id == connectionID else { return nil }
+                return BessieIntentConnectionContext(
+                    id: connection.id,
+                    label: connection.name,
+                    kind: connection.kind,
+                    sshHost: connection.sshHost,
+                    enabled: connection.enabled,
+                    selected: connection.id == selectedConnectionID,
+                    defaultProjectTarget: connection.id == defaultProjectConnectionID,
+                    connected: states[connection.id] != nil
+                )
+            }
+        }
+    }
+
     func projection(connectionID: String) throws -> HerdrSessionProjection {
         try lock.withLock {
-            guard let projection = states[connectionID]?.projection else {
+            guard configuredConnections.contains(where: { $0.id == connectionID && $0.enabled }),
+                  let projection = states[connectionID]?.projection else {
                 throw IntentDispatchError(message: "Herdr connection '\(connectionID)' is not connected.")
             }
             return projection
@@ -141,7 +177,8 @@ final class AppIntentLivePort: BessieIntentLivePort, @unchecked Sendable {
     func perform(_ actions: [HerdrAction], connectionID: String) throws -> HerdrSessionProjection {
         guard !actions.isEmpty else { return try projection(connectionID: connectionID) }
         let (client, requestGeneration) = try lock.withLock {
-            guard let state = states[connectionID] else {
+            guard configuredConnections.contains(where: { $0.id == connectionID && $0.enabled }),
+                  let state = states[connectionID] else {
                 throw IntentDispatchError(message: "Herdr connection '\(connectionID)' is not connected.")
             }
             return (state.client, state.generation)

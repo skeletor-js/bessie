@@ -9,7 +9,7 @@ public enum AgentSemanticState: String, Codable, CaseIterable, Equatable, Sendab
 
     public var requiresUserAction: Bool { self == .blocked }
 
-    var sortRank: Int {
+    public var sortRank: Int {
         switch self {
         case .blocked: 0
         case .working: 1

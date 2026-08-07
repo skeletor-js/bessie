@@ -242,6 +242,7 @@ final class LiveHerdrTests: XCTestCase {
         let command = "printf 'BESSIE_M2_EXECUTED_%s' '\(runID)'; : '\(String(repeating: "x", count: 96))'"
         let project = BessieProject(
             name: "duplicate-label",
+            targetConnectionID: "isolated-live",
             workingDirectory: workingDirectory.path,
             tabs: [
                 .init(name: "duplicate-label", panes: [

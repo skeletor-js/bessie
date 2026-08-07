@@ -1,5 +1,6 @@
 import AppKit
 import BessieCore
+import Combine
 import SwiftUI
 
 enum ProductDestination: String, CaseIterable, Identifiable {
@@ -236,79 +237,6 @@ enum WorkspaceScope: Equatable {
     case allHerds
 }
 
-struct WorkspaceScopeGroup: Identifiable {
-    struct ID: Hashable {
-        let connectionID: String
-        let workspaceID: String
-        let tabID: String
-    }
-
-    let id: ID
-    let connection: BessieConnectionDefinition
-    let projection: HerdrSessionProjection
-    let workspace: WorkspaceProjection
-    let tab: TabProjection
-    let layout: TabLayoutProjection
-    let contextLabel: String?
-
-    var routedPaneTargets: [RoutedPaneTarget] {
-        layout.root.paneIDs.map {
-            RoutedPaneTarget(connectionID: id.connectionID, workspaceID: id.workspaceID, tabID: id.tabID, paneID: $0)
-        }
-    }
-}
-
-enum WorkspaceScopeProjection {
-    static func groups(connections: [ConnectionTopologyProjection], scope: WorkspaceScope) -> [WorkspaceScopeGroup] {
-        connections.flatMap { item in
-            item.projection.workspaces.flatMap { workspace in
-                item.projection.tabs.compactMap { tab in
-                    guard tab.workspaceID == workspace.id,
-                          includes(connectionID: item.connection.id, workspaceID: workspace.id, tabID: tab.id, scope: scope),
-                          let layout = item.projection.layouts[tab.id]
-                    else { return nil }
-                    return WorkspaceScopeGroup(
-                        id: .init(connectionID: item.connection.id, workspaceID: workspace.id, tabID: tab.id),
-                        connection: item.connection,
-                        projection: item.projection,
-                        workspace: workspace,
-                        tab: tab,
-                        layout: layout,
-                        contextLabel: contextLabel(connection: item.connection, workspace: workspace, tab: tab, scope: scope)
-                    )
-                }
-            }
-        }
-    }
-
-    private static func includes(connectionID: String, workspaceID: String, tabID: String, scope: WorkspaceScope) -> Bool {
-        switch scope {
-        case .selectedTab(let connection, let workspace, let tab):
-            connectionID == connection && workspaceID == workspace && tabID == tab
-        case .allTabs(let connection, let workspace):
-            connectionID == connection && workspaceID == workspace
-        case .allWorkspaces(let connection):
-            connectionID == connection
-        case .allHerds:
-            true
-        }
-    }
-
-    private static func contextLabel(
-        connection: BessieConnectionDefinition,
-        workspace: WorkspaceProjection,
-        tab: TabProjection,
-        scope: WorkspaceScope
-    ) -> String? {
-        switch scope {
-        case .selectedTab: nil
-        case .allTabs: tab.label
-        case .allWorkspaces: "\(workspace.label) · \(tab.label)"
-        case .allHerds: "\(ConnectionDisplayLabel(connection: connection).short) · \(workspace.label) · \(tab.label)"
-        }
-    }
-}
-
 enum WorkspaceScopeReducer {
     static func selectingAll(_ section: WorkspaceHierarchySection, connectionID: String, workspaceID: String) -> WorkspaceScope {
         switch section {
@@ -316,6 +244,47 @@ enum WorkspaceScopeReducer {
         case .workspace: .allWorkspaces(connectionID: connectionID)
         case .tab: .allTabs(connectionID: connectionID, workspaceID: workspaceID)
         }
+    }
+
+    static func selectingSidebarPane(
+        _ target: RoutedPaneTarget,
+        preserving scope: WorkspaceScope?
+    ) -> WorkspaceScope {
+        scope ?? .selectedTab(
+            connectionID: target.connectionID,
+            workspaceID: target.workspaceID,
+            tabID: target.tabID
+        )
+    }
+
+    static func filtered(_ projection: HerdRailProjection, scope: WorkspaceScope) -> HerdRailProjection {
+        switch scope {
+        case .selectedTab(let connectionID, let workspaceID, let tabID):
+            projection.filtered(connectionID: connectionID, workspaceID: workspaceID, tabID: tabID)
+        case .allTabs(let connectionID, let workspaceID):
+            projection.filtered(connectionID: connectionID, workspaceID: workspaceID)
+        case .allWorkspaces(let connectionID):
+            projection.filtered(connectionID: connectionID, workspaceID: nil)
+        case .allHerds:
+            projection.filtered(connectionID: nil, workspaceID: nil)
+        }
+    }
+
+    static func selection(
+        in projection: HerdRailProjection,
+        retaining selected: HerdPaneIdentity?,
+        focused: [HerdPaneIdentity]
+    ) -> RoutedPaneTarget? {
+        if let selected,
+           let row = projection.rows.first(where: { $0.id == selected }) {
+            return row.target
+        }
+        for focusedPane in focused {
+            if let row = projection.rows.first(where: { $0.id == focusedPane }) {
+                return row.target
+            }
+        }
+        return projection.rows.first?.target
     }
 }
 
@@ -483,9 +452,16 @@ struct BessieProductShell: View {
     @State private var performanceSwitchAutomationStarted = false
     @State private var themeCaptureAutomationStarted = false
     @StateObject private var shortcuts = BessieKeyboardShortcutCoordinator()
+    @StateObject private var commandPalette = BessieCommandPaletteModel()
     @State private var sidebarCollapsed = false
     @State private var isFullScreen = false
     @State private var showCommandPalette = false
+    @State private var commandPaletteMRU = CommandPaletteMRU()
+    @State private var commandPaletteRetryAttempts: [String: Int] = [:]
+    @State private var commandPaletteRebuildPending = false
+    @State private var commandPalettePreviousResponder: NSResponder?
+    @State private var commandPalettePreviewPending = false
+    @State private var isDispatchingPaletteCommand = false
     @State private var shortcutEditor: ProductEditor?
     @State private var namedTopologyRequest: NamedTopologyRequest?
     @State private var shortcutClose: PendingClose?
@@ -495,6 +471,7 @@ struct BessieProductShell: View {
     @State private var topologyPaneTakeover: ScopedPaneItem?
     @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
+    @ObservedObject var commandPaletteAvailability: BessieCommandPaletteAvailability
     let featureFlags: BessieFeatureFlags
     @State private var railWidth: CGFloat = BessieDesign.railWidth
     @State private var workbenchWidth: CGFloat = 420
@@ -513,14 +490,7 @@ struct BessieProductShell: View {
             scope: .all
         )
     }
-    private var workspaceScopeGroups: [WorkspaceScopeGroup] {
-        guard let workspaceScope else { return [] }
-        return WorkspaceScopeProjection.groups(
-            connections: fleet.topologyConnections.filter { fleet.connectedConnectionIDs.contains($0.connection.id) },
-            scope: workspaceScope
-        )
-    }
-    private var herdRailProjection: HerdRailProjection {
+    private var baseHerdRailProjection: HerdRailProjection {
         HerdRailProjection(
             connections: fleet.topologyConnections.map {
                 HerdRailConnectionInput(
@@ -531,6 +501,36 @@ struct BessieProductShell: View {
             },
             scope: fleet.herdScope
         )
+    }
+    private var effectiveWorkspaceScope: WorkspaceScope? {
+        if let workspaceScope { return workspaceScope }
+        guard destination == .workspace else { return nil }
+        let connectionID = selectedTopologyConnectionID ?? model.activeConnection.id
+        guard let workspaceID = selectedWorkspaceID else { return nil }
+        let connection = freshHierarchyTopology.connections.first { $0.connection.id == connectionID }
+        let selectedTabID = selectedPaneID.flatMap { paneID in
+            connection?.projection.panes.first {
+                $0.id == paneID && $0.workspaceID == workspaceID
+            }?.tabID
+        }
+        guard let tabID = selectedTabID
+                ?? connection?.projection.tabs.first(where: {
+                    $0.workspaceID == workspaceID && $0.focused
+                })?.id
+                ?? connection?.projection.tabs.first(where: { $0.workspaceID == workspaceID })?.id
+        else { return nil }
+        return .selectedTab(connectionID: connectionID, workspaceID: workspaceID, tabID: tabID)
+    }
+    private var herdRailProjection: HerdRailProjection {
+        guard let scope = effectiveWorkspaceScope else { return baseHerdRailProjection }
+        return WorkspaceScopeReducer.filtered(baseHerdRailProjection, scope: scope)
+    }
+    private var focusedHerdPanes: [HerdPaneIdentity] {
+        freshHierarchyTopology.connections.compactMap { item in
+            item.projection.focusedPane.map {
+                HerdPaneIdentity(connectionID: item.connection.id, paneID: $0.id)
+            }
+        }
     }
     private var hierarchyHerdRows: [HerdPickerRow] {
         HerdPickerPresentation.hierarchyRows(
@@ -554,66 +554,119 @@ struct BessieProductShell: View {
             projection: projection,
             selectedWorkspaceID: selectedWorkspaceID,
             selectedPaneID: selectedPaneID,
-            globalSection: workspaceScope?.hierarchySection,
-            globalPaneCount: workspaceScopeGroups.flatMap(\.routedPaneTargets).count
+            globalSection: effectiveWorkspaceScope?.hierarchySection,
+            globalPaneCount: herdRailProjection.rows.count
         )
     }
-    private var commandPaletteEntities: [CommandPaletteEntity] {
-        let connectionNames = Dictionary(uniqueKeysWithValues: fleet.connectionDefinitions.map { ($0.id, $0.name) })
-        let workspaceNames = Dictionary(uniqueKeysWithValues: topology.workspaces.map { ($0.id, $0.summary.label) })
-        let tabNames = Dictionary(uniqueKeysWithValues: topology.tabs.map { ($0.id, $0.tab.label) })
-        let panes = topology.panes.map { item in
-            let connectionID = item.id.connectionID
-            let pane = item.pane
-            let workspace = workspaceNames[.init(connectionID: connectionID, workspaceID: pane.workspaceID)] ?? pane.workspaceID
-            let tab = tabNames[.init(connectionID: connectionID, tabID: pane.tabID)] ?? pane.tabID
-            return CommandPaletteEntity(
-                id: .init(kind: .pane, components: [connectionID, pane.workspaceID, pane.tabID, pane.id]),
-                kind: .pane,
-                title: pane.presentationTitle,
-                detail: pane.agent == nil ? "Pane" : "Agent pane",
-                state: paletteState(AgentSemanticState(herdrValue: pane.agentStatus)),
-                location: "\(connectionNames[connectionID] ?? connectionID) / \(workspace) / \(tab)",
-                keywords: [pane.agent ?? "", pane.effectiveCWD ?? ""],
-                route: .pane(connectionID: connectionID, workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.id)
-            )
-        }
-        let workspaces = topology.workspaces.map { item in
-            CommandPaletteEntity(
-                id: .init(kind: .workspace, components: [item.id.connectionID, item.id.workspaceID]),
-                kind: .workspace, title: item.summary.label,
-                detail: "\(item.summary.tabCount) tabs · \(item.summary.paneCount) panes",
-                state: paletteState(item.summary.rolledState),
-                location: item.connection.name,
-                route: .workspace(connectionID: item.id.connectionID, workspaceID: item.id.workspaceID)
-            )
-        }
-        let projectRows = projects.projects.map { stored in
-            CommandPaletteEntity(
-                id: .init(kind: .project, components: [stored.project.id.uuidString]), kind: .project,
-                title: stored.project.name, detail: "Project · \(stored.project.tabs.flatMap(\.panes).count) panes",
-                location: stored.project.primaryFolder?.path, keywords: [stored.project.projectDescription],
-                route: .project(stored.project.id)
-            )
-        }
+    private var commandPaletteIndexInput: CommandPaletteIndexInput {
+        let topologies = Dictionary(
+            fleet.topologyConnections.map { ($0.connection.id, $0.projection) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let connections = fleet.connectionDefinitions.map { connection in
-            CommandPaletteEntity(
-                id: .init(kind: .connection, components: [connection.id]), kind: .connection,
-                title: connection.name, detail: fleet.statusLabel(connectionID: connection.id),
-                state: fleet.connectedConnectionIDs.contains(connection.id) ? "Connected" : "Disconnected",
-                route: .connection(connection.id)
+            let isFresh = fleet.connectedConnectionIDs.contains(connection.id)
+            let connectionProjection: HerdrSessionProjection? = isFresh ? topologies[connection.id] : nil
+            let workspaceLabels = Dictionary(
+                (connectionProjection?.workspaces ?? []).map { ($0.id, $0.label) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let tabLabels = Dictionary(
+                (connectionProjection?.tabs ?? []).map { ($0.id, $0.label) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let agents = Dictionary(
+                (connectionProjection?.agents ?? []).map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let panesByWorkspace = Dictionary(
+                grouping: connectionProjection?.panes ?? [],
+                by: \.workspaceID
+            )
+            let panes = (connectionProjection?.panes ?? []).map { pane in
+                let agent = agents[pane.id]
+                return CommandPalettePaneInput(
+                    id: pane.id,
+                    workspaceID: pane.workspaceID,
+                    workspaceTitle: workspaceLabels[pane.workspaceID] ?? "Untitled workspace",
+                    tabID: pane.tabID,
+                    tabTitle: tabLabels[pane.tabID] ?? "Untitled tab",
+                    title: pane.presentationTitle,
+                    detail: agent?.identity ?? "Shell pane",
+                    semanticState: AgentSemanticState(herdrValue: agent?.agentStatus ?? pane.agentStatus),
+                    provider: agent?.displayAgent ?? agent?.agent ?? pane.agent,
+                    keywords: [agent?.identity, pane.effectiveCWD].compactMap { $0 }
+                )
+            }
+            let workspaces = (connectionProjection?.workspaces ?? []).map { workspace in
+                let rolledState = (panesByWorkspace[workspace.id] ?? [])
+                    .map { pane in
+                        AgentSemanticState(herdrValue: agents[pane.id]?.agentStatus ?? pane.agentStatus)
+                    }
+                    .min { $0.sortRank < $1.sortRank }
+                    ?? AgentSemanticState(herdrValue: workspace.agentStatus)
+                return CommandPaletteWorkspaceInput(
+                    id: workspace.id,
+                    number: workspace.number,
+                    title: workspace.label,
+                    tabCount: workspace.tabCount,
+                    paneCount: workspace.paneCount,
+                    semanticState: rolledState
+                )
+            }
+            let healthDetail = isFresh
+                ? fleet.statusLabel(connectionID: connection.id)
+                : BessieCommandPalette.retryHealthDetail(
+                    base: fleet.statusLabel(connectionID: connection.id),
+                    attemptCount: commandPaletteRetryAttempts[connection.id, default: 0]
+                )
+            return CommandPaletteConnectionInput(
+                connection: connection,
+                freshness: isFresh ? .fresh : .disconnected,
+                healthDetail: healthDetail,
+                panes: panes,
+                workspaces: workspaces
             )
         }
-        let commands = BessieKeyboardShortcutRouter.commands.map { definition in
-            CommandPaletteEntity(
-                id: .init(kind: .command, components: [String(describing: definition.command)]), kind: .command,
-                title: definition.title, detail: definition.detail, shortcut: definition.shortcut,
-                keywords: [definition.keywords], route: .command(definition.command),
-                alternateRoute: definition.alternateCommand.map(CommandPaletteRouteIntent.command)
+        let projectInputs = projects.projects.map { stored in
+            CommandPaletteProjectInput(
+                id: stored.project.id,
+                title: stored.project.name,
+                detail: "Project · \(stored.project.tabs.flatMap(\.panes).count) panes",
+                location: stored.project.primaryFolder?.path,
+                keywords: [stored.project.projectDescription]
+                    + stored.project.folders.flatMap { [$0.name, $0.path] },
+                isRunning: projects.runningInstance(for: stored.project.id) != nil
             )
         }
-        return panes + workspaces + projectRows + connections + commands
+        let selectedConnectionID = selectedTopologyConnectionID ?? fleet.activeConnectionID
+        return CommandPaletteIndexInput(
+            connections: connections,
+            projects: projectInputs,
+            commands: BessieKeyboardShortcutRouter.commands,
+            context: CommandPaletteIndexContext(
+                activeConnectionID: selectedConnectionID,
+                scope: fleet.herdScope,
+                focusedWorkspaceID: selectedWorkspaceID,
+                focusedPaneID: selectedPaneID,
+                mru: commandPaletteMRU
+            )
+        )
     }
+    private var canOpenCommandPalette: Bool {
+        let window = NSApp.keyWindow
+        return BessieCommandPaletteOpenability.allowsOpen(
+            onboardingCompleted: settings.onboarding.completed,
+            mainWindowIsKey: window?.identifier == BessieWindowCoordinator.mainWindowIdentifier
+                && window?.isKeyWindow == true,
+            hasAttachedSheet: window?.attachedSheet != nil
+        )
+    }
+    private static let commandPaletteWindowStatePublisher: AnyPublisher<Notification, Never> = {
+        Publishers.MergeMany([
+            NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification),
+            NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification),
+        ]).eraseToAnyPublisher()
+    }()
     private var topologyIdentitySignature: String {
         topology.connections.flatMap { item in
             item.projection.workspaces.map { "w:\(item.connection.id):\($0.id)" }
@@ -757,9 +810,6 @@ struct BessieProductShell: View {
                 .frame(width: settings.preferences.railCollapsed ? BessieDesign.collapsedRailWidth : BessieDesign.railWidth)
                 .layoutPriority(0)
                 .bessieSurface(base: BessieDesign.rail)
-                .simultaneousGesture(TapGesture().onEnded {
-                    if zenState.isActive { exitZen() }
-                })
 
             Color.clear
                 .frame(width: density.shellPanelGap)
@@ -776,20 +826,26 @@ struct BessieProductShell: View {
         .background(Color.clear)
         .foregroundStyle(BessieDesign.text)
         .tint(BessieDesign.strong)
+        .allowsHitTesting(!showCommandPalette)
+        .accessibilityHidden(showCommandPalette)
         .overlay {
             if showCommandPalette {
-                ZStack {
-                    Color.black.opacity(BessieCommandPalette.scrimOpacity)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture { closeCommandPalette() }
-                    BessieCommandPalette(
-                        close: closeCommandPalette,
-                        entities: commandPaletteEntities,
-                        noConnections: fleet.connectedConnectionIDs.isEmpty,
-                        perform: dispatchPaletteRoute
-                    )
-                    .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
+                GeometryReader { geometry in
+                    ZStack(alignment: .top) {
+                        Color.black.opacity(BessieCommandPalette.scrimOpacity)
+                            .ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture { commandPalette.dismiss() }
+                            .accessibilityElement()
+                            .accessibilityLabel("Dismiss command palette")
+                            .accessibilityAction(named: "Dismiss") { commandPalette.dismiss() }
+                        BessieCommandPalette(
+                            model: commandPalette,
+                            maxListHeight: geometry.size.height * BessieCommandPalette.maximumListHeightFraction
+                        )
+                        .padding(.top, geometry.size.height * BessieCommandPalette.topInsetFraction)
+                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
+                    }
                 }
                 .transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.985)))
                 .zIndex(20)
@@ -798,13 +854,23 @@ struct BessieProductShell: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: showCommandPalette)
     }
 
-    private var shellLifecycle: some View {
+    private var shellStateLifecycle: some View {
         shellPresentation
         .onAppear(perform: prepareShell)
-        .onDisappear { shortcuts.stop() }
+        .onDisappear {
+            shortcuts.stop()
+            showCommandPalette = false
+            commandPaletteAvailability.canToggle = false
+        }
         .onChange(of: model.activeConnection.id) { _, _ in activeConnectionChanged() }
-        .onChange(of: fleet.herdScope) { _, scope in reconcileSelection(for: scope) }
-        .onChange(of: topologyIdentitySignature) { _, _ in reconcileSelection(for: fleet.herdScope) }
+        .onChange(of: fleet.herdScope) { _, scope in
+            reconcileSelection(for: scope)
+            scheduleCommandPaletteRebuild()
+        }
+        .onChange(of: topologyIdentitySignature) { _, _ in
+            reconcileSelection(for: fleet.herdScope)
+            if let workspaceScope { reconcileWorkspaceScopeSelection(workspaceScope) }
+        }
         .onChange(of: navigationRequest) { _, request in consumeNavigationRequest(request) }
         .onChange(of: projection.workspaces.count) { _, count in
             if count > 0,
@@ -825,6 +891,13 @@ struct BessieProductShell: View {
         .onChange(of: selectedWorkspaceID) { _, id in
             settings.recordLastWorkspace(id, connectionID: selectedTopologyConnectionID ?? model.activeConnection.id)
         }
+        .onChange(of: settings.onboarding.completed) { _, completed in
+            if !completed, showCommandPalette { commandPalette.dismiss() }
+            refreshCommandPaletteAvailability()
+        }
+        .onChange(of: fleet.connectedConnectionIDs) { _, connectedIDs in
+            for id in connectedIDs { commandPaletteRetryAttempts.removeValue(forKey: id) }
+        }
         .onChange(of: zenState.focusIntent) { _, _ in
             if let paneID = zenState.selectedPaneID { focusTerminal(paneID: paneID) }
         }
@@ -837,6 +910,19 @@ struct BessieProductShell: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             isFullScreen = false
         }
+        .onReceive(Self.commandPaletteWindowStatePublisher) { _ in
+            refreshCommandPaletteAvailability()
+        }
+        .onReceive(fleet.objectWillChange) { _ in
+            scheduleCommandPaletteRebuild()
+        }
+        .onReceive(projects.objectWillChange) { _ in
+            scheduleCommandPaletteRebuild()
+        }
+    }
+
+    private var shellLifecycle: some View {
+        shellStateLifecycle
         .task(id: "\(projection.panes.count)-\(model.agentCatalog.items.count)") { runProcessAutomationIfRequested() }
         .task(id: notificationSignature) {
             notifications.reconcile(
@@ -948,8 +1034,7 @@ struct BessieProductShell: View {
         } message: { Text(model.actionError ?? "No error details were returned.") }
         .projectConnectionSync(
             model: projects,
-            connection: model.projectMaterializationConnection,
-            snapshot: projection.snapshot
+            fleet: fleet
         )
         .projectLaunchPresentation(model: projects, navigate: openProjectHandoff)
     }
@@ -1025,11 +1110,6 @@ struct BessieProductShell: View {
                 projection: projection,
                 endpoint: terminalEndpoint,
                 registry: terminalRegistry,
-                scope: workspaceScope,
-                scopeGroups: workspaceScopeGroups,
-                registryForConnection: { connectionID in
-                    fleet.terminalRegistry(connectionID: connectionID, activeRegistry: terminalRegistry)
-                },
                 selectedWorkspaceID: $selectedWorkspaceID,
                 selectedPaneID: $selectedPaneID,
                 zenPaneID: zenPaneID,
@@ -1040,9 +1120,7 @@ struct BessieProductShell: View {
                 createWorkspace: createWorkspace,
                 requestSplit: requestPaneName,
                 requestMoveToNewTab: requestMoveToNewTabName,
-                requestClose: requestClose,
-                openRoutedPane: openRoutedPane,
-                performRoutedAction: performRoutedAction
+                requestClose: requestClose
             )
         case .files:
             WorkspaceFilesSurface(
@@ -1079,10 +1157,13 @@ struct BessieProductShell: View {
             hierarchy: workspaceHierarchyRail,
             collapsed: railCollapsedBinding,
             appearance: themeCoordinator.binding(),
-            openSearch: { showCommandPalette = true },
-            selectDestination: { target in destination = target },
-            openPane: { openRoutedPane($0) },
-            enterZen: { openRoutedPane($0, activateZen: true) },
+            openSearch: { openCommandPalette() },
+            selectDestination: { target in
+                if zenState.isActive { exitZen() }
+                destination = target
+            },
+            openPane: openSidebarPane,
+            enterZen: { openSidebarPane($0, activateZen: true) },
             performPaneAction: { target, action in
                 guard let item = scopedPane(for: target) else { return }
                 performPaneAction(item, action)
@@ -1823,64 +1904,217 @@ struct BessieProductShell: View {
         openRoutedPane(routed, activateZen: false)
     }
 
-    private func dispatchPaletteRoute(_ route: CommandPaletteRouteIntent) {
+    private func openSidebarPane(_ routed: RoutedPaneTarget) {
+        openSidebarPane(routed, activateZen: false)
+    }
+
+    private func openSidebarPane(_ routed: RoutedPaneTarget, activateZen: Bool) {
+        let preservedScope = WorkspaceScopeReducer.selectingSidebarPane(
+            routed,
+            preserving: effectiveWorkspaceScope
+        )
+        openRoutedPane(
+            routed,
+            activateZen: activateZen,
+            preservingSidebarScope: preservedScope
+        )
+    }
+
+    @discardableResult
+    private func dispatchPaletteRoute(_ route: CommandPaletteRouteIntent) -> Bool {
         switch route {
         case .pane(let connectionID, let workspaceID, let tabID, let paneID):
             let target = RoutedPaneTarget(connectionID: connectionID, workspaceID: workspaceID, tabID: tabID, paneID: paneID)
-            guard topology.openTarget(for: .init(connectionID: connectionID, paneID: paneID)) == target else {
-                Task { @MainActor in
-                    await fleet.scheduleRefresh().value
-                    if topology.openTarget(for: .init(connectionID: connectionID, paneID: paneID)) == target {
-                        openRoutedPane(target)
-                    } else {
-                        reportStalePaletteTarget()
-                    }
-                }
-                return
+            guard freshHierarchyTopology.openTarget(
+                for: .init(connectionID: connectionID, paneID: paneID)
+            ) == target else {
+                reportStalePaletteTarget()
+                return false
             }
             openRoutedPane(target)
+            return true
         case .workspace(let connectionID, let workspaceID):
-            guard let item = topology.workspaces.first(where: {
+            guard let item = freshHierarchyTopology.workspaces.first(where: {
                 $0.id == .init(connectionID: connectionID, workspaceID: workspaceID)
             }) else {
-                Task { @MainActor in await fleet.scheduleRefresh().value; reportStalePaletteTarget() }
-                return
+                reportStalePaletteTarget()
+                return false
             }
+            if zenState.isActive { exitZen() }
             openWorkspace(item)
+            return true
         case .project(let projectID):
-            projects.requestOpen(projectID)
+            guard projects.projects.contains(where: { $0.project.id == projectID }) else {
+                reportStalePaletteTarget()
+                return false
+            }
+            if zenState.isActive { exitZen() }
+            guard projects.launchImmediately(projectID) else {
+                fleet.reportRouteFailure(projects.openUnavailableReason(for: projectID))
+                return false
+            }
+            return true
         case .connection(let connectionID):
-            guard fleet.activate(connectionID: connectionID) != nil else { reportStalePaletteTarget(); return }
+            guard fleet.connectionDefinitions.contains(where: { $0.id == connectionID }) else {
+                reportStalePaletteTarget()
+                return false
+            }
+            if zenState.isActive { exitZen() }
+            if !fleet.connectedConnectionIDs.contains(connectionID) {
+                commandPaletteRetryAttempts[connectionID, default: 0] += 1
+                fleet.retry(connectionID: connectionID)
+            } else {
+                _ = fleet.activate(connectionID: connectionID)
+            }
+            selectedTopologyConnectionID = connectionID
             fleet.setScope(.connection(id: connectionID))
             destination = .herd
+            return true
         case .command(let command):
+            if model.actionInFlight,
+               ![.showCommandPalette, .showHerd, .showSettings, .projectsPicker,
+                 .workspacePicker, .openNextNeedsYou, .toggleSidebar, .toggleZen, .exitZen].contains(command) {
+                fleet.reportRouteFailure("That command cannot run while another Herdr action is in flight.")
+                return false
+            }
+            if let failure = paletteCommandContextFailure(command) {
+                fleet.reportRouteFailure(failure)
+                return false
+            }
+            if zenState.isActive, paletteCommandExitsZen(command) { exitZen() }
+            isDispatchingPaletteCommand = true
+            defer { isDispatchingPaletteCommand = false }
             handleShortcut(command)
+            return true
         }
     }
 
     private func reportStalePaletteTarget() {
-        fleet.reportRouteFailure("That palette target is no longer available. Bessie refreshed the current Herdr state; search again to use its fresh location.")
-        destination = .herd
-        if let paneID = selectedPaneID ?? projection.focusedPane?.id { focusTerminal(paneID: paneID) }
+        fleet.reportRouteFailure("That palette target is no longer available in the current Herdr state.")
     }
 
-    private func closeCommandPalette() {
+    private func openCommandPalette(initialQuery: String = "") {
+        guard !showCommandPalette, canOpenCommandPalette else {
+            refreshCommandPaletteAvailability()
+            return
+        }
+        let window = NSApp.keyWindow
+        commandPalettePreviousResponder = window?.firstResponder
+        window?.makeFirstResponder(nil)
+        commandPalette.open(input: commandPaletteIndexInput, initialQuery: initialQuery)
+        shortcuts.enterCommandPalette(
+            isSearchFocused: { commandPalette.isSearchFocused },
+            bufferPrintableCharacters: { commandPalette.bufferPrintableCharacters($0) },
+            handle: handleCommandPaletteKeyAction
+        )
+        showCommandPalette = true
+        refreshCommandPaletteAvailability()
+    }
+
+    private func closeCommandPalette(restoreFocus: Bool) {
         showCommandPalette = false
-        if let paneID = selectedPaneID ?? projection.focusedPane?.id {
-            DispatchQueue.main.async { focusTerminal(paneID: paneID) }
+        shortcuts.exitCommandPalette()
+        let previousResponder = commandPalettePreviousResponder
+        commandPalettePreviousResponder = nil
+        refreshCommandPaletteAvailability()
+        if restoreFocus, let previousResponder, let window = NSApp.keyWindow {
+            DispatchQueue.main.async { window.makeFirstResponder(previousResponder) }
         }
     }
 
-    private func paletteState(_ state: AgentSemanticState) -> String {
-        switch state {
-        case .blocked: "Needs you"
-        case .working: "Working"
-        case .done, .idle: "Settled"
-        case .unknown: "Unknown"
+    private func handleCommandPaletteKeyAction(_ action: CommandPaletteKeyboard.Action) {
+        switch action {
+        case .ignore:
+            break
+        case .moveSelection(let delta):
+            commandPalette.moveSelection(by: delta)
+        case .activate(let alternate):
+            commandPalette.activate(alternate: alternate)
+        case .dismiss:
+            commandPalette.dismiss()
         }
     }
 
-    private func openRoutedPane(_ routed: RoutedPaneTarget, activateZen: Bool) {
+    private func paletteCommandExitsZen(_ command: BessieShortcutCommand) -> Bool {
+        switch command {
+        case .showHerd, .showSettings, .newProject, .projectsPicker, .workspacePicker:
+            true
+        default:
+            false
+        }
+    }
+
+    private func paletteCommandContextFailure(_ command: BessieShortcutCommand) -> String? {
+        let workspace = currentWorkspace ?? projection.focusedWorkspace ?? projection.workspaces.first
+        let tabs = workspace.map { item in projection.tabs.filter { $0.workspaceID == item.id } } ?? []
+        let tab = tabs.first(where: \.focused) ?? tabs.first
+        let paneIDs = tab.flatMap { projection.layouts[$0.id]?.root.paneIDs } ?? []
+        let paneID = BessiePaneActionTarget.resolve(
+            selectedPaneID: selectedPaneID,
+            visiblePaneIDs: Set(paneIDs),
+            projection: projection
+        )
+        switch command {
+        case .renameWorkspace, .closeWorkspace, .newTab:
+            return workspace == nil ? "That command needs a current Herdr workspace." : nil
+        case .renameTab, .previousTab, .nextTab, .closeTab:
+            return tab == nil ? "That command needs a current Herdr tab." : nil
+        case .renamePane, .previousPane, .nextPane, .swapPane, .splitPane,
+             .closePane, .zoomPane, .resizePane:
+            return paneID == nil ? "That command needs a current Herdr pane." : nil
+        case .focusPane(let direction):
+            guard let paneID, let tab, let layout = projection.layouts[tab.id],
+                  BessiePaneNavigation.target(from: paneID, direction: direction, in: layout.root) != nil
+            else { return "There is no pane in that direction." }
+            return nil
+        case .previousRailPane, .nextRailPane:
+            return herdRailProjection.rows.isEmpty ? "There are no fresh Herdr panes to open." : nil
+        case .toggleZen:
+            return !zenState.isActive && paneID == nil ? "Zen needs a current Herdr pane." : nil
+        case .exitZen:
+            return zenState.isActive ? nil : "Zen is not active."
+        case .previousAgent, .nextAgent:
+            return fleet.agents.isEmpty ? "There are no fresh Herdr agents to open." : nil
+        default:
+            return nil
+        }
+    }
+
+    private func refreshCommandPaletteAvailability() {
+        let canToggle = canOpenCommandPalette
+        if commandPaletteAvailability.canToggle != canToggle {
+            commandPaletteAvailability.canToggle = canToggle
+        }
+        guard commandPalettePreviewPending, canOpenCommandPalette else { return }
+        commandPalettePreviewPending = false
+        let initialQuery = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "07" ? "sch" : ""
+        openCommandPalette(initialQuery: initialQuery)
+    }
+
+    private func awaitCommandPalettePreviewWindow(remainingAttempts: Int = 100) {
+        guard commandPalettePreviewPending, remainingAttempts > 0 else { return }
+        refreshCommandPaletteAvailability()
+        guard commandPalettePreviewPending else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            awaitCommandPalettePreviewWindow(remainingAttempts: remainingAttempts - 1)
+        }
+    }
+
+    private func scheduleCommandPaletteRebuild() {
+        guard showCommandPalette, !commandPaletteRebuildPending else { return }
+        commandPaletteRebuildPending = true
+        DispatchQueue.main.async {
+            commandPaletteRebuildPending = false
+            guard showCommandPalette else { return }
+            commandPalette.rebuild(input: commandPaletteIndexInput)
+        }
+    }
+
+    private func openRoutedPane(
+        _ routed: RoutedPaneTarget,
+        activateZen: Bool,
+        preservingSidebarScope: WorkspaceScope? = nil
+    ) {
         guard let targetModel = fleet.activate(connectionID: routed.connectionID) else {
             model.reportRouteFailure(
                 "Couldn't open this pane because its Herdr connection is unavailable. Reconnect it, then try again from The herd."
@@ -1901,7 +2135,13 @@ struct BessieProductShell: View {
             return
         }
 
-        presentRoutedPane(routed, projection: current, model: targetModel, activateZen: activateZen)
+        presentRoutedPane(
+            routed,
+            projection: current,
+            model: targetModel,
+            activateZen: activateZen,
+            preservingSidebarScope: preservingSidebarScope
+        )
         if routed.isAuthoritativelyFocused(connectionID: targetModel.activeConnection.id, projection: current) { return }
 
         let token = UUID()
@@ -1910,7 +2150,13 @@ struct BessieProductShell: View {
             guard openRouteToken == token,
                   fleet.activeConnectionID == routed.connectionID
             else { return }
-            presentRoutedPane(routed, projection: fresh, model: targetModel, activateZen: activateZen)
+            presentRoutedPane(
+                routed,
+                projection: fresh,
+                model: targetModel,
+                activateZen: activateZen,
+                preservingSidebarScope: preservingSidebarScope
+            )
         } failure: {
             guard openRouteToken == token else { return }
             targetModel.reportRouteFailure(
@@ -1944,7 +2190,8 @@ struct BessieProductShell: View {
         _ routed: RoutedPaneTarget,
         projection fresh: HerdrSessionProjection,
         model targetModel: ConnectionViewModel,
-        activateZen: Bool
+        activateZen: Bool,
+        preservingSidebarScope: WorkspaceScope?
     ) {
         guard fresh.panes.contains(where: {
             $0.id == routed.paneID && $0.workspaceID == routed.workspaceID && $0.tabID == routed.tabID
@@ -1958,6 +2205,9 @@ struct BessieProductShell: View {
         selectedTopologyConnectionID = routed.connectionID
         selectedWorkspaceID = routed.workspaceID
         selectedPaneID = routed.paneID
+        if let preservingSidebarScope {
+            workspaceScope = preservingSidebarScope
+        }
         destination = .workspace
         if activateZen {
             zenState.enter(
@@ -2000,14 +2250,19 @@ struct BessieProductShell: View {
     }
 
     private func openProjectHandoff(_ handoff: ProjectWorkspaceHandoff) {
-        model.openProjectHandoff(handoff) { fresh in
-            selectedTopologyConnectionID = model.activeConnection.id
+        guard let targetModel = fleet.activate(connectionID: handoff.connection.definition.id) else {
+            fleet.reportRouteFailure("The Project's target herd is no longer configured.")
+            return
+        }
+        targetModel.openProjectHandoff(handoff) { fresh in
+            guard fleet.activeConnectionID == handoff.connection.definition.id else { return }
+            selectedTopologyConnectionID = handoff.connection.definition.id
             selectedWorkspaceID = handoff.workspaceID
             selectedPaneID = handoff.paneID
             destination = .workspace
             if let paneID = handoff.paneID,
                let tabID = handoff.tabID,
-               let endpoint = model.terminalEndpoint {
+               let endpoint = targetModel.terminalEndpoint {
                 let presented = fresh.layouts[tabID]?.root.paneIDs ?? [paneID]
                 terminalRegistry.reconcile(
                     presentedPaneIDs: presented,
@@ -2021,6 +2276,11 @@ struct BessieProductShell: View {
     }
 
     private func handleShortcut(_ command: BessieShortcutCommand) {
+        if showCommandPalette,
+           !isDispatchingPaletteCommand,
+           command != .showCommandPalette {
+            return
+        }
         if model.actionInFlight {
             switch command {
             case .showCommandPalette, .showHerd, .showSettings, .projectsPicker,
@@ -2042,7 +2302,7 @@ struct BessieProductShell: View {
 
         switch command {
         case .showCommandPalette:
-            if showCommandPalette { closeCommandPalette() } else { showCommandPalette = true }
+            if showCommandPalette { commandPalette.dismiss() } else { openCommandPalette() }
         case .showHerd:
             destination = .herd
         case .showSettings:
@@ -2459,11 +2719,31 @@ struct BessieProductShell: View {
         destination = ProductDestination.initial(flags: featureFlags)
         fleet.setScope(.all)
         projects.load()
+        if commandPaletteMRU.ids.isEmpty {
+            commandPaletteMRU = CommandPaletteMRU(ids: fleet.connectionDefinitions.compactMap { connection in
+                guard fleet.connectedConnectionIDs.contains(connection.id),
+                      let workspaceID = settings.lastWorkspaceID(for: connection.id)
+                else { return nil }
+                return CommandPaletteEntityID(
+                    kind: .workspace,
+                    components: [connection.id, workspaceID]
+                )
+            })
+        }
+        commandPalette.configure(
+            onDispatch: dispatchPaletteRoute,
+            onSuccessfulDispatch: { id in
+                commandPaletteMRU.record(id)
+            },
+            onDismiss: closeCommandPalette
+        )
         shortcuts.start(isZenActive: { zenState.isActive }) { command in handleShortcut(command) }
         let environment = ProcessInfo.processInfo.environment
         if environment["BESSIE_COMMAND_PALETTE_PREVIEW"] != nil {
-            showCommandPalette = true
+            commandPalettePreviewPending = true
+            awaitCommandPalettePreviewWindow()
         }
+        refreshCommandPaletteAvailability()
         if let preview = environment["BESSIE_DESIGN_PREVIEW"]?.lowercased() {
             selectedWorkspaceID = projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
             selectedPaneID = projection.focusedPane?.id
@@ -2563,6 +2843,7 @@ struct BessieProductShell: View {
 
     private func openWorkspace(_ item: ScopedWorkspaceItem) {
         guard let targetModel = fleet.activate(connectionID: item.id.connectionID) else { return }
+        if zenState.isActive { exitZen() }
         workspaceScope = nil
         let operation = UUID()
         topologySelectionInFlight = operation
@@ -2627,20 +2908,43 @@ struct BessieProductShell: View {
     }
 
     private func showGlobalHierarchy(_ section: WorkspaceHierarchySection) {
-        let connectionID = selectedTopologyConnectionID ?? model.activeConnection.id
-        let workspaceID = selectedWorkspaceID ?? projection.focusedWorkspace?.id ?? projection.workspaces.first?.id
+        let connectionID = model.activeConnection.id
+        let selectedActiveWorkspaceID = selectedTopologyConnectionID == nil
+            || selectedTopologyConnectionID == connectionID
+            ? selectedWorkspaceID
+            : nil
+        let workspaceID = selectedActiveWorkspaceID
+            ?? projection.focusedWorkspace?.id
+            ?? projection.workspaces.first?.id
         guard section == .herd || workspaceID != nil else { return }
-        workspaceScope = WorkspaceScopeReducer.selectingAll(
+        let scope = WorkspaceScopeReducer.selectingAll(
             section,
             connectionID: connectionID,
             workspaceID: workspaceID ?? ""
         )
-        destination = .workspace
-        if zenState.isActive { zenState.exit() }
+        workspaceScope = scope
+        reconcileWorkspaceScopeSelection(scope)
     }
 
-    private func performRoutedAction(_ target: RoutedPaneTarget, _ action: HerdrAction) {
-        fleet.model(connectionID: target.connectionID)?.perform(action)
+    private func reconcileWorkspaceScopeSelection(_ scope: WorkspaceScope) {
+        let filtered = WorkspaceScopeReducer.filtered(baseHerdRailProjection, scope: scope)
+        let retained = selectedPaneID.map {
+            HerdPaneIdentity(
+                connectionID: selectedTopologyConnectionID ?? model.activeConnection.id,
+                paneID: $0
+            )
+        }
+        guard let target = WorkspaceScopeReducer.selection(
+            in: filtered,
+            retaining: retained,
+            focused: focusedHerdPanes
+        ) else {
+            selectedPaneID = nil
+            return
+        }
+        selectedTopologyConnectionID = target.connectionID
+        selectedWorkspaceID = target.workspaceID
+        selectedPaneID = target.paneID
     }
 
     private func openConnectionSettings() {
@@ -3986,9 +4290,6 @@ private struct WorkspaceSurface: View {
     let projection: HerdrSessionProjection
     let endpoint: HerdrTerminalEndpoint
     @ObservedObject var registry: TerminalControllerRegistry
-    let scope: WorkspaceScope?
-    let scopeGroups: [WorkspaceScopeGroup]
-    let registryForConnection: (String) -> TerminalControllerRegistry?
     @Binding var selectedWorkspaceID: String?
     @Binding var selectedPaneID: String?
     let zenPaneID: String?
@@ -4000,8 +4301,6 @@ private struct WorkspaceSurface: View {
     let requestSplit: (String, SplitDirection) -> Void
     let requestMoveToNewTab: (String, String) -> Void
     let requestClose: (PendingClose) -> Void
-    let openRoutedPane: (RoutedPaneTarget) -> Void
-    let performRoutedAction: (RoutedPaneTarget, HerdrAction) -> Void
     @State private var editor: ProductEditor?
     @State private var focusState = TerminalFocusStateMachine()
     @Environment(\.bessieDensity) private var density
@@ -4031,34 +4330,7 @@ private struct WorkspaceSurface: View {
         VStack(spacing: 0) {
             if fileBrowserEnabled, model.activeConnection.kind == .ssh, model.remoteFileAccess == nil { RemoteWorkspaceFilesBanner() }
 
-            if let scope {
-                if scopeGroups.isEmpty {
-                    ProductEmptyState(
-                        symbol: "rectangle.stack",
-                        title: scope.emptyTitle,
-                        detail: scope.emptyDetail,
-                        action: nil
-                    )
-                    .padding(7)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(scopeGroups) { group in
-                                AggregatePaneGroup(
-                                    group: group,
-                                    registry: registryForConnection(group.id.connectionID),
-                                    selectedPaneID: $selectedPaneID,
-                                    paneGap: paneGap,
-                                    terminalFontSize: terminalFontSize,
-                                    open: openRoutedPane,
-                                    perform: performRoutedAction
-                                )
-                            }
-                        }
-                        .padding(paneGap)
-                    }
-                }
-            } else if let tab, let layout = projection.layouts[tab.id] {
+            if let tab, let layout = projection.layouts[tab.id] {
                 let presentationNode = zenPaneID.flatMap { layout.root.isolatedPane($0) } ?? layout.root
                 ProductPaneLayout(
                     node: presentationNode,
@@ -4127,60 +4399,6 @@ private struct WorkspaceSurface: View {
 
 }
 
-private struct AggregatePaneGroup: View {
-    let group: WorkspaceScopeGroup
-    let registry: TerminalControllerRegistry?
-    @Binding var selectedPaneID: String?
-    let paneGap: Double
-    let terminalFontSize: Double
-    let open: (RoutedPaneTarget) -> Void
-    let perform: (RoutedPaneTarget, HerdrAction) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let label = group.contextLabel {
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(BessieDesign.subtle)
-                    .accessibilityLabel("Pane group, \(label)")
-            }
-            if let registry {
-                ProductPaneLayout(
-                    node: group.layout.root,
-                    tabID: group.tab.id,
-                    panes: group.projection.panes,
-                    selectedPaneID: $selectedPaneID,
-                    outlinedPaneID: selectedPaneID,
-                    zenPaneID: nil,
-                    registry: registry,
-                    gap: paneGap,
-                    terminalFontSize: terminalFontSize,
-                    dividerEnabled: false,
-                    focus: { paneID in
-                        open(RoutedPaneTarget(connectionID: group.id.connectionID, workspaceID: group.id.workspaceID, tabID: group.id.tabID, paneID: paneID))
-                    },
-                    responderChanged: { _, _ in },
-                    edit: { _ in },
-                    action: { action in
-                        guard let paneID = action.routedPaneID ?? group.layout.root.paneIDs.first else { return }
-                        perform(RoutedPaneTarget(connectionID: group.id.connectionID, workspaceID: group.id.workspaceID, tabID: group.id.tabID, paneID: paneID), action)
-                    },
-                    requestSplit: { _, _ in },
-                    moveChoices: { _ in nil },
-                    requestMoveToNewTab: { _, _ in },
-                    close: { _ in },
-                    enterZen: { _ in }
-                )
-                .frame(minHeight: 260)
-            } else {
-                Text("This herd is no longer connected.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(BessieDesign.subtle)
-            }
-        }
-    }
-}
-
 private extension WorkspaceScope {
     var hierarchySection: WorkspaceHierarchySection? {
         switch self {
@@ -4188,46 +4406,6 @@ private extension WorkspaceScope {
         case .allTabs: .tab
         case .allWorkspaces: .workspace
         case .allHerds: .herd
-        }
-    }
-
-    var emptyTitle: String {
-        switch self {
-        case .selectedTab: "This tab is no longer available"
-        case .allTabs: "No tabs in this workspace"
-        case .allWorkspaces: "No live workspaces in this herd"
-        case .allHerds: "No connected herds"
-        }
-    }
-
-    var emptyDetail: String {
-        switch self {
-        case .selectedTab: "Choose a current tab from the sidebar."
-        case .allTabs: "Create a tab or choose another workspace."
-        case .allWorkspaces: "Create a workspace or reconnect this herd."
-        case .allHerds: "Reconnect a herd to show its fresh Herdr workspace state."
-        }
-    }
-}
-
-private extension HerdrAction {
-    var routedPaneID: String? {
-        switch self {
-        case .paneSplit(let paneID, _, _, _, _),
-             .paneFocus(let paneID),
-             .paneResize(let paneID, _, _),
-             .paneSwap(let paneID, _),
-             .paneMove(let paneID, _, _),
-             .paneZoom(let paneID, _),
-             .paneRename(let paneID, _),
-             .paneClose(let paneID),
-             .agentStart(let paneID, _, _, _, _):
-            paneID
-        case .paneSwapExplicit(let paneID, _):
-            paneID
-        case .workspaceCreate, .workspaceFocus, .workspaceRename, .workspaceMove, .workspaceClose,
-             .tabCreate, .tabFocus, .tabRename, .tabMove, .tabClose, .setSplitRatio:
-            nil
         }
     }
 }

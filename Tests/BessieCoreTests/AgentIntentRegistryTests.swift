@@ -10,7 +10,7 @@ final class AgentIntentRegistryTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BessieIntentCatalog.self, from: data)
 
         XCTAssertEqual(decoded, catalog)
-        XCTAssertEqual(catalog.version, 1)
+        XCTAssertEqual(catalog.version, 2)
     }
 
     func testPilotIntentNamesAreCompleteUniqueAndMCPCompatible() throws {
@@ -19,6 +19,7 @@ final class AgentIntentRegistryTests: XCTestCase {
             "intents.list",
             "app.status",
             "connection.status",
+            "connection.context",
             "session.projection",
             "pane.focus",
             "workspace.focus",
@@ -58,6 +59,12 @@ final class AgentIntentRegistryTests: XCTestCase {
         XCTAssertEqual(projectShow?.risk, .read)
         XCTAssertEqual(projectShow?.offlineOK, true)
         XCTAssertEqual(projectShow?.paramsSchema.required, ["project_id"])
+
+        let connectionContext = BessieIntentRegistry.definition(for: "connection.context")
+        XCTAssertEqual(connectionContext?.owner, .bessie)
+        XCTAssertEqual(connectionContext?.risk, .read)
+        XCTAssertEqual(connectionContext?.requiresLiveConnection, false)
+        XCTAssertEqual(connectionContext?.paramsSchema.required, [])
     }
 
     func testSchemaExportUsesJSONSchemaFieldNames() throws {

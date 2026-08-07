@@ -32,8 +32,8 @@ Bessie is a graphical client, not a second session manager. [Herdr](https://gith
 - **Attention routing:** jump straight to panes that need you or have finished.
 - **Safe ownership:** observe a terminal without taking control, then confirm before takeover.
 - **Native notifications:** opt in from Settings; blocked and completed work routes back to the exact pane.
-- **Seamless local startup:** Bessie starts and reopens its own detached Herdr session when needed.
-- **One unified herd:** local and saved SSH Herdr sessions stay connected together, so their agents appear in one roster without a connection switcher.
+- **Flexible herd startup:** enabled local and SSH herds connect at launch or on demand, as configured.
+- **One unified herd:** every enabled Herdr connection contributes its agents to one roster.
 - **Process survival:** close and reopen Bessie without killing the shells and agents Herdr owns.
 - **Two app icons:** choose the dark or light icon in Settings. Bessie reapplies it to the Dock and app switcher at launch.
 
@@ -44,7 +44,7 @@ Bessie is a graphical client, not a second session manager. [Herdr](https://gith
 - An agent CLI on your login `PATH` if you want to start an agent
 - Xcode command-line tools and Swift 6 only when building from source
 
-Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`, `~/.local/bin/herdr`, and the repository-local `.local/herdr/herdr`, in that order. It then opens the named Herdr session `bessie`, starting it as a detached background server if necessary. Other Herdr sessions are not reused, stopped, or modified.
+For an enabled local herd, Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`, `~/.local/bin/herdr`, and the repository-local `.local/herdr/herdr`, in that order. It then opens the named Herdr session `bessie`, starting it as a detached background server if necessary. A remote-only configuration does not start local Herdr. Other Herdr sessions are not reused, stopped, or modified.
 
 ## Install the release candidate
 
@@ -62,7 +62,7 @@ The bundle reports version `0.1.0` with build number `3`. This branch is the `0.
 
 ## Using Bessie
 
-1. Open Bessie. It starts the local `bessie` Herdr session and reconnects every saved SSH connection.
+1. Open Bessie. It connects every enabled herd configured for start at launch; on-demand herds connect when selected or used by a Project.
 2. Open **The herd** to see local and remote agents together. Opening a card routes workspace and terminal actions to the connection that owns it.
 3. Use **Workspaces** and **New pane** to open shells or start supported agents in the current workspace context.
 4. Open **Attention** when work needs you.
@@ -75,7 +75,7 @@ The background server survives Bessie quitting, so reopening the app returns to 
 
 ## Remote VPS sessions
 
-Open **Settings → Connections → Add SSH connection**, enter an SSH config host (or `user@host`), and optionally name a Herdr session. Leave the session blank for the remote default session. Every configured connection participates in The herd automatically; there is no connection switcher.
+Open **Settings → Herds → Add a herd**, enter an SSH config host (or `user@host`), and optionally name a Herdr session. Leave the session blank for the remote default session. Enabled connections participate in The herd. You can disable This Mac while retaining its configuration as long as another herd remains enabled and selected.
 
 Bessie asks the remote `herdr status --json` command for the authoritative Unix-socket path, then forwards both public Herdr Unix sockets to private sockets under `/tmp` with `0700` directory permissions. A stopped remote session must be started on its host first. No Herdr socket is exposed over TCP. Authentication remains entirely in OpenSSH configuration and the user's SSH agent; Bessie stores the host alias and session name but never a password or private key. See [Herdr's persistence and remote-access guide](https://herdr.dev/docs/persistence-remote/).
 
@@ -83,7 +83,7 @@ Bessie asks the remote `herdr status --json` command for the authoritative Unix-
 
 Settings covers:
 
-- local and SSH Herdr connections included in one herd
+- independently enabled local and SSH Herdr connections included in one herd
 - dark or light Dock icon
 - cowprint contrast and motion
 - terminal font size

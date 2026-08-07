@@ -19,4 +19,16 @@ final class AppIntentServer: @unchecked Sendable {
 
     func start() throws { try server.start() }
     func stop() { server.stop() }
+
+    func updateConnectionContext(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        defaultProjectConnectionID: String
+    ) {
+        live.updateConnectionContext(
+            connections: connections,
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID
+        )
+    }
 }

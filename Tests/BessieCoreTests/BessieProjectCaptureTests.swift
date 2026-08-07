@@ -17,9 +17,14 @@ final class BessieProjectCaptureTests: XCTestCase {
     func testCaptureMapsNestedMultiTabTopologyWithFreshIDsAndBlankCommands() throws {
         let projection = try HerdrSessionProjection(snapshot: .captureFixture)
         let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        let project = try BessieProjectCapture.capture(from: projection, now: capturedAt)
+        let project = try BessieProjectCapture.capture(
+            from: projection,
+            targetConnectionID: "hermes-vps",
+            now: capturedAt
+        )
 
         XCTAssertEqual(project.name, "duplicate")
+        XCTAssertEqual(project.targetConnectionID, "hermes-vps")
         XCTAssertEqual(project.workingDirectory, "/tmp/bessie-capture")
         XCTAssertEqual(project.createdAt, capturedAt)
         XCTAssertEqual(project.updatedAt, capturedAt)

@@ -56,6 +56,128 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertFalse(BessieKeyboardShortcutCoordinator.shouldExitZen(keyCode: 36, isZenActive: true))
     }
 
+    @MainActor
+    func testPalettePolicySuppressesShellMutationAndKeepsExplicitPassThroughs() {
+        for (character, option, shift) in [
+            ("n", true, false), ("z", false, true), ("d", false, false),
+            (",", false, false), ("w", false, false),
+        ] {
+            XCTAssertEqual(palettePolicy(character, command: true, option: option, shift: shift), .consume)
+        }
+        for character in ["a", "c", "v", "x", "z", "q", "h", "m"] {
+            XCTAssertEqual(palettePolicy(character, command: true), .passThrough)
+        }
+        for character in ["a", "c", "x", "z"] {
+            XCTAssertEqual(
+                palettePolicy(character, command: true, isSearchFocused: false),
+                .consume
+            )
+        }
+        XCTAssertEqual(
+            palettePolicy("v", command: true, isSearchFocused: false, pasteboardText: "pasted"),
+            .buffer("pasted")
+        )
+        for character in ["q", "h", "m"] {
+            XCTAssertEqual(
+                palettePolicy(character, command: true, isSearchFocused: false),
+                .passThrough
+            )
+        }
+        XCTAssertEqual(
+            palettePolicy("p", command: true, shift: true),
+            .action(.dismiss)
+        )
+    }
+
+    @MainActor
+    func testPalettePolicyHonorsIMEAndBuffersUntilSearchActuallyHasFocus() {
+        XCTAssertEqual(
+            BessieKeyboardShortcutCoordinator.paletteEventPolicy(
+                keyCode: CommandPaletteKeyboard.returnKey,
+                characters: "\r",
+                charactersIgnoringModifiers: "\r",
+                command: false,
+                option: false,
+                control: false,
+                shift: false,
+                hasMarkedText: true,
+                isSearchFocused: true,
+                pasteboardText: nil
+            ),
+            .passThrough
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutCoordinator.paletteEventPolicy(
+                keyCode: 13,
+                characters: "w",
+                charactersIgnoringModifiers: "w",
+                command: true,
+                option: false,
+                control: false,
+                shift: false,
+                hasMarkedText: true,
+                isSearchFocused: true,
+                pasteboardText: nil
+            ),
+            .consume
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutCoordinator.paletteEventPolicy(
+                keyCode: CommandPaletteKeyboard.downArrow,
+                characters: nil,
+                charactersIgnoringModifiers: nil,
+                command: false,
+                option: false,
+                control: false,
+                shift: false,
+                hasMarkedText: true,
+                isSearchFocused: true,
+                pasteboardText: nil
+            ),
+            .passThrough
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutCoordinator.paletteEventPolicy(
+                keyCode: CommandPaletteKeyboard.escape,
+                characters: nil,
+                charactersIgnoringModifiers: nil,
+                command: false,
+                option: false,
+                control: false,
+                shift: false,
+                hasMarkedText: false,
+                isSearchFocused: true,
+                pasteboardText: nil
+            ),
+            .action(.dismiss)
+        )
+        XCTAssertEqual(palettePolicy("x", isSearchFocused: false), .buffer("x"))
+        XCTAssertEqual(palettePolicy("x", isSearchFocused: true), .passThrough)
+    }
+
+    @MainActor
+    private func palettePolicy(
+        _ character: String,
+        command: Bool = false,
+        option: Bool = false,
+        shift: Bool = false,
+        isSearchFocused: Bool = true,
+        pasteboardText: String? = nil
+    ) -> BessieKeyboardShortcutCoordinator.PaletteEventPolicy {
+        BessieKeyboardShortcutCoordinator.paletteEventPolicy(
+            keyCode: 0,
+            characters: character,
+            charactersIgnoringModifiers: character,
+            command: command,
+            option: option,
+            control: false,
+            shift: shift,
+            hasMarkedText: false,
+            isSearchFocused: isSearchFocused,
+            pasteboardText: pasteboardText
+        )
+    }
+
     func testTerminalSurfaceReattachmentKeepsTheExistingHerdrStream() {
         var lifecycle = TerminalSurfaceStreamLifecycle()
 
@@ -167,7 +289,7 @@ final class SurfaceProjectionTests: XCTestCase {
     }
 
     @MainActor
-    func testRegistryPrewarmsRealHiddenSurfaceWithoutTreatingItAsInteractive() {
+    func testRegistryPrewarmsThenParksHiddenSurfaceWithoutTreatingItAsInteractive() {
         let registry = TerminalControllerRegistry()
         let endpoint = HerdrTerminalEndpoint(
             connectionID: "test",
@@ -185,10 +307,66 @@ final class SurfaceProjectionTests: XCTestCase {
         let warm = registry.controllers["p2"]
         XCTAssertNotNil(warm)
         XCTAssertTrue(warm?.hasStartedStream == true)
-        XCTAssertNotNil(warm?.terminalView.window)
+        XCTAssertNil(warm?.terminalView.window, "Hidden warm surfaces must not keep libghostty display links active")
+        XCTAssertNil(warm?.terminalView.superview)
+
+        registry.reconcile(
+            presentedPaneIDs: ["p1"],
+            availablePaneIDs: ["p1", "p2"],
+            prewarmPaneIDs: ["p2"],
+            endpoint: endpoint
+        )
+        XCTAssertTrue(registry.controllers["p2"] === warm)
+        XCTAssertNil(warm?.terminalView.window, "An already-started warm stream must not be reattached offscreen")
+
+        registry.reconcile(
+            presentedPaneIDs: ["p2"],
+            availablePaneIDs: ["p1", "p2"],
+            prewarmPaneIDs: ["p1"],
+            endpoint: endpoint
+        )
+        XCTAssertTrue(registry.controllers["p2"] === warm)
+        XCTAssertTrue(registry.controllers["p2"]?.session === warm?.session)
+        XCTAssertTrue(registry.controllers["p2"]?.terminalView === warm?.terminalView)
         registry.recordSwitchRequested(paneID: "p2")
         registry.focusWhenPresented(paneID: "p2")
         XCTAssertFalse(warm?.terminalView.window?.firstResponder === warm?.terminalView)
+        registry.releaseAll()
+    }
+
+    @MainActor
+    func testRegistryPrewarmsReplacementControllerWithSamePaneID() {
+        let registry = TerminalControllerRegistry()
+        let firstEndpoint = HerdrTerminalEndpoint(
+            connectionID: "first",
+            executablePath: "/usr/bin/false",
+            socketPath: "/tmp/missing-first"
+        )
+        registry.reconcile(
+            presentedPaneIDs: [],
+            availablePaneIDs: ["p1"],
+            prewarmPaneIDs: ["p1"],
+            endpoint: firstEndpoint
+        )
+        let first = registry.controllers["p1"]
+
+        registry.reconcile(
+            presentedPaneIDs: [],
+            availablePaneIDs: ["p1"],
+            prewarmPaneIDs: ["p1"],
+            endpoint: HerdrTerminalEndpoint(
+                connectionID: "second",
+                executablePath: "/usr/bin/false",
+                socketPath: "/tmp/missing-second"
+            )
+        )
+
+        let replacement = registry.controllers["p1"]
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(replacement)
+        XCTAssertFalse(replacement === first)
+        XCTAssertTrue(replacement?.hasStartedStream == true)
+        XCTAssertNil(replacement?.terminalView.window)
         registry.releaseAll()
     }
 
@@ -413,6 +591,117 @@ final class SurfaceProjectionTests: XCTestCase {
     }
 
     @MainActor
+    func testRemoteOnlyFleetExcludesDisabledLocalFromRuntimeAndHealth() {
+        let suite = "bessie.tests.fleet.remote-only.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fleet = ConnectionFleetViewModel(defaults: defaults)
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = BessieConnectionDefinition(
+            id: "remote",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "127.0.0.1",
+            connectAtLaunch: true
+        )
+
+        fleet.start(
+            connections: [local, remote],
+            selectedConnectionID: remote.id,
+            runtimeSelection: .bundled,
+            bundledRuntimeURL: nil
+        )
+
+        XCTAssertEqual(fleet.connectionDefinitions.map(\.id), [remote.id])
+        XCTAssertEqual(fleet.startedConnectionIDs, [remote.id])
+        XCTAssertEqual(fleet.activeConnectionID, remote.id)
+        XCTAssertEqual(fleet.connectionHealth.map(\.connectionID), [remote.id])
+        XCTAssertNil(fleet.activate(connectionID: local.id))
+        XCTAssertEqual(fleet.notificationConnectionState(connectionID: local.id), .unavailable)
+        fleet.stop()
+    }
+
+    @MainActor
+    func testRemoteOnlyOnDemandFleetStartsNothingUntilActivated() {
+        let fleet = ConnectionFleetViewModel()
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = BessieConnectionDefinition(
+            id: "remote",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "127.0.0.1",
+            connectAtLaunch: false
+        )
+
+        fleet.start(
+            connections: [local, remote],
+            selectedConnectionID: remote.id,
+            runtimeSelection: .bundled,
+            bundledRuntimeURL: nil
+        )
+
+        XCTAssertTrue(fleet.startedConnectionIDs.isEmpty)
+        XCTAssertNil(fleet.activeConnectionID)
+        XCTAssertNotNil(fleet.activate(connectionID: remote.id))
+        XCTAssertEqual(fleet.startedConnectionIDs, [remote.id])
+        fleet.stop()
+    }
+
+    @MainActor
+    func testProjectLaunchReadinessStartsConfiguredOnDemandHerdOnlyOnce() async {
+        let suite = "bessie.tests.fleet.project-on-demand.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fleet = ConnectionFleetViewModel(defaults: defaults)
+        var localOnDemand = BessieConnectionDefinition.localBessie
+        localOnDemand.connectAtLaunch = false
+        fleet.sync(
+            connections: [localOnDemand],
+            runtimeSelection: .bundled,
+            bundledRuntimeURL: nil
+        )
+        XCTAssertTrue(fleet.startedConnectionIDs.isEmpty)
+
+        let first = Task { @MainActor in
+            do {
+                _ = try await fleet.waitForProjectLaunchTarget(
+                    connectionID: localOnDemand.id,
+                    timeout: 1,
+                    pollInterval: 0.005
+                )
+                return nil as ProjectLaunchTargetReadinessError?
+            } catch {
+                return error as? ProjectLaunchTargetReadinessError
+            }
+        }
+        let second = Task { @MainActor in
+            do {
+                _ = try await fleet.waitForProjectLaunchTarget(
+                    connectionID: localOnDemand.id,
+                    timeout: 1,
+                    pollInterval: 0.005
+                )
+                return nil as ProjectLaunchTargetReadinessError?
+            } catch {
+                return error as? ProjectLaunchTargetReadinessError
+            }
+        }
+
+        let firstFailure = await first.value
+        let secondFailure = await second.value
+        XCTAssertEqual(fleet.startedConnectionIDs, [localOnDemand.id])
+        if case .unavailable(let connectionName, _) = firstFailure {
+            XCTAssertEqual(connectionName, "This Mac")
+        } else {
+            XCTFail("Expected the intentionally missing test runtime to be unavailable")
+        }
+        XCTAssertEqual(secondFailure, firstFailure)
+        fleet.stop()
+    }
+
+    @MainActor
     func testFleetCoalescesModelRefreshBursts() async {
         let fleet = ConnectionFleetViewModel()
         let initialPasses = fleet.refreshPassCount
@@ -579,7 +868,7 @@ final class SurfaceProjectionTests: XCTestCase {
         )
     }
 
-    func testWorkspaceScopesDeriveOrderedAuthoritativeGroupsAndExactRoutes() throws {
+    func testWorkspaceScopesFilterOrdinaryPaneRowsWithExactRoutesAndOrder() throws {
         let local = ConnectionTopologyProjection(
             connection: .localBessie,
             projection: try HerdrSessionProjection(snapshot: .paneMoveFixture)
@@ -591,44 +880,82 @@ final class SurfaceProjectionTests: XCTestCase {
             connection: remoteConnection,
             projection: try HerdrSessionProjection(snapshot: .duplicateIDRemoteFixture)
         )
+        let rail = HerdRailProjection(connections: [
+            HerdRailConnectionInput(connection: local.connection, projection: local.projection, isFresh: true),
+            HerdRailConnectionInput(connection: remote.connection, projection: remote.projection, isFresh: true),
+        ])
 
-        let tabs = WorkspaceScopeProjection.groups(
-            connections: [local, remote], scope: .allTabs(connectionID: "local-bessie", workspaceID: "w1")
-        )
-        XCTAssertEqual(tabs.map(\.id.workspaceID), ["w1", "w1"])
-        XCTAssertEqual(tabs.map(\.contextLabel), ["build", "review"])
-
-        let workspaces = WorkspaceScopeProjection.groups(
-            connections: [local, remote], scope: .allWorkspaces(connectionID: "local-bessie")
-        )
-        XCTAssertEqual(workspaces.map(\.id.connectionID), ["local-bessie", "local-bessie", "local-bessie"])
-        XCTAssertEqual(workspaces.map(\.id.workspaceID), ["w1", "w1", "w2"])
-
-        let herds = WorkspaceScopeProjection.groups(connections: [local, remote], scope: .allHerds)
-        XCTAssertEqual(herds.map(\.id.connectionID), ["local-bessie", "local-bessie", "local-bessie", "remote"])
-        XCTAssertEqual(
-            herds.last?.routedPaneTargets.first,
-            RoutedPaneTarget(connectionID: "remote", workspaceID: "remote-w", tabID: "remote-t", paneID: "p1")
+        let selectedTab = WorkspaceScopeReducer.filtered(
+            rail,
+            scope: .selectedTab(connectionID: "local-bessie", workspaceID: "w1", tabID: "t1")
         )
         XCTAssertEqual(
-            Set(herds.flatMap(\.routedPaneTargets).filter { $0.paneID == "p1" }.map(\.connectionID)),
+            selectedTab.rows.map(\.target),
+            [RoutedPaneTarget(connectionID: "local-bessie", workspaceID: "w1", tabID: "t1", paneID: "p1")]
+        )
+
+        let allTabs = WorkspaceScopeReducer.filtered(
+            rail,
+            scope: .allTabs(connectionID: "local-bessie", workspaceID: "w1")
+        )
+        XCTAssertEqual(allTabs.rows.map(\.target.paneID), ["p1", "p2"])
+        XCTAssertTrue(allTabs.rows.allSatisfy {
+            $0.target.connectionID == "local-bessie" && $0.target.workspaceID == "w1"
+        })
+
+        let allWorkspaces = WorkspaceScopeReducer.filtered(
+            rail,
+            scope: .allWorkspaces(connectionID: "local-bessie")
+        )
+        XCTAssertEqual(allWorkspaces.rows.map(\.target.paneID), ["p1", "p2", "p3"])
+        XCTAssertTrue(allWorkspaces.rows.allSatisfy { $0.target.connectionID == "local-bessie" })
+
+        let allHerds = WorkspaceScopeReducer.filtered(rail, scope: .allHerds)
+        XCTAssertEqual(
+            Set(allHerds.rows.filter { $0.target.paneID == "p1" }.map(\.target.connectionID)),
             ["local-bessie", "remote"]
         )
-
-        let selected = WorkspaceScopeProjection.groups(
-            connections: [local, remote],
-            scope: .selectedTab(connectionID: "remote", workspaceID: "remote-w", tabID: "remote-t")
-        )
-        XCTAssertEqual(selected.map(\.id.connectionID), ["remote"])
     }
 
-    func testAllHerdsExcludesConnectionsNotPassedAsFresh() throws {
-        let fresh = ConnectionTopologyProjection(
-            connection: .localBessie,
-            projection: try HerdrSessionProjection(snapshot: .surfaceFixture)
+    func testWorkspaceScopeSelectionRetainsVisiblePaneThenUsesFocusedOrFirstFallback() throws {
+        let projection = try HerdrSessionProjection(snapshot: .paneMoveFixture)
+        let rail = HerdRailProjection(connections: [
+            HerdRailConnectionInput(connection: .localBessie, projection: projection, isFresh: true),
+        ])
+        let allTabs = WorkspaceScopeReducer.filtered(
+            rail,
+            scope: .allTabs(connectionID: "local-bessie", workspaceID: "w1")
         )
-        XCTAssertTrue(WorkspaceScopeProjection.groups(connections: [], scope: .allHerds).isEmpty)
-        XCTAssertFalse(WorkspaceScopeProjection.groups(connections: [fresh], scope: .allHerds).isEmpty)
+
+        XCTAssertEqual(
+            WorkspaceScopeReducer.selection(
+                in: allTabs,
+                retaining: HerdPaneIdentity(connectionID: "local-bessie", paneID: "p2"),
+                focused: [HerdPaneIdentity(connectionID: "local-bessie", paneID: "p1")]
+            )?.paneID,
+            "p2"
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.selection(
+                in: allTabs,
+                retaining: HerdPaneIdentity(connectionID: "remote", paneID: "p1"),
+                focused: [HerdPaneIdentity(connectionID: "local-bessie", paneID: "p1")]
+            )?.paneID,
+            "p1"
+        )
+
+        let reviewTab = WorkspaceScopeReducer.filtered(
+            rail,
+            scope: .selectedTab(connectionID: "local-bessie", workspaceID: "w1", tabID: "t2")
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.selection(
+                in: reviewTab,
+                retaining: nil,
+                focused: [HerdPaneIdentity(connectionID: "local-bessie", paneID: "p1")]
+            ),
+            RoutedPaneTarget(connectionID: "local-bessie", workspaceID: "w1", tabID: "t2", paneID: "p2")
+        )
     }
 
     func testRoutedPaneRecognizesOnlyItsExactAuthoritativeFocus() throws {

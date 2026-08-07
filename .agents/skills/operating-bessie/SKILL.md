@@ -18,6 +18,8 @@ bessie call <intent-id> --json '{"connection_id":"<id>","other_param":"<value>"}
 
 Use the returned schema exactly. Supply `connection_id` whenever an intent addresses Herdr-owned IDs; IDs are scoped to that connection.
 
+Use the catalog's read-only connection-context capability when you need to distinguish configured, enabled, selected/default, and currently connected herds. It can report disabled or disconnected definitions, but it cannot enable, retarget, start, or infer paths for them.
+
 For MCP clients, launch `bessie-mcp` over stdio, call MCP `tools/list` for the effective catalog, then `tools/call` with the selected tool name and schema-shaped arguments. MCP stdout is protocol-only.
 
 ## Confirmation and failures

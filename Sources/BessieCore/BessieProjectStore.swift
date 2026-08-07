@@ -293,6 +293,7 @@ public struct BessieProjectStore: Sendable {
             name: source.project.name,
             projectDescription: source.project.projectDescription,
             group: source.project.group,
+            targetConnectionID: source.project.targetConnectionID,
             folders: source.project.folders,
             tabs: source.project.tabs,
             createdAt: now(),
@@ -401,8 +402,9 @@ public struct BessieProjectStore: Sendable {
             )
         }
         var data = try Data(contentsOf: sourceURL)
-        if try BessieProjectCodec.schemaVersion(in: data) == 1 {
-            data = try migrateVersionOneFile(data, at: sourceURL)
+        let version = try BessieProjectCodec.schemaVersion(in: data)
+        if version < BessieProjectSchema.currentVersion {
+            data = try migrateLegacyFile(data, version: version, at: sourceURL)
         }
         let project = try BessieProjectCodec.decode(data).normalizedForCatalog()
         let revision = try fileRevision(at: sourceURL, updatedAt: project.updatedAt)
@@ -415,8 +417,8 @@ public struct BessieProjectStore: Sendable {
         )
     }
 
-    private func migrateVersionOneFile(_ originalData: Data, at sourceURL: URL) throws -> Data {
-        let backupURL = sourceURL.appendingPathExtension("v1-backup")
+    private func migrateLegacyFile(_ originalData: Data, version: Int, at sourceURL: URL) throws -> Data {
+        let backupURL = sourceURL.appendingPathExtension("v\(version)-backup")
         let temporaryURL = rootURL.appendingPathComponent(".\(UUID().uuidString).migration.tmp")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
@@ -429,7 +431,7 @@ public struct BessieProjectStore: Sendable {
             guard decoded == migrated else {
                 throw BessieProjectStoreError.migrationFailed(
                     filename: sourceURL.lastPathComponent,
-                    reason: "The validated schema-v2 representation did not match the migrated project."
+                    reason: "The validated schema-v\(BessieProjectSchema.currentVersion) representation did not match the migrated project."
                 )
             }
             try migratedData.write(to: temporaryURL, options: .withoutOverwriting)
@@ -457,7 +459,7 @@ public struct BessieProjectStore: Sendable {
                 } catch {
                     throw BessieProjectStoreError.migrationFailed(
                         filename: sourceURL.lastPathComponent,
-                        reason: "Replacement failed (\(ownerError.localizedDescription)); restoring the schema-v1 backup also failed (\(error.localizedDescription))."
+                        reason: "Replacement failed (\(ownerError.localizedDescription)); restoring the schema-v\(version) backup also failed (\(error.localizedDescription))."
                     )
                 }
                 throw BessieProjectStoreError.migrationFailed(

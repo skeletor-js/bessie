@@ -23,20 +23,35 @@ public struct SSHRemoteFileAccess: Equatable, Sendable, Hashable {
     public let host: String
     public let controlPath: String
     public let sshExecutablePath: String
+    /// Require the existing mux socket and make direct SSH fallback fail closed.
+    public let requireControlMaster: Bool
 
-    public init(host: String, controlPath: String, sshExecutablePath: String = "/usr/bin/ssh") {
+    public init(
+        host: String,
+        controlPath: String,
+        sshExecutablePath: String = "/usr/bin/ssh",
+        requireControlMaster: Bool = false
+    ) {
         self.host = host
         self.controlPath = controlPath
         self.sshExecutablePath = sshExecutablePath
+        self.requireControlMaster = requireControlMaster
     }
 
     public var commandArguments: [String] {
-        SSHHostKeyPolicy.requiredArguments + [
+        var arguments = SSHHostKeyPolicy.requiredArguments + [
             "-S", controlPath,
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=8",
-            host,
         ]
+        if requireControlMaster {
+            arguments += [
+                "-o", "ControlMaster=no",
+                "-o", "ProxyCommand=/usr/bin/false",
+            ]
+        }
+        arguments.append(host)
+        return arguments
     }
 }
 

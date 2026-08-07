@@ -21,6 +21,10 @@ struct BessieProjectDraft: Identifiable {
         get { project.projectDescription }
         set { project.projectDescription = newValue }
     }
+    var targetConnectionID: String {
+        get { project.targetConnectionID }
+        set { project.targetConnectionID = newValue }
+    }
     var workingDirectory: String {
         get { project.workingDirectory }
         set { project.workingDirectory = newValue }
@@ -57,12 +61,18 @@ final class ProjectsViewModel: ObservableObject {
     @Published private(set) var launchReview: ProjectLaunchReviewPresentation?
     @Published private(set) var launchFailure: ProjectLaunchFailurePresentation?
     @Published private(set) var navigationHandoff: ProjectWorkspaceHandoff?
+    @Published private(set) var connectionDefinitions: [BessieConnectionDefinition] = [.localBessie]
+    @Published private(set) var defaultProjectConnectionID = BessieConnectionDefinition.localBessie.id
 
     private let store: BessieProjectStore
     private let launchService: any ProjectLaunchServicing
     private var connection: BessieProjectMaterializationConnection?
     private var connectionSnapshot: HerdrSnapshot?
+    private var launchTargets: [String: ProjectLaunchTarget] = [:]
+    private var resolveLaunchTarget: ((String) async throws -> ProjectLaunchTarget)?
+    private var reportLaunchPreparationFailure: ((String) -> Void)?
     private var launchTask: Task<Void, Never>?
+    private var materializingConnection: BessieProjectMaterializationConnection?
     private var runningInstances: [BessieProjectRunningInstance] = []
 
     init(
@@ -121,6 +131,33 @@ final class ProjectsViewModel: ObservableObject {
         }
     }
 
+    var draftTargetConnection: BessieConnectionDefinition? {
+        guard let targetConnectionID = draft?.targetConnectionID else { return nil }
+        return connectionDefinitions.first { $0.id == targetConnectionID }
+    }
+
+    var projectTargetConnections: [BessieConnectionDefinition] {
+        let currentID = draft?.targetConnectionID
+        return connectionDefinitions.filter { $0.enabled || $0.id == currentID }
+    }
+
+    var draftTargetUnavailableReason: String? {
+        guard let targetConnectionID = draft?.targetConnectionID else { return nil }
+        guard let definition = connectionDefinitions.first(where: { $0.id == targetConnectionID }) else {
+            return "This Project targets a missing herd (\(targetConnectionID)). Choose an enabled herd and verify every target-host path before saving."
+        }
+        guard !definition.enabled else { return nil }
+        return "\(definition.name) is disabled. Re-enable it without changing this recipe, or choose an enabled herd and verify every target-host path."
+    }
+
+    func configureLaunchTargetReadiness(
+        resolve: @escaping (String) async throws -> ProjectLaunchTarget,
+        reportFailure: @escaping (String) -> Void
+    ) {
+        resolveLaunchTarget = resolve
+        reportLaunchPreparationFailure = reportFailure
+    }
+
     func load() {
         isLoading = true
         defer { isLoading = false }
@@ -138,6 +175,7 @@ final class ProjectsViewModel: ObservableObject {
         let rootPane = BessieProjectPane(label: "Shell", placement: .root)
         let project = BessieProject(
             name: "Untitled project",
+            targetConnectionID: defaultProjectConnectionID,
             workingDirectory: workingDirectory,
             tabs: [BessieProjectTab(name: "Main", panes: [rootPane])]
         )
@@ -160,7 +198,8 @@ final class ProjectsViewModel: ObservableObject {
         }
         do {
             let project = try BessieProjectCapture.capture(
-                from: HerdrSessionProjection(snapshot: connectionSnapshot)
+                from: HerdrSessionProjection(snapshot: connectionSnapshot),
+                targetConnectionID: defaultProjectConnectionID
             )
             conflict = nil
             errorMessage = nil
@@ -234,67 +273,176 @@ final class ProjectsViewModel: ObservableObject {
         _ connection: BessieProjectMaterializationConnection?,
         snapshot: HerdrSnapshot?
     ) {
-        if self.connection != connection {
+        let targets: [String: ProjectLaunchTarget]
+        let definitions: [BessieConnectionDefinition]
+        if let connection, let snapshot {
+            targets = [connection.definition.id: .init(
+                connection: connection,
+                snapshot: snapshot,
+                remoteFileAccess: nil
+            )]
+            definitions = [connection.definition]
+        } else {
+            targets = [:]
+            definitions = [.localBessie]
+        }
+        updateConnections(
+            definitions: definitions,
+            targets: targets,
+            activeConnectionID: connection?.definition.id,
+            defaultProjectConnectionID: connection?.definition.id
+        )
+    }
+
+    func updateConnections(
+        definitions: [BessieConnectionDefinition],
+        targets: [String: ProjectLaunchTarget],
+        activeConnectionID: String?,
+        defaultProjectConnectionID: String? = nil
+    ) {
+        if let materializingConnection,
+           materializingConnection != targets[materializingConnection.definition.id]?.connection {
             launchTask?.cancel()
             launchReview = nil
             navigationHandoff = nil
         }
-        self.connection = connection
-        connectionSnapshot = connection == nil ? nil : snapshot
-        launchService.updateConnection(connection)
+        if let launchReview,
+           launchTargets[launchReview.project.targetConnectionID]?.connection
+            != targets[launchReview.project.targetConnectionID]?.connection {
+            self.launchReview = nil
+        }
+        if let navigationHandoff,
+           launchTargets[navigationHandoff.connection.definition.id]?.connection
+            != targets[navigationHandoff.connection.definition.id]?.connection {
+            self.navigationHandoff = nil
+        }
+        connectionDefinitions = definitions
+        let enabledDefinitions = definitions.filter(\.enabled)
+        self.defaultProjectConnectionID = defaultProjectConnectionID.flatMap { requested in
+            enabledDefinitions.first(where: { $0.id == requested })?.id
+        } ?? activeConnectionID.flatMap { requested in
+            enabledDefinitions.first(where: { $0.id == requested })?.id
+        } ?? enabledDefinitions.first?.id ?? self.defaultProjectConnectionID
+        launchTargets = targets
+        connection = activeConnectionID.flatMap { targets[$0]?.connection }
+        connectionSnapshot = activeConnectionID.flatMap { targets[$0]?.snapshot }
+        launchService.updateConnections(targets.mapValues(\.connection))
         revalidateRunningInstances()
     }
 
     func canOpenProject(_ projectID: UUID) -> Bool {
         guard opening == nil,
-              let connection,
-              connection.definition.kind == .local,
-              HerdrCompatibility.incompatibility(for: connection.identity) == nil,
-              let project = projects.first(where: { $0.project.id == projectID })?.project
+              let project = projects.first(where: { $0.project.id == projectID })?.project,
+              connectionDefinitions.contains(where: {
+                  $0.id == project.targetConnectionID && $0.enabled
+              }),
+              let target = launchTargets[project.targetConnectionID],
+              HerdrCompatibility.incompatibility(for: target.connection.identity) == nil
         else { return false }
-        return (try? project.normalized()) != nil
+        return (try? project.normalizedForLaunch(on: target.connection.definition.kind)) != nil
     }
 
     func openUnavailableReason(for projectID: UUID) -> String {
         guard opening == nil else { return "Another Project is opening." }
-        guard let connection else { return "Connect to compatible local Herdr before opening this Project." }
-        guard connection.definition.kind == .local else { return "Remote Project opening is not supported in V1." }
-        if let reason = HerdrCompatibility.incompatibility(for: connection.identity) { return reason }
-        guard let project = projects.first(where: { $0.project.id == projectID })?.project,
-              (try? project.normalized()) != nil
-        else { return "Fix the Project validation errors before opening it." }
+        guard let project = projects.first(where: { $0.project.id == projectID })?.project else {
+            return "That Project is no longer available. Search again to use the current catalog."
+        }
+        guard let definition = connectionDefinitions.first(where: { $0.id == project.targetConnectionID }) else {
+            return "This Project targets an unconfigured herd (\(project.targetConnectionID)). Configure that herd, then launch again."
+        }
+        guard definition.enabled else {
+            return "This Project targets \(definition.name), which is disabled. Re-enable that herd or explicitly choose another enabled target and verify its paths before launching again."
+        }
+        guard (try? project.normalizedForLaunch(on: definition.kind)) != nil else {
+            return definition.kind == .local
+                ? "Fix the Project's local folder or recipe settings, then launch it again."
+                : "Fix the Project's remote folder paths or recipe settings, then launch it again."
+        }
+        guard let target = launchTargets[project.targetConnectionID] else {
+            return "Connect \(definition.name), this Project's target herd, then launch it again."
+        }
+        if let reason = HerdrCompatibility.incompatibility(for: target.connection.identity) { return reason }
         return "This Project cannot be opened right now."
     }
 
     func requestOpen(_ projectID: UUID) {
-        guard canOpenProject(projectID),
-              let stored = projects.first(where: { $0.project.id == projectID }),
-              let connection
-        else {
-            notice = openUnavailableReason(for: projectID)
-            return
-        }
-        let project = (try? stored.project.normalized()) ?? stored.project
+        guard let (project, target) = preparedLaunch(projectID) else { return }
         if project.tabs.flatMap(\.panes).contains(where: { $0.command != nil }) {
             launchReview = ProjectLaunchReviewPresentation(
                 project: project,
-                connectionLabel: connection.definition.name
+                connectionLabel: target.connection.definition.name
             )
         } else {
-            beginLaunch(project, connection: connection)
+            beginLaunch(project, target: target)
         }
+    }
+
+    @discardableResult
+    func launchImmediately(_ projectID: UUID) -> Bool {
+        if opening?.projectID == projectID { return true }
+        guard opening == nil,
+              let stored = projects.first(where: { $0.project.id == projectID }),
+              let definition = connectionDefinitions.first(where: {
+                  $0.id == stored.project.targetConnectionID && $0.enabled
+              }),
+              let project = try? stored.project.normalizedForLaunch(on: definition.kind)
+        else {
+            notice = openUnavailableReason(for: projectID)
+            return false
+        }
+        launchReview = nil
+        if let target = launchTargets[project.targetConnectionID] {
+            guard HerdrCompatibility.incompatibility(for: target.connection.identity) == nil else {
+                notice = openUnavailableReason(for: projectID)
+                return false
+            }
+            beginLaunch(project, target: target)
+            return true
+        }
+        guard let resolveLaunchTarget else {
+            notice = openUnavailableReason(for: projectID)
+            return false
+        }
+        launchFailure = nil
+        navigationHandoff = nil
+        progress = nil
+        notice = nil
+        opening = ProjectOpeningState(projectID: project.id, projectName: project.name)
+        launchTask = Task { @MainActor [weak self] in
+            do {
+                let target = try await resolveLaunchTarget(project.targetConnectionID)
+                try Task.checkCancellation()
+                guard let self, self.opening?.projectID == project.id else { return }
+                self.launchTargets[project.targetConnectionID] = target
+                self.launchService.updateConnections(self.launchTargets.mapValues(\.connection))
+                self.beginLaunch(project, target: target)
+            } catch is CancellationError {
+                guard let self, self.opening?.projectID == project.id,
+                      self.materializingConnection == nil
+                else { return }
+                self.opening = nil
+                self.launchTask = nil
+            } catch {
+                guard let self, self.opening?.projectID == project.id else { return }
+                self.opening = nil
+                self.launchTask = nil
+                let message = "Could not launch \(project.name). \(error.localizedDescription)"
+                self.notice = message
+                self.reportLaunchPreparationFailure?(message)
+            }
+        }
+        return true
     }
 
     func confirmLaunchReview() {
         guard let review = launchReview,
-              canOpenProject(review.project.id),
-              let connection
+              let (project, target) = preparedLaunch(review.project.id)
         else {
             launchReview = nil
             return
         }
         launchReview = nil
-        beginLaunch(review.project, connection: connection)
+        beginLaunch(project, target: target)
     }
 
     func cancelLaunchReview() {
@@ -308,20 +456,20 @@ final class ProjectsViewModel: ObservableObject {
     func retryLaunch() {
         guard canRetryLaunchFailure, let projectID = launchFailure?.project.id else { return }
         launchFailure = nil
-        requestOpen(projectID)
+        launchImmediately(projectID)
     }
 
     func openPartialWorkspace() {
         guard let presentation = launchFailure,
-              let connection,
+              let target = launchTargets[presentation.failure.partialResult.connectionID],
               failureMatchesCurrentConnection(presentation.failure),
               let handoff = Self.handoff(
                 project: presentation.project,
-                connection: connection,
+                connection: target.connection,
                 workspaceID: presentation.failure.partialResult.workspaceID,
                 tabIDs: presentation.failure.partialResult.tabIDsByRecipeID,
                 paneIDs: presentation.failure.partialResult.paneIDsByRecipeID,
-                snapshot: connectionSnapshot
+                snapshot: target.snapshot
               )
         else { return }
         navigationHandoff = handoff
@@ -339,19 +487,17 @@ final class ProjectsViewModel: ObservableObject {
 
     func openRunningWorkspace(_ projectID: UUID) {
         guard let project = projects.first(where: { $0.project.id == projectID })?.project,
-              let connection,
-              let snapshot = connectionSnapshot,
               let running = runningInstance(for: projectID),
-              running.connectionID == connection.definition.id,
-              running.socketPath == connection.socketPath,
-              running.generation == connection.generation,
+              let target = launchTargets[running.connectionID],
+              running.socketPath == target.connection.socketPath,
+              running.generation == target.connection.generation,
               let handoff = Self.handoff(
                 project: project,
-                connection: connection,
+                connection: target.connection,
                 workspaceID: running.workspaceID,
                 tabIDs: running.tabIDsByRecipeID,
                 paneIDs: running.paneIDsByRecipeID,
-                snapshot: snapshot
+                snapshot: target.snapshot
               )
         else { return }
         navigationHandoff = handoff
@@ -364,16 +510,17 @@ final class ProjectsViewModel: ObservableObject {
 
     var canOpenPartialWorkspace: Bool {
         guard let presentation = launchFailure,
+              let target = launchTargets[presentation.failure.partialResult.connectionID],
               presentation.failure.partialResult.workspaceID != nil,
               failureMatchesCurrentConnection(presentation.failure)
         else { return false }
         return Self.handoff(
             project: presentation.project,
-            connection: connection!,
+            connection: target.connection,
             workspaceID: presentation.failure.partialResult.workspaceID,
             tabIDs: presentation.failure.partialResult.tabIDsByRecipeID,
             paneIDs: presentation.failure.partialResult.paneIDsByRecipeID,
-            snapshot: connectionSnapshot
+            snapshot: target.snapshot
         ) != nil
     }
 
@@ -411,6 +558,15 @@ final class ProjectsViewModel: ObservableObject {
     func updateFolderPath(_ folderID: UUID, path: String) {
         guard var draft, let index = draft.folders.firstIndex(where: { $0.id == folderID }) else { return }
         draft.folders[index].path = path
+        self.draft = draft
+    }
+
+    func updateTargetConnection(_ connectionID: String) {
+        guard var draft,
+              connectionDefinitions.contains(where: { $0.id == connectionID && $0.enabled }),
+              draft.targetConnectionID != connectionID
+        else { return }
+        draft.targetConnectionID = connectionID
         self.draft = draft
     }
 
@@ -559,21 +715,31 @@ final class ProjectsViewModel: ObservableObject {
 
     private func beginLaunch(
         _ project: BessieProject,
-        connection: BessieProjectMaterializationConnection
+        target: ProjectLaunchTarget
     ) {
-        guard opening == nil, self.connection == connection else { return }
+        let connection = target.connection
+        guard (opening == nil || opening?.projectID == project.id),
+              launchTargets[connection.definition.id]?.connection == connection
+        else { return }
         launchFailure = nil
         navigationHandoff = nil
         progress = nil
         opening = ProjectOpeningState(projectID: project.id, projectName: project.name)
+        materializingConnection = connection
         let service = launchService
         let progressSink = ProjectLaunchProgressSink { [weak self] fact in
-            guard self?.connection == connection, self?.opening?.projectID == project.id else { return }
+            guard self?.launchTargets[connection.definition.id]?.connection == connection,
+                  self?.opening?.projectID == project.id
+            else { return }
             self?.progress = fact
         }
         launchTask = Task.detached { [weak self] in
             do {
-                let result = try service.materialize(project, on: connection) { fact in
+                let result = try service.materialize(
+                    project,
+                    on: connection,
+                    remoteFileAccess: target.remoteFileAccess
+                ) { fact in
                     progressSink.send(fact)
                 }
                 await MainActor.run { [weak self] in self?.completeLaunch(result) }
@@ -603,11 +769,28 @@ final class ProjectsViewModel: ObservableObject {
         }
     }
 
+    private func preparedLaunch(
+        _ projectID: UUID
+    ) -> (BessieProject, ProjectLaunchTarget)? {
+        guard canOpenProject(projectID),
+              let stored = projects.first(where: { $0.project.id == projectID }),
+              let target = launchTargets[stored.project.targetConnectionID],
+              let project = try? stored.project.normalizedForLaunch(on: target.connection.definition.kind)
+        else {
+            notice = openUnavailableReason(for: projectID)
+            return nil
+        }
+        return (project, target)
+    }
+
     private func completeLaunch(_ result: BessieProjectMaterializationResult) {
-        guard connection == result.plan.connection else { return }
+        let connection = result.plan.connection
+        guard launchTargets[connection.definition.id]?.connection == connection else { return }
         opening = nil
         launchTask = nil
-        connectionSnapshot = result.finalSnapshot
+        materializingConnection = nil
+        launchTargets[connection.definition.id]?.snapshot = result.finalSnapshot
+        if self.connection == connection { connectionSnapshot = result.finalSnapshot }
         let record = BessieProjectRunningInstance(
             projectID: result.plan.project.id,
             connectionID: result.plan.connection.definition.id,
@@ -640,45 +823,52 @@ final class ProjectsViewModel: ObservableObject {
         guard opening?.projectID == project.id else { return }
         opening = nil
         launchTask = nil
+        materializingConnection = nil
+        let targetConnection = launchTargets[failure.partialResult.connectionID]?.connection
         let safeRetry = failure.partialResult.workspaceID == nil
             && failure.partialResult.mutationOutcome == .notAttempted
-            && connection?.definition.id == failure.partialResult.connectionID
-            && connection?.socketPath == failure.partialResult.socketPath
-            && connection?.generation == failure.partialResult.generation
-        launchFailure = ProjectLaunchFailurePresentation(project: project, failure: failure, canRetry: safeRetry)
-        if let connection {
+            && targetConnection?.socketPath == failure.partialResult.socketPath
+            && targetConnection?.generation == failure.partialResult.generation
+        launchFailure = ProjectLaunchFailurePresentation(
+            project: project,
+            failure: failure,
+            canRetry: safeRetry,
+            connectionLabel: launchTargets[failure.partialResult.connectionID]?.connection.definition.name
+                ?? failure.partialResult.connectionID
+        )
+        if var target = launchTargets[failure.partialResult.connectionID] {
             if failureMatchesCurrentConnection(failure), let freshSnapshot = failure.partialResult.freshSnapshot {
-                connectionSnapshot = freshSnapshot
+                target.snapshot = freshSnapshot
+                launchTargets[failure.partialResult.connectionID] = target
+                if connection == target.connection { connectionSnapshot = freshSnapshot }
             }
             navigationHandoff = Self.handoff(
                 project: project,
-                connection: connection,
+                connection: target.connection,
                 workspaceID: failure.partialResult.workspaceID,
                 tabIDs: failure.partialResult.tabIDsByRecipeID,
                 paneIDs: failure.partialResult.paneIDsByRecipeID,
-                snapshot: failureMatchesCurrentConnection(failure) ? connectionSnapshot : nil
+                snapshot: failureMatchesCurrentConnection(failure) ? target.snapshot : nil
             )
         }
     }
 
     private func failureMatchesCurrentConnection(_ failure: BessieProjectMaterializationFailure) -> Bool {
-        guard let connection else { return false }
-        return connection.definition.id == failure.partialResult.connectionID
-            && connection.socketPath == failure.partialResult.socketPath
+        guard let connection = launchTargets[failure.partialResult.connectionID]?.connection else { return false }
+        return connection.socketPath == failure.partialResult.socketPath
             && connection.generation == failure.partialResult.generation
     }
 
     private func revalidateRunningInstances() {
-        guard let connection, let snapshot = connectionSnapshot else {
-            runningInstances.removeAll()
-            return
-        }
         runningInstances = runningInstances.filter { record in
-            guard record.connectionID == connection.definition.id,
-                  record.socketPath == connection.socketPath,
-                  record.generation == connection.generation,
-                  snapshot.workspaces.contains(where: { $0.projectString("workspace_id") == record.workspaceID })
+            guard let target = launchTargets[record.connectionID],
+                  record.socketPath == target.connection.socketPath,
+                  record.generation == target.connection.generation
             else { return false }
+            let snapshot = target.snapshot
+            guard snapshot.workspaces.contains(where: {
+                $0.projectString("workspace_id") == record.workspaceID
+            }) else { return false }
             return record.tabIDsByRecipeID.values.allSatisfy { runtimeTabID in
                 snapshot.tabs.contains {
                     $0.projectString("tab_id") == runtimeTabID
@@ -747,6 +937,7 @@ final class ProjectsViewModel: ObservableObject {
         switch issue.code {
         case .unsupportedSchemaVersion: "This Project uses an unsupported schema version."
         case .emptyName: issue.tabID == nil ? "Project name is required." : "Every tab needs a name."
+        case .targetConnectionMissing: "Choose a target herd for this Project."
         case .invalidPrimaryFolderCount: "Choose exactly one primary folder."
         case .emptyFolderName: "Every folder needs a display name."
         case .duplicateFolderID: "The draft contains duplicate folder identifiers."

@@ -17,7 +17,9 @@ final class BessieSettingsModel: ObservableObject {
     private let legacyLastWorkspaceID: String?
     @Published private(set) var connections: [BessieConnectionDefinition]
     @Published private(set) var selectedConnectionID: String
+    @Published private(set) var defaultProjectConnectionID: String
     @Published private(set) var connectionError: String?
+    @Published private(set) var connectionConfigurationLoadFailed: Bool
     @Published private(set) var runtimeSelection: HerdrRuntimeSelection
     @Published private(set) var onboarding = OnboardingState()
     @Published private(set) var runtimePersistenceError: String?
@@ -29,6 +31,7 @@ final class BessieSettingsModel: ObservableObject {
     private let store: BessiePresentationStore
     private let connectionStore: BessieConnectionStore
     private let runtimeStore: HerdrRuntimeSelectionStore
+    private let configurationLease: BessieConfigurationLease?
 
     convenience init() {
         let environment = ProcessInfo.processInfo.environment
@@ -67,16 +70,38 @@ final class BessieSettingsModel: ObservableObject {
         connectionStore = BessieConnectionStore(url: connectionsURL)
         runtimeStore = HerdrRuntimeSelectionStore(url: runtimeSelectionURL)
         runtimeSelection = runtimeStore.load()
-        let connectionState: BessieConnectionState
+        var acquiredLease: BessieConfigurationLease?
+        var leaseFailure: Error?
         do {
-            connectionState = try connectionStore.load()
+            acquiredLease = try BessieConfigurationLease.acquireShared(for: connectionsURL)
+        } catch {
+            leaseFailure = error
+        }
+        configurationLease = acquiredLease
+        let loadedConnections: [BessieConnectionDefinition]
+        let loadedSelectedConnectionID: String
+        let loadedDefaultProjectConnectionID: String
+        let connectionLoadError: String?
+        do {
+            if let leaseFailure { throw leaseFailure }
+            let connectionState = try connectionStore.load()
+            loadedConnections = connectionState.connections
+            loadedSelectedConnectionID = connectionState.selectedConnectionID
+            loadedDefaultProjectConnectionID = connectionState.defaultProjectConnectionID
+            connectionLoadError = nil
+            connectionConfigurationLoadFailed = false
         } catch {
             BessieDiagnosticLog.append("Connections load failed: \(String(reflecting: error))")
-            connectionState = BessieConnectionState()
+            loadedConnections = []
+            loadedSelectedConnectionID = ""
+            loadedDefaultProjectConnectionID = ""
+            connectionLoadError = "Bessie couldn't load herd settings and did not start any herd. Restore or repair connections.json, then reopen Bessie. \(error.localizedDescription)"
+            connectionConfigurationLoadFailed = true
         }
-        connections = connectionState.connections
-        selectedConnectionID = connectionState.selectedConnectionID
-        connectionError = nil
+        connections = loadedConnections
+        selectedConnectionID = loadedSelectedConnectionID
+        defaultProjectConnectionID = loadedDefaultProjectConnectionID
+        connectionError = connectionLoadError
         onboarding.completed = state?.firstRealTerminalCompletionVersion == BessiePresentationState.firstRealTerminalCompletionVersion
         if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
            let number = Int(artboard), (9...13).contains(number) {
@@ -139,21 +164,75 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     var selectedConnection: BessieConnectionDefinition {
-        connections.first { $0.id == selectedConnectionID } ?? .localBessie
+        connections.first { $0.id == selectedConnectionID && $0.enabled }
+            ?? connections.first(where: \.enabled)
+            ?? BessieConnectionDefinition(
+                id: BessieConnectionDefinition.localBessie.id,
+                name: "Herd settings unavailable",
+                kind: .local,
+                enabled: false,
+                connectAtLaunch: false
+            )
     }
 
-    func selectConnection(_ id: String) {
-        guard connections.contains(where: { $0.id == id }) else { return }
-        selectedConnectionID = id
-        persistConnections()
+    var enabledConnections: [BessieConnectionDefinition] {
+        connections.filter(\.enabled)
     }
 
-    func setConnectAtLaunch(connectionID: String, enabled: Bool) {
-        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
-        guard connections[index].connectAtLaunch != enabled else { return }
-        connections[index].connectAtLaunch = enabled
-        connectionError = nil
-        persistConnections()
+    @discardableResult
+    func selectConnection(_ id: String) -> Bool {
+        guard connections.contains(where: { $0.id == id && $0.enabled }) else {
+            connectionError = "Enable this herd before selecting it."
+            return false
+        }
+        return publishConnectionCandidate(
+            selectedConnectionID: id,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: connections
+        )
+    }
+
+    @discardableResult
+    func setDefaultProjectConnection(_ id: String) -> Bool {
+        guard connections.contains(where: { $0.id == id && $0.enabled }) else {
+            connectionError = "Enable this herd before making it the Project default."
+            return false
+        }
+        return publishConnectionCandidate(
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: id,
+            connections: connections
+        )
+    }
+
+    @discardableResult
+    func setConnectionEnabled(connectionID: String, enabled: Bool) -> Bool {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return false }
+        guard connections[index].enabled != enabled else { return true }
+        var candidate = connections
+        candidate[index].enabled = enabled
+        return publishConnectionCandidate(
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: candidate
+        )
+    }
+
+    @discardableResult
+    func setConnectAtLaunch(connectionID: String, enabled: Bool) -> Bool {
+        guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return false }
+        guard connections[index].enabled else {
+            connectionError = "Enable this herd before changing its launch behavior."
+            return false
+        }
+        guard connections[index].connectAtLaunch != enabled else { return true }
+        var candidate = connections
+        candidate[index].connectAtLaunch = enabled
+        return publishConnectionCandidate(
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: candidate
+        )
     }
 
     @discardableResult
@@ -166,32 +245,42 @@ final class BessieSettingsModel: ObservableObject {
                 session: session,
                 connectAtLaunch: false
             ).validated()
-            connections.append(connection)
-            selectedConnectionID = connection.id
-            connectionError = nil
-            persistConnections()
-            return true
+            return publishConnectionCandidate(
+                selectedConnectionID: connection.id,
+                defaultProjectConnectionID: connection.id,
+                connections: connections + [connection]
+            )
         } catch {
             connectionError = error.localizedDescription
             return false
         }
     }
 
-    func removeConnection(_ id: String) {
-        guard id != BessieConnectionDefinition.localBessie.id else { return }
-        connections.removeAll { $0.id == id }
-        if selectedConnectionID == id { selectedConnectionID = BessieConnectionDefinition.localBessie.id }
-        connectionError = nil
-        persistConnections()
+    @discardableResult
+    func removeConnection(_ id: String) -> Bool {
+        guard id != BessieConnectionDefinition.localBessie.id,
+              connections.contains(where: { $0.id == id })
+        else { return false }
+        return publishConnectionCandidate(
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: connections.filter { $0.id != id }
+        )
     }
 
     func registerOnboardingConnection(_ connection: BessieConnectionDefinition) throws {
         let connection = try connection.validated()
         guard connection.id != BessieConnectionDefinition.localBessie.id else { return }
-        if let index = connections.firstIndex(where: { $0.id == connection.id }) { connections[index] = connection }
-        else { connections.append(connection) }
-        selectedConnectionID = connection.id
-        persistConnections()
+        var candidate = connections
+        if let index = candidate.firstIndex(where: { $0.id == connection.id }) { candidate[index] = connection }
+        else { candidate.append(connection) }
+        guard publishConnectionCandidate(
+            selectedConnectionID: connection.id,
+            defaultProjectConnectionID: connection.id,
+            connections: candidate
+        ) else {
+            throw BessieConnectionPersistenceError.saveFailed(connectionError ?? "Unknown persistence failure.")
+        }
     }
 
     func clearConnectionError() { connectionError = nil }
@@ -269,13 +358,46 @@ final class BessieSettingsModel: ObservableObject {
         )
     }
 
-    private func persistConnections() {
-        try? connectionStore.save(BessieConnectionState(
-            selectedConnectionID: selectedConnectionID,
-            connections: connections
-        ))
+    @discardableResult
+    private func publishConnectionCandidate(
+        selectedConnectionID: String,
+        defaultProjectConnectionID: String,
+        connections: [BessieConnectionDefinition]
+    ) -> Bool {
+        guard !connectionConfigurationLoadFailed else {
+            connectionError = "Repair or restore connections.json before changing herd settings. Bessie has left the unreadable file untouched."
+            return false
+        }
+        do {
+            let candidate = try BessieConnectionState.validated(
+                selectedConnectionID: selectedConnectionID,
+                defaultProjectConnectionID: defaultProjectConnectionID,
+                connections: connections
+            )
+            try connectionStore.save(candidate)
+            self.connections = candidate.connections
+            self.selectedConnectionID = candidate.selectedConnectionID
+            self.defaultProjectConnectionID = candidate.defaultProjectConnectionID
+            connectionError = nil
+            return true
+        } catch let error as BessieConnectionStateError {
+            connectionError = error.localizedDescription
+        } catch {
+            connectionError = "Bessie couldn't save herd settings. \(error.localizedDescription)"
+        }
+        return false
     }
 
+}
+
+private enum BessieConnectionPersistenceError: LocalizedError {
+    case saveFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .saveFailed(let detail): detail
+        }
+    }
 }
 
 @MainActor
@@ -299,6 +421,7 @@ struct BessieSettingsView: View {
     @State private var connectionName = ""
     @State private var sshHost = ""
     @State private var herdrSession = ""
+    @State private var connectionPendingDisable: BessieConnectionDefinition?
     @State private var connectionPendingRemoval: BessieConnectionDefinition?
     let embedded: Bool
     let runtimeDiagnostic: RuntimeDiagnosticSnapshot?
@@ -335,6 +458,24 @@ struct BessieSettingsView: View {
             if requested { prepareAddConnection() }
         }
         .sheet(isPresented: $showAddConnection) { addConnectionSheet }
+        .confirmationDialog(
+            "Disable this herd?",
+            isPresented: Binding(
+                get: { connectionPendingDisable != nil },
+                set: { if !$0 { connectionPendingDisable = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let connectionPendingDisable {
+                Button("Disable \(connectionPendingDisable.name)", role: .destructive) {
+                    model.setConnectionEnabled(connectionID: connectionPendingDisable.id, enabled: false)
+                    self.connectionPendingDisable = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { connectionPendingDisable = nil }
+        } message: {
+            Text("Bessie will stop using this herd. Projects targeting it cannot launch until you re-enable or retarget them, and the active or default herd may change. Herdr, panes, and their processes keep running.")
+        }
         .confirmationDialog(
             "Remove SSH connection?",
             isPresented: Binding(
@@ -476,7 +617,13 @@ struct BessieSettingsView: View {
     private func connectionRow(_ connection: BessieConnectionDefinition) -> some View {
         let health = fleet.connectionHealth.first { $0.connectionID == connection.id }
         let selected = model.selectedConnectionID == connection.id
+        let isDefault = model.defaultProjectConnectionID == connection.id
         let detail: String = {
+            guard connection.enabled else {
+                return connection.connectAtLaunch
+                    ? "disabled · start-at-launch retained"
+                    : "disabled"
+            }
             if connection.kind == .local {
                 let phase = health?.isUsable == true ? "healthy" : (health?.phase.lowercased() ?? "not started")
                 return "included runtime · \(phase)"
@@ -492,6 +639,7 @@ struct BessieSettingsView: View {
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundStyle(BessieDesign.strong)
                     if selected { Text("active").font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(BessieDesign.strong) }
+                    if isDefault { Text("Project default").font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(BessieDesign.subtle) }
                 }
                 Text(detail)
                     .font(.system(size: 10.5, design: .monospaced))
@@ -499,6 +647,30 @@ struct BessieSettingsView: View {
                     .lineLimit(1)
             }
             Spacer()
+            Toggle(
+                "Enabled",
+                isOn: Binding(
+                    get: { connection.enabled },
+                    set: { enabled in
+                        if enabled {
+                            model.setConnectionEnabled(connectionID: connection.id, enabled: true)
+                        } else if model.enabledConnections.count == 1 {
+                            model.setConnectionEnabled(connectionID: connection.id, enabled: false)
+                        } else {
+                            connectionPendingDisable = connection
+                        }
+                    }
+                )
+            )
+            .toggleStyle(BessieSettingsSwitchStyle())
+            .labelsHidden()
+            .help(connection.enabled ? "Disable this herd" : "Enable this herd")
+            .accessibilityLabel("Enable \(connection.name)")
+            .accessibilityValue(connection.enabled ? "Enabled" : "Disabled")
+            Text("Use")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(connection.enabled ? BessieDesign.strong : BessieDesign.faint)
+                .accessibilityHidden(true)
             Toggle(
                 "Start at launch",
                 isOn: Binding(
@@ -508,13 +680,19 @@ struct BessieSettingsView: View {
             )
             .toggleStyle(BessieSettingsSwitchStyle())
             .labelsHidden()
-            .help("Start this herd when Bessie opens")
+            .disabled(!connection.enabled)
+            .help(connection.enabled
+                ? "Start this herd when Bessie opens"
+                : "Enable this herd to use its retained start-at-launch setting")
             .accessibilityLabel("Start \(connection.name) at launch")
+            .accessibilityValue(connection.enabled
+                ? (connection.connectAtLaunch ? "On" : "Off")
+                : "Unavailable while disabled")
             Text("Launch")
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(connection.connectAtLaunch ? BessieDesign.strong : BessieDesign.faint)
                 .accessibilityHidden(true)
-            if health?.canRetry == true {
+            if connection.enabled, health?.canRetry == true {
                 Button(health?.phase == "Not started" ? "Connect" : "Retry") {
                     if health?.phase == "Not started" {
                         model.selectConnection(connection.id)
@@ -525,7 +703,15 @@ struct BessieSettingsView: View {
                 }
                 .buttonStyle(BessieSecondaryButtonStyle())
             }
-            if !selected { Button("Set active") { model.selectConnection(connection.id) }.buttonStyle(BessieQuietButtonStyle()) }
+            if connection.enabled, !selected {
+                Button("Set active") { model.selectConnection(connection.id) }
+                    .buttonStyle(BessieQuietButtonStyle())
+            }
+            if connection.enabled, !isDefault {
+                Button("Project default") { model.setDefaultProjectConnection(connection.id) }
+                    .buttonStyle(BessieQuietButtonStyle())
+                    .accessibilityLabel("Make \(connection.name) the default Project herd")
+            }
             if connection.kind == .ssh {
                 Button { connectionPendingRemoval = connection } label: {
                     BessieIconView(icon: .dotsThree, size: 16)

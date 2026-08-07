@@ -341,7 +341,11 @@ struct WorkspaceHierarchyRail: View {
                 }
             if options.isEmpty { emptyRow("No workspaces") }
             ForEach(options) { row in
-                optionButton(id: "workspace-\(row.id.connectionID)-\(row.id.workspaceID)", title: row.title) {
+                optionButton(
+                    id: "workspace-\(row.id.connectionID)-\(row.id.workspaceID)",
+                    title: row.title,
+                    selected: presentation.globalSection == nil && row.isSelected
+                ) {
                     openWorkspace(row.id)
                 }
                 .accessibilityLabel("\(row.title), \(row.detail)")
@@ -371,7 +375,12 @@ struct WorkspaceHierarchyRail: View {
                 let order = $0.title.localizedCaseInsensitiveCompare($1.title)
                 return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
             }) { row in
-                optionButton(id: "tab-\(row.id)", title: row.title, count: row.paneCount) {
+                optionButton(
+                    id: "tab-\(row.id)",
+                    title: row.title,
+                    count: row.paneCount,
+                    selected: presentation.globalSection == nil && row.isSelected
+                ) {
                     focusTab(row.id)
                 }
                 .accessibilityLabel("\(row.title), \(row.paneCount) panes")

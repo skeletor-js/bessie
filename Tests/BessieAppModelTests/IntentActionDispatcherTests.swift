@@ -47,8 +47,79 @@ final class IntentActionDispatcherTests: XCTestCase {
         XCTAssertEqual(missing.value?["connected"], .bool(false))
     }
 
+    func testSharedLivePortExposesConfiguredDisabledAndDisconnectedContext() throws {
+        let live = AppIntentLivePort()
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = BessieConnectionDefinition(
+            id: "hermes-vps",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        live.updateConnectionContext(
+            connections: [local, remote],
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id
+        )
+        let dispatcher = BessieIntentActionDispatcher(
+            live: live,
+            projects: BessieProjectStore(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        )
+
+        let result = dispatcher.execute(BessieIntentRequest(
+            id: "context", intent: "connection.context", params: [:]
+        ))
+        let contexts = try result.value?.decode([BessieIntentConnectionContext].self)
+
+        XCTAssertEqual(contexts?.map(\.id), [local.id, remote.id])
+        XCTAssertEqual(contexts?.first?.enabled, false)
+        XCTAssertEqual(contexts?.last?.selected, true)
+        XCTAssertEqual(contexts?.last?.defaultProjectTarget, true)
+        XCTAssertEqual(contexts?.last?.connected, false)
+        XCTAssertEqual(contexts?.last?.sshHost, "hermes")
+    }
+
+    func testDisablingConfiguredConnectionInvalidatesRetainedLiveActionStateSynchronously() throws {
+        let live = AppIntentLivePort()
+        let connection = BessieConnectionDefinition(id: "remote", name: "Remote", kind: .ssh, sshHost: "hermes")
+        live.updateConnectionContext(
+            connections: [connection],
+            selectedConnectionID: connection.id,
+            defaultProjectConnectionID: connection.id
+        )
+        live.update(
+            client: HerdrActionClient(api: HerdrSocketAPI(socketPath: "/tmp/herdr-disabled-test.sock")),
+            connectionID: connection.id,
+            projection: nil
+        )
+        XCTAssertTrue(live.isConnected(connectionID: connection.id))
+        var disabled = connection
+        disabled.enabled = false
+
+        live.updateConnectionContext(
+            connections: [disabled],
+            selectedConnectionID: "",
+            defaultProjectConnectionID: ""
+        )
+
+        XCTAssertFalse(live.isConnected(connectionID: connection.id))
+        XCTAssertThrowsError(try live.projection(connectionID: connection.id))
+    }
+
     func testInstallProjectionDoesNotRequireClientReconnect() throws {
         let live = AppIntentLivePort()
+        let connection = BessieConnectionDefinition(
+            id: "c1",
+            name: "Test",
+            kind: .ssh,
+            sshHost: "example.test"
+        )
+        live.updateConnectionContext(
+            connections: [connection],
+            selectedConnectionID: connection.id,
+            defaultProjectConnectionID: connection.id
+        )
         let snapshot = HerdrSnapshot(
             version: "0.8.0",
             protocolVersion: 19,

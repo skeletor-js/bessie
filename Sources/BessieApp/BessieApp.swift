@@ -63,6 +63,12 @@ extension Notification.Name {
     static let bessieMainWindowWillClose = Notification.Name("Bessie.mainWindowWillClose")
 }
 
+enum BessieOperationalStartupPolicy {
+    static func permitsOperationalSurfaces(connectionConfigurationLoadFailed: Bool) -> Bool {
+        !connectionConfigurationLoadFailed
+    }
+}
+
 @main
 struct BessieApp: App {
     @NSApplicationDelegateAdaptor(BessieAppDelegate.self) private var appDelegate
@@ -71,6 +77,7 @@ struct BessieApp: App {
     @StateObject private var fleet: ConnectionFleetViewModel
     @StateObject private var terminalRegistry: TerminalControllerRegistry
     @StateObject private var themeCoordinator: BessieThemeCoordinator
+    @StateObject private var commandPaletteAvailability = BessieCommandPaletteAvailability()
     private let featureFlags: BessieFeatureFlags
 
     init() {
@@ -92,35 +99,48 @@ struct BessieApp: App {
 
     var body: some Scene {
         Window("Bessie", id: BessieWindowPolicy.controllerSceneID) {
-            BessieWindowRoot {
-                ConnectView(
-                    fleet: fleet,
-                    featureFlags: featureFlags,
-                    terminalRegistry: terminalRegistry,
-                    initiallyShowsColdOpen: !Self.isOnboardingStepArtboard
-                )
-                    .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
-                    .onAppear {
-                        BessiePerformance.recorder.mark(.firstWindowContent)
-                        BessieStartupMainThreadProbe.runIfRequested(recorder: BessiePerformance.recorder)
-                        Self.applyOnboardingArtboardAppearance(settings.preferences.appearance)
+            Group {
+                if BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+                    connectionConfigurationLoadFailed: settings.connectionConfigurationLoadFailed
+                ) {
+                    BessieWindowRoot {
+                        ConnectView(
+                            fleet: fleet,
+                            featureFlags: featureFlags,
+                            terminalRegistry: terminalRegistry,
+                            commandPaletteAvailability: commandPaletteAvailability,
+                            initiallyShowsColdOpen: !Self.isOnboardingStepArtboard
+                        )
+                            .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
+                            .onAppear {
+                                BessiePerformance.recorder.mark(.firstWindowContent)
+                                BessieStartupMainThreadProbe.runIfRequested(recorder: BessiePerformance.recorder)
+                                Self.applyOnboardingArtboardAppearance(settings.preferences.appearance)
+                            }
+                            .onChange(of: settings.preferences.appIcon) { _, icon in
+                                BessieAppIconController.apply(icon)
+                            }
                     }
-                    .onChange(of: settings.preferences.appIcon) { _, icon in
-                        BessieAppIconController.apply(icon)
-                    }
-            }
-                .overlay(alignment: .top) {
-                    BessieWindowChromeRegion(action: .toggleFullScreen)
-                        .frame(height: BessieDesign.titlebarHeight)
-                        .ignoresSafeArea(edges: .top)
+                        .overlay(alignment: .top) {
+                            BessieWindowChromeRegion(action: .toggleFullScreen)
+                                .frame(height: BessieDesign.titlebarHeight)
+                                .ignoresSafeArea(edges: .top)
+                        }
+                        .background(BessieMainWindowProbe(coordinator: appDelegate.windowCoordinator))
+                        .background(BessieLifecycleInstaller(
+                            appDelegate: appDelegate,
+                            fleet: fleet,
+                            settings: settings,
+                            notifications: notifications
+                        ))
+                        .task { fleet.startIntentServer() }
+                        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                            fleet.stopIntentServer()
+                        }
+                } else {
+                    BessieConfigurationBlockedView(message: settings.connectionError)
                 }
-                .background(BessieMainWindowProbe(coordinator: appDelegate.windowCoordinator))
-                .background(BessieLifecycleInstaller(
-                    appDelegate: appDelegate,
-                    fleet: fleet,
-                    settings: settings,
-                    notifications: notifications
-                ))
+            }
                 .modifier(BessieThemeAppearanceIngress())
                 .environmentObject(settings)
                 .environmentObject(themeCoordinator)
@@ -133,10 +153,6 @@ struct BessieApp: App {
                         ? 0
                         : BessieAccessibilityContract.minimumContentHeight
                 )
-                .task { fleet.startIntentServer() }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    fleet.stopIntentServer()
-                }
         }
         // Keep native window controls without AppKit's separate titlebar backing.
         .windowStyle(.hiddenTitleBar)
@@ -151,6 +167,7 @@ struct BessieApp: App {
                     NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.showCommandPalette)
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(!commandPaletteAvailability.canToggle)
             }
             CommandMenu("Zen") {
                 Button("Toggle Zen") {
@@ -177,8 +194,16 @@ struct BessieApp: App {
         }
 
         Settings {
-            BessieWindowRoot {
-                BessieSettingsView()
+            Group {
+                if BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+                    connectionConfigurationLoadFailed: settings.connectionConfigurationLoadFailed
+                ) {
+                    BessieWindowRoot {
+                        BessieSettingsView()
+                    }
+                } else {
+                    BessieConfigurationBlockedView(message: settings.connectionError)
+                }
             }
                 .modifier(BessieThemeAppearanceIngress())
                 .environmentObject(settings)
@@ -214,6 +239,26 @@ struct BessieApp: App {
         NSApp.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
         let background = NSColor(BessieThemeRegistry.definition(for: appearance, systemScheme: scheme).palette.background)
         NSApp.windows.forEach { $0.backgroundColor = background }
+    }
+}
+
+private struct BessieConfigurationBlockedView: View {
+    let message: String?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Bessie stayed closed")
+                .font(.title2.weight(.semibold))
+            Text(message ?? "Bessie could not safely load its herd configuration.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 520)
+            Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(40)
+        .frame(minWidth: 640, minHeight: 360)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -876,7 +921,7 @@ final class ConnectionFleetViewModel: ObservableObject {
     private var models: [String: ConnectionViewModel] = [:]
     private var supplementalTerminalRegistries: [String: TerminalControllerRegistry] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
-    private let intentServer = AppIntentServer()
+    private lazy var intentServer = AppIntentServer()
     private let defaults: UserDefaults
     private let performanceRecorder: BessiePerformanceRecorder
     private let scopeDefaultsKey = "Bessie.connectionScope"
@@ -904,6 +949,20 @@ final class ConnectionFleetViewModel: ObservableObject {
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
     var connectionDefinitions: [BessieConnectionDefinition] { configuredConnections }
+    var projectLaunchTargets: [String: ProjectLaunchTarget] {
+        var targets: [String: ProjectLaunchTarget] = [:]
+        for model in models.values {
+            guard let connection = model.projectMaterializationConnection,
+                  let snapshot = model.projection?.snapshot
+            else { continue }
+            targets[connection.definition.id] = ProjectLaunchTarget(
+                connection: connection,
+                snapshot: snapshot,
+                remoteFileAccess: model.remoteFileAccess
+            )
+        }
+        return targets
+    }
     var topologyConnections: [ConnectionTopologyProjection] {
         configuredConnections.compactMap { connection in
             guard let projection = models[connection.id]?.projection else { return nil }
@@ -935,6 +994,18 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     func stopIntentServer() { intentServer.stop() }
 
+    func updateIntentConnectionContext(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        defaultProjectConnectionID: String
+    ) {
+        intentServer.updateConnectionContext(
+            connections: connections,
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID
+        )
+    }
+
     func start(
         connections: [BessieConnectionDefinition],
         selectedConnectionID: String,
@@ -948,7 +1019,7 @@ final class ConnectionFleetViewModel: ObservableObject {
             bundledRuntimeURL: bundledRuntimeURL
         )
         let startup = BessieLaunchConnections.startupConnections(
-            connections: connections,
+            connections: configuredConnections,
             selectedConnectionID: selectedConnectionID
         )
         for connection in startup {
@@ -977,20 +1048,15 @@ final class ConnectionFleetViewModel: ObservableObject {
             bundledRuntimeURL: bundledRuntimeURL
         )
         // Newly enabled launch herds start immediately; turning launch off does not disconnect.
-        for connection in connections where connection.connectAtLaunch {
+        for connection in configuredConnections where connection.connectAtLaunch {
             ensureStarted(connection)
         }
-        if activeModel == nil {
-            let startup = BessieLaunchConnections.startupConnections(
-                connections: connections,
-                selectedConnectionID: preferredSelectedConnectionID
-            )
-            if let preferredID = BessieLaunchConnections.preferredActiveConnectionID(
-                startupConnections: startup,
-                selectedConnectionID: preferredSelectedConnectionID
-            ) {
-                _ = setActiveConnection(id: preferredID)
-            }
+        if activeModel == nil,
+           let preferredID = BessieLaunchConnections.preferredActiveConnectionID(
+               startupConnections: configuredConnections.filter { startedConnectionIDs.contains($0.id) },
+               selectedConnectionID: preferredSelectedConnectionID
+           ) {
+            _ = setActiveConnection(id: preferredID)
         }
         if case .connection(let id) = herdScope, startedConnectionIDs.contains(id) {
             _ = setActiveConnection(id: id)
@@ -1003,8 +1069,9 @@ final class ConnectionFleetViewModel: ObservableObject {
         runtimeSelection: HerdrRuntimeSelection,
         bundledRuntimeURL: URL?
     ) {
-        let desired = Set(connections.map(\.id))
-        configuredConnections = connections
+        let enabledConnections = connections.filter(\.enabled)
+        let desired = Set(enabledConnections.map(\.id))
+        configuredConnections = enabledConnections
         self.runtimeSelection = runtimeSelection
         self.bundledRuntimeURL = bundledRuntimeURL
         hasStarted = true
@@ -1096,6 +1163,74 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     func model(connectionID: String) -> ConnectionViewModel? {
         models[connectionID]
+    }
+
+    func waitForProjectLaunchTarget(
+        connectionID: String,
+        timeout: TimeInterval = 20,
+        pollInterval: TimeInterval = 0.05
+    ) async throws -> ProjectLaunchTarget {
+        guard timeout > 0, pollInterval > 0 else {
+            preconditionFailure("Project launch target readiness requires positive timing bounds")
+        }
+        guard let connection = configuredConnections.first(where: { $0.id == connectionID }) else {
+            throw ProjectLaunchTargetReadinessError.notConfigured(connectionID: connectionID)
+        }
+        if let target = projectLaunchTargets[connectionID] {
+            if let detail = HerdrCompatibility.incompatibility(for: target.connection.identity) {
+                throw ProjectLaunchTargetReadinessError.incompatible(
+                    connectionName: connection.name,
+                    detail: detail
+                )
+            }
+            return target
+        }
+
+        let model = ensureStarted(connection)
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            try Task.checkCancellation()
+            guard configuredConnections.contains(where: { $0.id == connectionID }) else {
+                throw ProjectLaunchTargetReadinessError.notConfigured(connectionID: connectionID)
+            }
+            if let target = projectLaunchTargets[connectionID] {
+                if let detail = HerdrCompatibility.incompatibility(for: target.connection.identity) {
+                    throw ProjectLaunchTargetReadinessError.incompatible(
+                        connectionName: connection.name,
+                        detail: detail
+                    )
+                }
+                return target
+            }
+            switch model.presentation.status {
+            case .notFound, .lost:
+                throw ProjectLaunchTargetReadinessError.unavailable(
+                    connectionName: connection.name,
+                    detail: "\(model.presentation.title). \(model.presentation.detail)"
+                )
+            case .stopped:
+                throw ProjectLaunchTargetReadinessError.startupFailed(
+                    connectionName: connection.name,
+                    detail: model.presentation.detail
+                )
+            case .incompatible:
+                throw ProjectLaunchTargetReadinessError.incompatible(
+                    connectionName: connection.name,
+                    detail: model.presentation.detail
+                )
+            case .notChecked, .connecting, .connected, .retrying:
+                break
+            }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else {
+                throw ProjectLaunchTargetReadinessError.timedOut(
+                    connectionName: connection.name,
+                    seconds: timeout
+                )
+            }
+            let sleep = min(pollInterval, remaining)
+            try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
+        }
     }
 
     func terminalRegistry(connectionID: String, activeRegistry: TerminalControllerRegistry) -> TerminalControllerRegistry? {
@@ -1265,6 +1400,7 @@ struct ConnectView: View {
     @ObservedObject var fleet: ConnectionFleetViewModel
     let featureFlags: BessieFeatureFlags
     @ObservedObject var terminalRegistry: TerminalControllerRegistry
+    @ObservedObject var commandPaletteAvailability: BessieCommandPaletteAvailability
     @StateObject private var projects = ProjectsViewModel()
     @StateObject private var onboardingCoordinator = OnboardingCompletionCoordinator()
     @EnvironmentObject private var settings: BessieSettingsModel
@@ -1281,11 +1417,13 @@ struct ConnectView: View {
         fleet: ConnectionFleetViewModel,
         featureFlags: BessieFeatureFlags,
         terminalRegistry: TerminalControllerRegistry,
+        commandPaletteAvailability: BessieCommandPaletteAvailability,
         initiallyShowsColdOpen: Bool
     ) {
         self.fleet = fleet
         self.featureFlags = featureFlags
         self.terminalRegistry = terminalRegistry
+        self.commandPaletteAvailability = commandPaletteAvailability
         _showingColdOpen = State(initialValue: initiallyShowsColdOpen)
     }
 
@@ -1309,7 +1447,7 @@ struct ConnectView: View {
         let routeState = pending.map {
             fleet.notificationConnectionState(connectionID: $0.target.connectionID).rawValue
         } ?? "-"
-        return "\(pending?.id.uuidString ?? "-")|\(pending?.target.connectionID ?? "-")|\(routeState)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+        return "\(pending?.id.uuidString ?? "-")|\(pending?.target.connectionID ?? "-")|\(routeState)|\(fleet.activeConnectionID ?? "-")|\(settings.enabledConnections.map(\.id).joined(separator: ","))"
     }
     // Non-active + windowless active reconcile lives on BessieAppDelegate so it
     // survives main-window close (menu-bar companion). Do not duplicate it here.
@@ -1336,6 +1474,7 @@ struct ConnectView: View {
                         navigationRequest: $navigationRequest,
                         zenState: $zenState,
                         projects: projects,
+                        commandPaletteAvailability: commandPaletteAvailability,
                         featureFlags: featureFlags
                     )
                     .onAppear {
@@ -1401,7 +1540,9 @@ struct ConnectView: View {
                     .background(BessieOnboardingSurface(base: BessieDesign.background))
                 } else if zenState.isActive {
                     BessieZenDisconnectedSurface(
-                        connection: fleet.activeModel?.activeConnection ?? .localBessie,
+                        connection: fleet.activeModel?.activeConnection
+                            ?? fleet.connectionDefinitions.first
+                            ?? .localBessie,
                         presentation: presentation,
                         retry: retryActiveConnection,
                         exit: { zenState.exit() }
@@ -1423,8 +1564,9 @@ struct ConnectView: View {
                 register: settings.registerOnboardingConnection
             ))
             enterOnboardingIfNeeded()
+            updateIntentConnectionContext()
             fleet.start(
-                connections: settings.connections,
+                connections: settings.enabledConnections,
                 selectedConnectionID: settings.selectedConnectionID,
                 runtimeSelection: settings.runtimeSelection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
@@ -1444,19 +1586,28 @@ struct ConnectView: View {
             resumeOnboardingCompletion(model: model, projection: projection)
         }
         .onChange(of: settings.connections) { _, connections in
-            fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
+            updateIntentConnectionContext()
+            fleet.sync(
+                connections: connections.filter(\.enabled),
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
             fleet.start(
-                connections: settings.connections,
+                connections: settings.enabledConnections,
                 selectedConnectionID: settings.selectedConnectionID,
                 runtimeSelection: selection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
             )
         }
         .onChange(of: settings.selectedConnectionID) { _, id in
+            updateIntentConnectionContext()
             _ = fleet.activate(connectionID: id)
+        }
+        .onChange(of: settings.defaultProjectConnectionID) { _, _ in
+            updateIntentConnectionContext()
         }
         .onReceive(NotificationCenter.default.publisher(for: .bessieCommand)) { notification in
             if notification.object as? BessieShortcutCommand == .exitZen,
@@ -1497,13 +1648,13 @@ struct ConnectView: View {
         .onReceive(NotificationCenter.default.publisher(for: .bessieMainWindowWillClose)) { _ in
             terminalRegistry.releaseAll()
         }
-        .alert("Couldn't open pane", isPresented: Binding(
+        .alert("Action failed", isPresented: Binding(
             get: { fleet.routeFailure != nil },
             set: { if !$0 { fleet.clearRouteFailure() } }
         )) {
             Button("OK") { fleet.clearRouteFailure() }
         } message: {
-            Text(fleet.routeFailure ?? "The notification target is unavailable.")
+            Text(fleet.routeFailure ?? "The requested target is unavailable.")
         }
         .background(BessieWindowSnapshotProbe())
     }
@@ -1693,7 +1844,9 @@ struct ConnectView: View {
     }
 
     private var activeConnection: BessieConnectionDefinition {
-        fleet.activeModel?.activeConnection ?? .localBessie
+        fleet.activeModel?.activeConnection
+            ?? fleet.connectionDefinitions.first
+            ?? .localBessie
     }
 
     private var connectionLabel: ConnectionDisplayLabel {
@@ -1710,6 +1863,14 @@ struct ConnectView: View {
     private func retryActiveConnection() {
         guard let id = fleet.activeConnectionID else { return }
         fleet.retry(connectionID: id)
+    }
+
+    private func updateIntentConnectionContext() {
+        fleet.updateIntentConnectionContext(
+            connections: settings.connections,
+            selectedConnectionID: settings.selectedConnectionID,
+            defaultProjectConnectionID: settings.defaultProjectConnectionID
+        )
     }
 
     private var statusText: String {

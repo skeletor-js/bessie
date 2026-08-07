@@ -297,11 +297,70 @@ final class BessieVisualFoundationTests: XCTestCase {
         XCTAssertEqual(BessieZenPresentationContract.elsewhereLabel(count: 2), "2 elsewhere")
     }
 
+    @MainActor
     func testCanonicalWorkspaceAndPaletteGeometry() {
         XCTAssertEqual(BessieWorkspacePresentationContract.inCardChromeHeight, 0)
         XCTAssertEqual(BessieCommandPalette.width, 560)
         XCTAssertEqual(BessieCommandPalette.scrimOpacity, 0.28)
         XCTAssertEqual(BessieCommandPalette.inputFontSize, 16)
+        XCTAssertEqual(BessieCommandPalette.topInsetFraction, 0.14)
+        XCTAssertEqual(BessieCommandPalette.maximumListHeightFraction, 0.48)
+    }
+
+    @MainActor
+    func testPaletteFooterUsesSelectionCapabilitiesAndAllFiveKinds() {
+        let disconnectedHerd = CommandPaletteEntity(
+            id: .init(kind: .connection, components: ["remote"]),
+            kind: .connection,
+            title: "Remote",
+            detail: "Connection lost",
+            freshness: .disconnected,
+            route: .connection("remote")
+        )
+        let command = CommandPaletteEntity(
+            id: .init(kind: .command, components: ["settings"]),
+            kind: .command,
+            title: "Settings",
+            detail: "Command",
+            route: .command(.showSettings)
+        )
+
+        XCTAssertEqual(BessieCommandPalette.footerLegend, "panes · workspaces · projects · herds · commands")
+        XCTAssertEqual(BessieCommandPalette.activationVerb(for: disconnectedHerd), "retry")
+        XCTAssertEqual(BessieCommandPalette.activationVerb(for: command), "run")
+        XCTAssertEqual(BessieCommandPalette.retryHealthDetail(base: "Connecting", attemptCount: 1), "Retrying")
+        XCTAssertEqual(
+            BessieCommandPalette.retryHealthDetail(base: "Disconnected", attemptCount: 1),
+            "Disconnected · Retry failed"
+        )
+        XCTAssertEqual(
+            BessieCommandPalette.retryHealthDetail(base: "Disconnected", attemptCount: 2),
+            "Disconnected · Retry failed again"
+        )
+        XCTAssertNil(command.alternateRoute)
+    }
+
+    func testCommandPaletteOpenabilityRequiresCompletedOnboardingKeyMainWindowAndNoSheet() {
+        XCTAssertTrue(BessieCommandPaletteOpenability.allowsOpen(
+            onboardingCompleted: true,
+            mainWindowIsKey: true,
+            hasAttachedSheet: false
+        ))
+        XCTAssertFalse(BessieCommandPaletteOpenability.allowsOpen(
+            onboardingCompleted: false,
+            mainWindowIsKey: true,
+            hasAttachedSheet: false
+        ))
+        XCTAssertFalse(BessieCommandPaletteOpenability.allowsOpen(
+            onboardingCompleted: true,
+            mainWindowIsKey: false,
+            hasAttachedSheet: false
+        ))
+        XCTAssertFalse(BessieCommandPaletteOpenability.allowsOpen(
+            onboardingCompleted: true,
+            mainWindowIsKey: true,
+            hasAttachedSheet: true
+        ))
     }
 
     func testLogoContrastExceedsAccessibleTextContrastInBothAppearances() {

@@ -102,7 +102,11 @@ public struct HerdRailProjection: Equatable, Sendable {
 
     public init(connections: [HerdRailConnectionInput], scope: ConnectionScope = .all) {
         rows = connections
-            .filter { $0.isFresh && scope.includes(connectionID: $0.connection.id) }
+            .filter {
+                $0.connection.enabled
+                    && $0.isFresh
+                    && scope.includes(connectionID: $0.connection.id)
+            }
             .flatMap(Self.project)
             .sorted(by: Self.precedes)
     }
@@ -111,12 +115,17 @@ public struct HerdRailProjection: Equatable, Sendable {
         self.rows = rows
     }
 
-    /// Sidebar workspace picker is a rail filter only. Pass `nil` workspaceID for All workspaces.
-    public func filtered(connectionID: String?, workspaceID: String?) -> HerdRailProjection {
-        guard let workspaceID else { return self }
+    /// Sidebar hierarchy selections only filter the ordinary pane rail.
+    /// A nil identifier broadens that level instead of changing presentation mode.
+    public func filtered(
+        connectionID: String?,
+        workspaceID: String?,
+        tabID: String? = nil
+    ) -> HerdRailProjection {
         return HerdRailProjection(rows: rows.filter {
             (connectionID == nil || $0.target.connectionID == connectionID)
-                && $0.target.workspaceID == workspaceID
+                && (workspaceID == nil || $0.target.workspaceID == workspaceID)
+                && (tabID == nil || $0.target.tabID == tabID)
         })
     }
 

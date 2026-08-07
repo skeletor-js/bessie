@@ -10,19 +10,11 @@ struct BessieMenuBarPresentation: Equatable {
         var id: String { "\(target.connectionID)::\(target.paneID)" }
     }
 
-    struct Health: Identifiable, Equatable {
-        let id: String
-        let label: String
-        let status: String
-        let connected: Bool
-    }
-
     let needsYou: [Row]
     let workingRows: [Row]
     let working: Int
     let settled: Int
     let unknown: Int
-    let health: [Health]
 
     var needsYouCount: Int { needsYou.count }
 
@@ -58,23 +50,19 @@ struct BessieMenuBarPresentation: Equatable {
         working: 2,
         settled: 7,
         unknown: 1,
-        health: []
     )
 
-    private init(needsYou: [Row], workingRows: [Row], working: Int, settled: Int, unknown: Int, health: [Health]) {
+    private init(needsYou: [Row], workingRows: [Row], working: Int, settled: Int, unknown: Int) {
         self.needsYou = needsYou
         self.workingRows = workingRows
         self.working = working
         self.settled = settled
         self.unknown = unknown
-        self.health = health
     }
 
     init(
         agents: [ConnectedAgentProjection],
-        freshConnectionIDs: Set<String>,
-        connections: [BessieConnectionDefinition],
-        health: [ConnectionHealth]
+        freshConnectionIDs: Set<String>
     ) {
         let fresh = agents.filter { freshConnectionIDs.contains($0.connectionID) }
         let rows = fresh.map { item in
@@ -100,13 +88,6 @@ struct BessieMenuBarPresentation: Equatable {
             return state == .done || state == .idle
         }
         unknown = fresh.count { AgentSemanticState(herdrValue: $0.agent.agentStatus) == .unknown }
-        let labels = Dictionary(uniqueKeysWithValues: connections.map {
-            ($0.id, ConnectionDisplayLabel(connection: $0).short)
-        })
-        self.health = health.map {
-            Health(id: $0.connectionID, label: labels[$0.connectionID] ?? $0.connectionID,
-                   status: $0.isUsable ? "Connected" : $0.phase, connected: $0.isUsable)
-        }
     }
 
     func badgeCount(policy: BessieMenuBarBadgePolicy) -> Int? {
@@ -139,8 +120,10 @@ struct BessieMenuBarPopover: View {
         if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "15" {
             return .captureFixture
         }
-        return BessieMenuBarPresentation(agents: fleet.agents, freshConnectionIDs: fleet.connectedConnectionIDs,
-                                         connections: fleet.connectionDefinitions, health: fleet.connectionHealth)
+        return BessieMenuBarPresentation(
+            agents: fleet.agents,
+            freshConnectionIDs: fleet.connectedConnectionIDs
+        )
     }
 
     var body: some View {
@@ -186,27 +169,6 @@ struct BessieMenuBarPopover: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 4)
             .overlay(alignment: .top) { Divider() }
-
-            let disconnected = presentation.health.filter { !$0.connected }
-            if !disconnected.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(disconnected) { item in
-                    HStack {
-                        BessieIconView(icon: .x, size: 12)
-                        Text(item.label).lineLimit(1).foregroundStyle(BessieDesign.subtle)
-                        Spacer()
-                        Text(item.status).foregroundStyle(BessieDesign.faint)
-                    }
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .frame(height: 27)
-                    .padding(.horizontal, 9)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("\(item.label), \(item.status)")
-                }
-                }
-                .padding(.horizontal, 5)
-                .overlay(alignment: .top) { Divider() }
-            }
 
             HStack {
                 Button(action: openBessie) {

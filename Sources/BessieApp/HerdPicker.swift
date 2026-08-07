@@ -47,7 +47,7 @@ enum HerdPickerPresentation {
             id: "all", title: "All herds", detail: "", kind: .all,
             scope: .all, isSelected: selection == .all, isFresh: true, canRetry: false
         )
-        return [all] + connections.map { connection in
+        return [all] + connections.filter(\.enabled).map { connection in
             let state = healthByID[connection.id]
             return HerdPickerRow(
                 id: connection.id,

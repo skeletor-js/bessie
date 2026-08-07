@@ -154,7 +154,6 @@ final class WarmTerminalControllerStore<Controller: AnyObject> {
 final class TerminalControllerPrewarmer {
     private let window: NSWindow
     private let container: NSView
-    private var hosts: [String: TerminalSurfaceHostView] = [:]
 
     init(size: NSSize = NSSize(width: 1280, height: 720)) {
         container = NSView(frame: NSRect(origin: .zero, size: size))
@@ -173,17 +172,16 @@ final class TerminalControllerPrewarmer {
         controllers: [String: PaneTerminalController],
         warmPaneIDs: [String]
     ) {
-        let desired = Set(warmPaneIDs)
-        for paneID in hosts.keys.filter({ !desired.contains($0) }).sorted() {
-            remove(paneID)
+        let warm = Set(warmPaneIDs)
+        for (paneID, controller) in controllers {
+            controller.setPrewarming(warm.contains(paneID))
         }
-        for paneID in warmPaneIDs where hosts[paneID] == nil {
-            guard let controller = controllers[paneID] else { continue }
-            controller.setPrewarming(true)
+
+        for paneID in warmPaneIDs {
+            guard let controller = controllers[paneID], !controller.hasStartedStream else { continue }
             let host = TerminalSurfaceHostView(frame: container.bounds)
             host.autoresizingMask = [.width, .height]
             container.addSubview(host)
-            hosts[paneID] = host
             host.attach(
                 controller: controller,
                 fontSize: 13,
@@ -191,18 +189,12 @@ final class TerminalControllerPrewarmer {
                 responderChanged: { _ in }
             )
             host.layoutSubtreeIfNeeded()
+            host.detach()
+            host.removeFromSuperview()
+            if !controller.hasStartedStream {
+                BessieDiagnosticLog.append("Terminal prewarm pane=\(paneID) did not attach a native surface")
+            }
         }
-    }
-
-    func removeAll() {
-        for paneID in hosts.keys.sorted() { remove(paneID) }
-    }
-
-    private func remove(_ paneID: String) {
-        guard let host = hosts.removeValue(forKey: paneID) else { return }
-        host.paneController?.setPrewarming(false)
-        host.detach()
-        host.removeFromSuperview()
     }
 }
 
@@ -329,7 +321,6 @@ final class TerminalControllerRegistry: ObservableObject {
         guard endpoint != nil || !controllers.isEmpty || !diagnosticSubscriptions.isEmpty || !pendingSwitches.isEmpty else {
             return
         }
-        prewarmer.removeAll()
         store.removeAll()
         controllers = [:]
         diagnosticSubscriptions.removeAll()

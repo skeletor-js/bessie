@@ -69,25 +69,43 @@ struct ProjectEditorView: View {
                     TextField("Project name", text: draftBinding(\.name, default: ""))
                         .bessieInput()
                 }
-                BessieLabeledInput(label: "Workspace") {
-                    Button(action: chooseFolders) {
-                        Text(draft?.project.primaryFolder?.path ?? "Choose workspace…")
+                BessieLabeledInput(
+                    label: "Workspace",
+                    hint: model.draftTargetConnection?.kind == .ssh ? "absolute path on the target host" : nil
+                ) {
+                    if model.draftTargetConnection?.kind == .ssh {
+                        TextField("/absolute/path/on/target", text: primaryFolderPathBinding)
                             .font(.system(size: 11.5, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bessieInput()
+                    } else {
+                        Button(action: chooseFolders) {
+                            Text(draft?.project.primaryFolder?.path ?? "Choose workspace…")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(BessieSecondaryButtonStyle())
                     }
-                    .buttonStyle(BessieSecondaryButtonStyle())
                 }
-                BessieLabeledInput(label: "Herd", hint: "local or remote") {
-                    HStack {
-                        Text("local").font(.system(size: 11.5, design: .monospaced))
-                        Spacer()
-                        BessieIconView(icon: .caretDown, size: 11)
+                BessieLabeledInput(label: "Target herd", hint: "folder paths belong to this host") {
+                    Picker("Target herd", selection: targetConnectionBinding) {
+                        if let targetConnectionID = draft?.targetConnectionID,
+                           !model.connectionDefinitions.contains(where: { $0.id == targetConnectionID }) {
+                            Text("\(targetConnectionID) (Missing)").tag(targetConnectionID)
+                        }
+                        ForEach(model.projectTargetConnections) { connection in
+                            Text(connection.enabled ? connection.name : "\(connection.name) (Disabled)")
+                                .tag(connection.id)
+                        }
                     }
-                    .padding(.horizontal, 9).frame(height: 30)
-                    .background(BessieDesign.inset)
-                    .overlay { RoundedRectangle(cornerRadius: BessieDesign.controlRadius).stroke(BessieDesign.border) }
+                    .labelsHidden()
+                }
+                if let targetUnavailableReason = model.draftTargetUnavailableReason {
+                    Text(targetUnavailableReason)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(BessieDesign.strong)
+                        .accessibilityLabel("Target herd unavailable, \(targetUnavailableReason)")
                 }
                 Divider().overlay(BessieDesign.border)
 
@@ -305,6 +323,23 @@ struct ProjectEditorView: View {
         Binding(
             get: { model.draft?.folders.first(where: { $0.id == folderID })?.path ?? "" },
             set: { model.updateFolderPath(folderID, path: $0) }
+        )
+    }
+
+    private var primaryFolderPathBinding: Binding<String> {
+        Binding(
+            get: { model.draft?.project.primaryFolder?.path ?? "" },
+            set: { path in
+                guard let folderID = model.draft?.project.primaryFolder?.id else { return }
+                model.updateFolderPath(folderID, path: path)
+            }
+        )
+    }
+
+    private var targetConnectionBinding: Binding<String> {
+        Binding(
+            get: { model.draft?.targetConnectionID ?? model.defaultProjectConnectionID },
+            set: { model.updateTargetConnection($0) }
         )
     }
 

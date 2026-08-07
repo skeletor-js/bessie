@@ -55,6 +55,23 @@ final class PickerPresentationTests: XCTestCase {
         XCTAssertFalse(rows.contains { $0.scope == .all })
     }
 
+    func testHerdPickerExcludesDisabledConnections() throws {
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = try BessieConnectionDefinition(
+            id: "remote", name: "CI box", kind: .ssh, sshHost: "ci-box", session: "main"
+        ).validated()
+
+        let rows = HerdPickerPresentation.rows(
+            connections: [local, remote],
+            health: [],
+            selection: .connection(id: remote.id)
+        )
+
+        XCTAssertEqual(rows.map(\.id), ["all", remote.id])
+        XCTAssertFalse(rows.contains { $0.id == local.id })
+    }
+
     func testBindingPickersAreCompactArrowlessPanelContracts() {
         XCTAssertEqual(HerdPickerPresentation.panelCornerRadius, 4)
         XCTAssertEqual(HerdPickerPresentation.rowHeight, 31)
@@ -131,6 +148,36 @@ final class PickerPresentationTests: XCTestCase {
         XCTAssertEqual(WorkspaceScopeReducer.selectingAll(.tab, connectionID: "c", workspaceID: "w"), .allTabs(connectionID: "c", workspaceID: "w"))
         XCTAssertFalse(ProductDestination.visible(flags: .v1).contains(.workspaces))
         XCTAssertFalse(ProductDestination.visible(flags: .v1).contains(.tabs))
+    }
+
+    func testSidebarPaneSelectionPreservesTheCurrentHierarchyFilters() {
+        let target = RoutedPaneTarget(
+            connectionID: "other-herd",
+            workspaceID: "other-workspace",
+            tabID: "other-tab",
+            paneID: "pane"
+        )
+        let scopes: [WorkspaceScope] = [
+            .selectedTab(connectionID: "herd", workspaceID: "workspace", tabID: "tab"),
+            .allTabs(connectionID: "herd", workspaceID: "workspace"),
+            .allWorkspaces(connectionID: "herd"),
+            .allHerds,
+        ]
+
+        for scope in scopes {
+            XCTAssertEqual(
+                WorkspaceScopeReducer.selectingSidebarPane(target, preserving: scope),
+                scope
+            )
+        }
+        XCTAssertEqual(
+            WorkspaceScopeReducer.selectingSidebarPane(target, preserving: nil),
+            .selectedTab(
+                connectionID: target.connectionID,
+                workspaceID: target.workspaceID,
+                tabID: target.tabID
+            )
+        )
     }
 
     func testGlobalHierarchyPresentationShowsAggregateLabelsAndPaneCount() throws {

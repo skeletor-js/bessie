@@ -77,7 +77,54 @@ final class AgentIntentExecutorTests: XCTestCase {
         let result = executor.execute(.init(id: "1", intent: "intents.list", params: [:]))
         let ids = try result.value?.decode(BessieIntentCatalog.self).intents.map(\.id.rawValue)
 
-        XCTAssertEqual(Set(ids ?? []), ["intents.list", "app.status", "connection.status", "project.list", "project.show"])
+        XCTAssertEqual(Set(ids ?? []), [
+            "intents.list", "app.status", "connection.status", "connection.context",
+            "project.list", "project.show",
+        ])
+    }
+
+    func testConnectionContextReportsConfiguredRolesAndLiveStateWithoutSecrets() throws {
+        let contexts = [
+            BessieIntentConnectionContext(
+                id: "local-bessie",
+                label: "This Mac",
+                kind: .local,
+                sshHost: nil,
+                enabled: false,
+                selected: false,
+                defaultProjectTarget: false,
+                connected: false
+            ),
+            BessieIntentConnectionContext(
+                id: "hermes-vps",
+                label: "Hermes VPS",
+                kind: .ssh,
+                sshHost: "hermes",
+                enabled: true,
+                selected: true,
+                defaultProjectTarget: true,
+                connected: true
+            ),
+        ]
+        let live = FakeLivePort(connectedIDs: ["hermes-vps"], contexts: contexts)
+        let executor = makeExecutor(live: live)
+
+        let all = try executor.execute(.init(
+            id: "all", intent: "connection.context", params: [:]
+        )).value?.decode([BessieIntentConnectionContext].self)
+        let disabled = try executor.execute(.init(
+            id: "one",
+            intent: "connection.context",
+            params: ["connection_id": .string("local-bessie")]
+        )).value?.decode([BessieIntentConnectionContext].self)
+
+        XCTAssertEqual(all, contexts)
+        XCTAssertEqual(disabled, [contexts[0]])
+        let encoded = String(decoding: try JSONEncoder().encode(all), as: UTF8.self)
+        XCTAssertTrue(encoded.contains("hermes"))
+        XCTAssertFalse(encoded.contains("socket"))
+        XCTAssertFalse(encoded.contains("password"))
+        XCTAssertFalse(encoded.contains("private_key"))
     }
 
     func testWorkspaceCloseRequiresExactProjectionTextAndOneShotBoundToken() {
@@ -124,11 +171,21 @@ final class AgentIntentExecutorTests: XCTestCase {
 
 private final class FakeLivePort: BessieIntentLivePort, @unchecked Sendable {
     private let connectedIDs: Set<String>
+    private let contexts: [BessieIntentConnectionContext]
     private let lock = NSLock()
     private(set) var actions: [HerdrAction] = []
 
-    init(connectedIDs: Set<String>) { self.connectedIDs = connectedIDs }
+    init(
+        connectedIDs: Set<String>,
+        contexts: [BessieIntentConnectionContext] = []
+    ) {
+        self.connectedIDs = connectedIDs
+        self.contexts = contexts
+    }
     func isConnected(connectionID: String?) -> Bool { connectionID.map(connectedIDs.contains) ?? !connectedIDs.isEmpty }
+    func connectionContexts(connectionID: String?) -> [BessieIntentConnectionContext] {
+        contexts.filter { connectionID == nil || $0.id == connectionID }
+    }
     func projection(connectionID: String) throws -> HerdrSessionProjection { try .init(snapshot: .intentFixture) }
     func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection {
         lock.withLock { actions.append(action) }

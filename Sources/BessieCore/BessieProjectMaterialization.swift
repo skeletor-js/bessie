@@ -216,6 +216,8 @@ public enum BessieProjectMutationOutcome: Equatable, Sendable {
 
 public enum BessieProjectMaterializationOwnerError: Error, Equatable, Sendable {
     case validation([BessieProjectValidationIssue])
+    case targetConnectionMismatch(expectedConnectionID: String, actualConnectionID: String)
+    case remoteFolderUnavailable(folderID: UUID, path: String, reason: String)
     case remoteConnection
     case incompatibleConnection(String)
     case invalidEndpoint
@@ -252,6 +254,7 @@ public struct BessieProjectMaterializationFailure: Error, Equatable, Sendable {
 
 public struct BessieProjectMaterializer: Sendable {
     private let api: any BessieProjectMaterializationAPI
+    private let remoteFolderResolver: (@Sendable (BessieProjectFolder) throws -> String)?
     private let commandPolicy: HerdrStartupCommandPolicy
     private let now: @Sendable () -> Date
     private let wait: @Sendable (TimeInterval) -> Void
@@ -261,12 +264,14 @@ public struct BessieProjectMaterializer: Sendable {
     public init(
         api: any BessieProjectMaterializationAPI,
         connectionStatus: @escaping @Sendable (BessieProjectMaterializationConnection) -> BessieProjectMaterializationConnectionStatus,
+        remoteFolderResolver: (@Sendable (BessieProjectFolder) throws -> String)? = nil,
         commandPolicy: HerdrStartupCommandPolicy = .init(),
         now: @escaping @Sendable () -> Date = Date.init,
         wait: @escaping @Sendable (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) {
         self.api = api
+        self.remoteFolderResolver = remoteFolderResolver
         self.commandPolicy = commandPolicy
         self.now = now
         self.wait = wait
@@ -333,10 +338,12 @@ public struct BessieProjectMaterializer: Sendable {
             let snapshot = try authoritativeSnapshot()
             let issues = Self.verificationIssues(
                 project: normalizedProject,
+                connectionKind: connection.definition.kind,
                 workspaceID: workspaceID,
                 tabIDs: tabIDs,
                 paneIDs: paneIDs,
                 snapshot: snapshot,
+                verifyCWD: false,
                 verifyMetadata: false
             )
             guard issues.isEmpty else { throw BessieProjectMaterializationOwnerError.verification(issues) }
@@ -359,10 +366,38 @@ public struct BessieProjectMaterializer: Sendable {
         }
 
         do {
+            guard project.targetConnectionID == connection.definition.id else {
+                throw BessieProjectMaterializationOwnerError.targetConnectionMismatch(
+                    expectedConnectionID: project.targetConnectionID,
+                    actualConnectionID: connection.definition.id
+                )
+            }
             do {
-                normalizedProject = try project.normalized()
+                normalizedProject = try project.normalizedForLaunch(on: connection.definition.kind)
             } catch let error as BessieProjectValidationError {
                 throw BessieProjectMaterializationOwnerError.validation(error.issues)
+            }
+            if connection.definition.kind == .ssh {
+                guard let remoteFolderResolver else {
+                    throw BessieProjectMaterializationOwnerError.remoteConnection
+                }
+                for index in normalizedProject.folders.indices {
+                    let folder = normalizedProject.folders[index]
+                    do {
+                        normalizedProject.folders[index].path = try remoteFolderResolver(folder)
+                    } catch {
+                        throw BessieProjectMaterializationOwnerError.remoteFolderUnavailable(
+                            folderID: folder.id,
+                            path: folder.path,
+                            reason: error.localizedDescription
+                        )
+                    }
+                }
+                do {
+                    normalizedProject = try normalizedProject.normalizedForLaunch(on: .ssh)
+                } catch let error as BessieProjectValidationError {
+                    throw BessieProjectMaterializationOwnerError.validation(error.issues)
+                }
             }
             if let invalidPane = normalizedProject.tabs.lazy.flatMap(\.panes).first(where: {
                 guard let command = $0.command else { return false }
@@ -374,9 +409,6 @@ public struct BessieProjectMaterializer: Sendable {
 
             stage = .validatingConnection
             progress()
-            guard connection.definition.kind == .local else {
-                throw BessieProjectMaterializationOwnerError.remoteConnection
-            }
             guard !connection.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw BessieProjectMaterializationOwnerError.invalidEndpoint
             }
@@ -493,10 +525,12 @@ public struct BessieProjectMaterializer: Sendable {
             var topologySnapshot = try authoritativeSnapshot()
             var issues = Self.verificationIssues(
                 project: normalizedProject,
+                connectionKind: connection.definition.kind,
                 workspaceID: workspaceID,
                 tabIDs: tabIDs,
                 paneIDs: paneIDs,
                 snapshot: topologySnapshot,
+                verifyCWD: true,
                 verifyMetadata: true
             )
             guard issues.isEmpty else { throw BessieProjectMaterializationOwnerError.verification(issues) }
@@ -561,10 +595,12 @@ public struct BessieProjectMaterializer: Sendable {
             topologySnapshot = try authoritativeSnapshot()
             issues = Self.verificationIssues(
                 project: normalizedProject,
+                connectionKind: connection.definition.kind,
                 workspaceID: workspaceID,
                 tabIDs: tabIDs,
                 paneIDs: paneIDs,
                 snapshot: topologySnapshot,
+                verifyCWD: true,
                 verifyMetadata: true
             )
             guard issues.isEmpty else { throw BessieProjectMaterializationOwnerError.verification(issues) }
@@ -628,10 +664,12 @@ public struct BessieProjectMaterializer: Sendable {
 
     private static func verificationIssues(
         project: BessieProject,
+        connectionKind: BessieConnectionKind,
         workspaceID: String?,
         tabIDs: [UUID: String],
         paneIDs: [UUID: String],
         snapshot: HerdrSnapshot,
+        verifyCWD: Bool,
         verifyMetadata: Bool
     ) -> [BessieProjectVerificationIssue] {
         guard let workspaceID else { return [] }
@@ -692,17 +730,22 @@ public struct BessieProjectMaterializer: Sendable {
                         runtimeTabID: runtimeTabID
                     ))
                 }
-                guard let cwd = runtimePane.string("cwd") else {
-                    issues.append(.paneCWDUnavailable(recipePaneID: pane.id, runtimePaneID: runtimePaneID))
-                    continue
-                }
-                let canonicalCWD = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
-                let expectedCWD = project.workingDirectory(for: pane)!
-                if canonicalCWD != expectedCWD {
-                    issues.append(.paneCWDMismatch(
-                        recipePaneID: pane.id, runtimePaneID: runtimePaneID,
-                        expected: expectedCWD, actual: canonicalCWD
-                    ))
+                if verifyCWD {
+                    guard let cwd = runtimePane.string("cwd") else {
+                        issues.append(.paneCWDUnavailable(recipePaneID: pane.id, runtimePaneID: runtimePaneID))
+                        continue
+                    }
+                    let standardizedCWD = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL
+                    let canonicalCWD = connectionKind == .local
+                        ? standardizedCWD.resolvingSymlinksInPath().path
+                        : standardizedCWD.path
+                    let expectedCWD = project.workingDirectory(for: pane)!
+                    if canonicalCWD != expectedCWD {
+                        issues.append(.paneCWDMismatch(
+                            recipePaneID: pane.id, runtimePaneID: runtimePaneID,
+                            expected: expectedCWD, actual: canonicalCWD
+                        ))
+                    }
                 }
                 if verifyMetadata, runtimePane.optionalString("label") != pane.label {
                     issues.append(.paneLabelMismatch(

@@ -135,7 +135,7 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertGreaterThan(try averageVisibleLuminance(dark), 0.95)
     }
 
-    func testPresentationCountsOnlyFreshStatesAndKeepsDisconnectedHealth() {
+    func testPresentationCountsOnlyFreshPaneAndAgentStates() {
         let local = BessieConnectionDefinition.localBessie
         let stale = BessieConnectionDefinition(name: "Remote", kind: .ssh, sshHost: "remote", session: nil)
         let agents = [
@@ -146,18 +146,9 @@ final class MenuBarPresentationTests: XCTestCase {
             agent("unknown", pane: "p5", connection: local),
             agent("blocked", pane: "stale", connection: stale),
         ]
-        let health = [
-            ConnectionHealth(connection: local, presentation: .connectedFixture),
-            ConnectionHealth(connection: stale, presentation: ConnectPresentation(
-                title: "Disconnected", detail: "Unavailable", status: .lost
-            )),
-        ]
-
         let presentation = BessieMenuBarPresentation(
             agents: agents,
-            freshConnectionIDs: [local.id],
-            connections: [local, stale],
-            health: health
+            freshConnectionIDs: [local.id]
         )
 
         XCTAssertEqual(presentation.needsYou.map(\.target.paneID), ["p1"])
@@ -168,8 +159,6 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.working, 1)
         XCTAssertEqual(presentation.settled, 2)
         XCTAssertEqual(presentation.unknown, 1)
-        XCTAssertEqual(presentation.health.count, 2)
-        XCTAssertFalse(presentation.health.first { $0.id == stale.id }!.connected)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 1)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYouAndUnknown), 2)
         XCTAssertNil(presentation.badgeCount(policy: .nothing))
@@ -178,9 +167,7 @@ final class MenuBarPresentationTests: XCTestCase {
     func testFreshAllZeroPresentationIsCompleteAndBadgeIsZero() {
         let presentation = BessieMenuBarPresentation(
             agents: [],
-            freshConnectionIDs: [BessieConnectionDefinition.localBessie.id],
-            connections: [.localBessie],
-            health: [ConnectionHealth(connection: .localBessie, presentation: .connectedFixture)]
+            freshConnectionIDs: [BessieConnectionDefinition.localBessie.id]
         )
 
         XCTAssertTrue(presentation.needsYou.isEmpty)
@@ -188,7 +175,6 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.working, 0)
         XCTAssertEqual(presentation.settled, 0)
         XCTAssertEqual(presentation.unknown, 0)
-        XCTAssertEqual(presentation.health.count, 1)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 0)
     }
 

@@ -113,13 +113,13 @@ final class CommandPaletteTests: XCTestCase {
         XCTAssertEqual(search.results(query: "m", entities: [alpha, zulu]).map(\.id), [alpha.id, zulu.id])
     }
 
-    func testEmptyAndWhitespaceOnlyQueriesRetainUnfilteredCandidateOrder() {
+    func testEmptyAndWhitespaceOnlyQueriesAreOwnedByTheBrowseIndex() {
         let zulu = entity(kind: .command, components: ["zulu"], title: "Zulu", detail: "Command")
         let alpha = entity(kind: .pane, components: ["alpha"], title: "Alpha", detail: "Pane")
         let search = CommandPaletteSearch()
 
-        XCTAssertEqual(search.results(query: "", entities: [zulu, alpha]).map(\.id), [zulu.id, alpha.id])
-        XCTAssertEqual(search.results(query: "  \t", entities: [zulu, alpha]).map(\.id), [zulu.id, alpha.id])
+        XCTAssertTrue(search.results(query: "", entities: [zulu, alpha]).isEmpty)
+        XCTAssertTrue(search.results(query: "  \t", entities: [zulu, alpha]).isEmpty)
     }
 
     func testNoResultsAndMultipleWhitespaceSeparatedTerms() {
@@ -137,7 +137,7 @@ final class CommandPaletteTests: XCTestCase {
         let results = CommandPaletteSearch().results(query: "scratch", entities: [remote, local])
 
         XCTAssertEqual(results.count, 2)
-        XCTAssertEqual(Set(results.map(\.id.description)), ["pane::local::w::t::p", "pane::ci::w::t::p"])
+        XCTAssertEqual(Set(results.map(\.id.description)), ["pane::local::p", "pane::ci::p"])
         XCTAssertEqual(Set(results.compactMap(\.location)), ["Local / bessie / dev", "CI / bessie / dev"])
     }
 
@@ -177,9 +177,9 @@ final class CommandPaletteTests: XCTestCase {
 
     func testStaleLiveTargetRequiresAuthoritativeRefreshInsteadOfDispatch() {
         let stale = pane(connection: "removed", title: "shell", location: "Old / main / dev")
-        XCTAssertEqual(CommandPaletteTargetResolver.resolve(stale, currentEntityIDs: []), .refreshRequired)
+        XCTAssertEqual(CommandPaletteTargetResolver.resolve(stale, currentEntities: []), .refreshRequired)
         XCTAssertEqual(
-            CommandPaletteTargetResolver.resolve(stale, currentEntityIDs: [stale.id]),
+            CommandPaletteTargetResolver.resolve(stale, currentEntities: [stale]),
             .dispatch(stale.route)
         )
     }
@@ -215,16 +215,17 @@ final class CommandPaletteTests: XCTestCase {
             .ignore
         )
         XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 0, delta: 1, count: 3), 1)
-        XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 2, delta: 1, count: 3), 2)
-        XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 0, delta: -1, count: 3), 0)
+        XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 2, delta: 1, count: 3), 0)
+        XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 0, delta: -1, count: 3), 2)
         XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 5, delta: 0, count: 2), 1)
         XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 0, delta: 1, count: 0), 0)
+        XCTAssertEqual(CommandPaletteKeyboard.movedSelection(current: 0, delta: 1, count: 1), 0)
     }
 
     private func pane(connection: String, title: String, location: String) -> CommandPaletteEntity {
         CommandPaletteEntity(
-            id: .init(kind: .pane, components: [connection, "w", "t", "p"]), kind: .pane,
-            title: title, detail: "Agent pane", state: "Working", location: location,
+            id: .init(kind: .pane, components: [connection, "p"]), kind: .pane,
+            title: title, detail: "Agent pane", semanticState: .working, location: location,
             keywords: ["codex"], route: .pane(connectionID: connection, workspaceID: "w", tabID: "t", paneID: "p")
         )
     }

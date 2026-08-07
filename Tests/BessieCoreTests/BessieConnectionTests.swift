@@ -21,9 +21,139 @@ final class BessieConnectionTests: XCTestCase {
         let state = try JSONDecoder().decode(BessieConnectionState.self, from: data)
 
         XCTAssertEqual(state.selectedConnectionID, "hermes-vps")
+        XCTAssertEqual(state.defaultProjectConnectionID, "hermes-vps")
         XCTAssertEqual(state.connections.last?.sshHost, "hermes")
+        XCTAssertTrue(state.connections.allSatisfy(\.enabled))
         XCTAssertTrue(state.connections[0].connectAtLaunch)
         XCTAssertFalse(state.connections[1].connectAtLaunch)
+    }
+
+    func testDisabledCanonicalLocalRoundTripsWithoutLosingLaunchPreference() throws {
+        let remote = BessieConnectionDefinition(
+            id: "hermes-vps",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes",
+            enabled: true,
+            connectAtLaunch: true
+        )
+        let local = BessieConnectionDefinition(
+            id: BessieConnectionDefinition.localBessie.id,
+            name: "This Mac",
+            kind: .local,
+            session: BessieCompatibility.sessionName,
+            enabled: false,
+            connectAtLaunch: false
+        )
+        let state = try BessieConnectionState.validated(
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id,
+            connections: [local, remote]
+        )
+
+        let decoded = try JSONDecoder().decode(
+            BessieConnectionState.self,
+            from: JSONEncoder().encode(state)
+        )
+
+        XCTAssertEqual(decoded.connections.map(\.id), [local.id, remote.id])
+        XCTAssertFalse(decoded.connections[0].enabled)
+        XCTAssertFalse(decoded.connections[0].connectAtLaunch)
+        XCTAssertEqual(decoded.selectedConnectionID, remote.id)
+        XCTAssertEqual(decoded.defaultProjectConnectionID, remote.id)
+    }
+
+    func testStateRepairsSelectedAndDefaultWhenTheirConnectionIsDisabledOrRemoved() throws {
+        var local = BessieConnectionDefinition.localBessie
+        let remote = BessieConnectionDefinition(
+            id: "hermes-vps",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes",
+            enabled: true
+        )
+        local.enabled = false
+
+        let disabled = try BessieConnectionState.validated(
+            selectedConnectionID: local.id,
+            defaultProjectConnectionID: local.id,
+            connections: [local, remote]
+        )
+        XCTAssertEqual(disabled.selectedConnectionID, remote.id)
+        XCTAssertEqual(disabled.defaultProjectConnectionID, remote.id)
+
+        let removed = try BessieConnectionState.validated(
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id,
+            connections: [.localBessie]
+        )
+        XCTAssertEqual(removed.selectedConnectionID, BessieConnectionDefinition.localBessie.id)
+        XCTAssertEqual(removed.defaultProjectConnectionID, BessieConnectionDefinition.localBessie.id)
+    }
+
+    func testStatePreservesRolesWhenDisablingOrReenablingAnotherConnection() throws {
+        var local = BessieConnectionDefinition.localBessie
+        let remote = BessieConnectionDefinition(
+            id: "hermes-vps",
+            name: "Hermes VPS",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        local.enabled = false
+        local.connectAtLaunch = false
+        let disabled = try BessieConnectionState.validated(
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id,
+            connections: [local, remote]
+        )
+
+        local.enabled = true
+        let reenabled = try BessieConnectionState.validated(
+            selectedConnectionID: disabled.selectedConnectionID,
+            defaultProjectConnectionID: disabled.defaultProjectConnectionID,
+            connections: [local, remote]
+        )
+
+        XCTAssertEqual(reenabled.selectedConnectionID, remote.id)
+        XCTAssertEqual(reenabled.defaultProjectConnectionID, remote.id)
+        XCTAssertTrue(reenabled.connections[0].enabled)
+        XCTAssertFalse(reenabled.connections[0].connectAtLaunch)
+    }
+
+    func testStateRejectsAConfigurationWithoutAnEnabledHerd() {
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+
+        XCTAssertThrowsError(try BessieConnectionState.validated(
+            selectedConnectionID: local.id,
+            defaultProjectConnectionID: local.id,
+            connections: [local]
+        )) { error in
+            XCTAssertEqual(error as? BessieConnectionStateError, .finalEnabledConnectionRequired)
+        }
+    }
+
+    func testMalformedFakeLocalDoesNotOverrideCanonicalLocalAvailability() throws {
+        let fakeLocal = BessieConnectionDefinition(
+            id: BessieConnectionDefinition.localBessie.id,
+            name: "Fake",
+            kind: .ssh,
+            sshHost: "other",
+            enabled: false
+        )
+        let remoteA = BessieConnectionDefinition(id: "remote", name: "A", kind: .ssh, sshHost: "hermes")
+        let remoteB = BessieConnectionDefinition(id: "remote", name: "B", kind: .ssh, sshHost: "other")
+
+        let state = try BessieConnectionState.validated(
+            selectedConnectionID: "remote",
+            defaultProjectConnectionID: "remote",
+            connections: [fakeLocal, remoteA, remoteB]
+        )
+
+        XCTAssertEqual(state.connections.map(\.id), ["local-bessie", "remote"])
+        XCTAssertEqual(state.connections.first, .localBessie)
+        XCTAssertTrue(state.connections.first?.enabled == true)
+        XCTAssertEqual(state.connections.last?.name, "A")
     }
 
     func testConnectAtLaunchDefaultsAndRoundTrip() throws {
@@ -86,7 +216,7 @@ final class BessieConnectionTests: XCTestCase {
         )
     }
 
-    func testStartupConnectionsFallBackToSelectedWhenNoneEnabled() {
+    func testStartupConnectionsDoNotStartOnDemandSelectedHerd() {
         let remote = BessieConnectionDefinition(
             id: "remote",
             name: "Remote",
@@ -104,6 +234,25 @@ final class BessieConnectionTests: XCTestCase {
             connections: [localOff, remote],
             selectedConnectionID: remote.id
         )
+        XCTAssertTrue(startup.isEmpty)
+    }
+
+    func testStartupConnectionsExcludeDisabledHerdsEvenWhenLaunchEnabled() {
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = BessieConnectionDefinition(
+            id: "remote",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "hermes",
+            connectAtLaunch: true
+        )
+
+        let startup = BessieLaunchConnections.startupConnections(
+            connections: [local, remote],
+            selectedConnectionID: remote.id
+        )
+
         XCTAssertEqual(startup.map(\.id), [remote.id])
     }
 
@@ -292,5 +441,61 @@ final class BessieConnectionTests: XCTestCase {
             controlPath: "/tmp/control.sock",
             sshExecutablePath: "/usr/bin/ssh"
         ).commandArguments.starts(with: SSHHostKeyPolicy.requiredArguments))
+    }
+
+    func testMigrationRemoteAccessRequiresExistingMuxAndCannotFallBackDirectly() {
+        let arguments = SSHRemoteFileAccess(
+            host: "hermes",
+            controlPath: "/tmp/owned-control.sock",
+            requireControlMaster: true
+        ).commandArguments
+
+        XCTAssertTrue(arguments.contains("ControlMaster=no"))
+        XCTAssertTrue(arguments.contains("ProxyCommand=/usr/bin/false"))
+        XCTAssertEqual(arguments.last, "hermes")
+    }
+
+    func testConfigurationLeaseBlocksMigrationAndAppStartupAcrossTheActiveMarker() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectionsURL = root.appendingPathComponent("connections.json")
+
+        var appLease: BessieConfigurationLease? = try BessieConfigurationLease.acquireShared(for: connectionsURL)
+        XCTAssertNotNil(appLease)
+        XCTAssertThrowsError(try BessieConfigurationLease.acquireExclusive(for: connectionsURL))
+        appLease = nil
+
+        var migrationLease: BessieConfigurationLease? = try BessieConfigurationLease.acquireExclusive(for: connectionsURL)
+        let marker = BessieConfigurationLease.activeMigrationMarkerURL(for: connectionsURL)
+        try Data("{}".utf8).write(to: marker)
+        migrationLease = nil
+        XCTAssertThrowsError(try BessieConfigurationLease.acquireShared(for: connectionsURL)) { error in
+            XCTAssertEqual(
+                error as? BessieConfigurationLeaseError,
+                .migrationInProgress(marker.path)
+            )
+        }
+        try FileManager.default.removeItem(at: marker)
+        migrationLease = try BessieConfigurationLease.acquireExclusive(for: connectionsURL)
+        XCTAssertNotNil(migrationLease)
+    }
+
+    func testConfigurationLeaseFailsClosedForDanglingActiveMigrationMarker() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        let marker = BessieConfigurationLease.activeMigrationMarkerURL(for: connectionsURL)
+        try FileManager.default.createSymbolicLink(
+            at: marker,
+            withDestinationURL: root.appendingPathComponent("missing-marker-target")
+        )
+
+        XCTAssertThrowsError(try BessieConfigurationLease.acquireShared(for: connectionsURL)) { error in
+            XCTAssertEqual(
+                error as? BessieConfigurationLeaseError,
+                .migrationInProgress(marker.path)
+            )
+        }
     }
 }

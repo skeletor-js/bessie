@@ -261,8 +261,8 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
     public static let commands: [BessieCommandDefinition] = [
         .init(title: "Command Palette", detail: "Search panes, workspaces, Projects, herds, and commands", shortcut: "⇧⌘P", command: .showCommandPalette, keywords: "search cmdk"),
         .init(title: "The herd", detail: "Open Bessie's live herd page", command: .showHerd, keywords: "home agents activity"),
-        .init(title: "New project", detail: "Create a reusable local Project recipe", command: .newProject, keywords: "create project recipe"),
-        .init(title: "Manage projects", detail: "Browse and edit local Project recipes", shortcut: "⌥P", command: .projectsPicker, keywords: "open project recipes offline"),
+        .init(title: "Create project", detail: "Create a reusable Project recipe", command: .newProject, keywords: "new project recipe"),
+        .init(title: "Manage projects", detail: "Browse and edit Project recipes", shortcut: "⌥P", command: .projectsPicker, keywords: "open project recipes offline"),
         .init(title: "Create project from current workspace…", detail: "Capture the focused Herdr layout as a new Project draft", command: .saveCurrentWorkspaceAsProject, keywords: "save project capture tabs panes layout"),
         .init(title: "New workspace", detail: "Create and focus a Herdr workspace", shortcut: "⌘N", command: .newWorkspace, keywords: "create"),
         .init(title: "Rename workspace", detail: "Rename the current workspace", command: .renameWorkspace),

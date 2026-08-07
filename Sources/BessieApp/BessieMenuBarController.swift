@@ -275,9 +275,7 @@ final class BessieMenuBarController: NSObject {
         }
         return BessieMenuBarPresentation(
             agents: fleet.agents,
-            freshConnectionIDs: fleet.connectedConnectionIDs,
-            connections: fleet.connectionDefinitions,
-            health: fleet.connectionHealth
+            freshConnectionIDs: fleet.connectedConnectionIDs
         )
     }
 

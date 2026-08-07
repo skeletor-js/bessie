@@ -20,6 +20,11 @@ public enum CommandPaletteRouteIntent: Equatable, Sendable {
     case command(BessieShortcutCommand)
 }
 
+public enum CommandPaletteFreshness: String, Equatable, Sendable {
+    case fresh
+    case disconnected
+}
+
 public struct CommandPaletteEntity: Identifiable, Equatable, Sendable {
     public enum Kind: String, CaseIterable, Sendable { case pane, workspace, project, connection, command }
 
@@ -27,7 +32,9 @@ public struct CommandPaletteEntity: Identifiable, Equatable, Sendable {
     public let kind: Kind
     public let title: String
     public let detail: String
-    public let state: String?
+    public let semanticState: AgentSemanticState?
+    public let freshness: CommandPaletteFreshness
+    public let provider: String?
     public let location: String?
     public let shortcut: String?
     public let keywords: [String]
@@ -39,7 +46,9 @@ public struct CommandPaletteEntity: Identifiable, Equatable, Sendable {
         kind: Kind,
         title: String,
         detail: String,
-        state: String? = nil,
+        semanticState: AgentSemanticState? = nil,
+        freshness: CommandPaletteFreshness = .fresh,
+        provider: String? = nil,
         location: String? = nil,
         shortcut: String? = nil,
         keywords: [String] = [],
@@ -50,46 +59,111 @@ public struct CommandPaletteEntity: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.title = title
         self.detail = detail
-        self.state = state
+        self.semanticState = semanticState
+        self.freshness = freshness
+        self.provider = provider
         self.location = location
         self.shortcut = shortcut
         self.keywords = keywords
         self.route = route
         self.alternateRoute = alternateRoute
     }
+
+    public var connectionID: String? {
+        switch route {
+        case .pane(let connectionID, _, _, _), .workspace(let connectionID, _), .connection(let connectionID):
+            connectionID
+        case .project, .command:
+            nil
+        }
+    }
+
+    public var requiresUserAction: Bool { semanticState?.requiresUserAction == true }
 }
 
 public struct CommandPaletteSearch: Sendable {
     public init() {}
 
-    public func results(query: String, entities: [CommandPaletteEntity]) -> [CommandPaletteEntity] {
-        var unique: [CommandPaletteEntity] = []
-        var indexByID: [CommandPaletteEntityID: Int] = [:]
-        for entity in entities {
-            if let index = indexByID[entity.id] {
-                unique[index] = preferred(unique[index], entity)
-            } else {
-                indexByID[entity.id] = unique.count
-                unique.append(entity)
-            }
-        }
-        let terms = Self.tokens(query)
-        guard !terms.isEmpty else { return unique }
+    public func results(
+        query: String,
+        entities: [CommandPaletteEntity],
+        activeConnectionID: String? = nil
+    ) -> [CommandPaletteEntity] {
+        rankedResults(
+            query: query,
+            entities: deduplicated(entities),
+            activeConnectionID: activeConnectionID
+        )
+    }
 
-        return unique.compactMap { entity -> (CommandPaletteEntity, Int)? in
+    func resultsFromDeduplicated(
+        query: String,
+        entities: [CommandPaletteEntity],
+        activeConnectionID: String? = nil
+    ) -> [CommandPaletteEntity] {
+        rankedResults(query: query, entities: entities, activeConnectionID: activeConnectionID)
+    }
+
+    private func rankedResults(
+        query: String,
+        entities: [CommandPaletteEntity],
+        activeConnectionID: String?
+    ) -> [CommandPaletteEntity] {
+        let terms = Self.tokens(query)
+        guard !terms.isEmpty else { return [] }
+
+        return entities.compactMap { entity -> (CommandPaletteEntity, Int)? in
             guard let score = score(entity, terms: terms) else { return nil }
             return (entity, score)
         }.sorted {
             if $0.1 != $1.1 { return $0.1 > $1.1 }
+            if $0.0.requiresUserAction != $1.0.requiresUserAction { return $0.0.requiresUserAction }
+            let leftIsActive = $0.0.connectionID == activeConnectionID
+            let rightIsActive = $1.0.connectionID == activeConnectionID
+            if leftIsActive != rightIsActive { return leftIsActive }
             if $0.0.kind != $1.0.kind { return kindOrder($0.0.kind) < kindOrder($1.0.kind) }
             return $0.0.id.description < $1.0.id.description
         }.map(\.0)
     }
 
+    func deduplicated(_ entities: [CommandPaletteEntity]) -> [CommandPaletteEntity] {
+        var byID: [CommandPaletteEntityID: CommandPaletteEntity] = [:]
+        for entity in entities {
+            if let existing = byID[entity.id] {
+                byID[entity.id] = preferred(existing, entity)
+            } else {
+                byID[entity.id] = entity
+            }
+        }
+        return byID.values.sorted { $0.id.description < $1.id.description }
+    }
+
     private func preferred(_ lhs: CommandPaletteEntity, _ rhs: CommandPaletteEntity) -> CommandPaletteEntity {
-        let left = lhs.location == nil ? 0 : 1
-        let right = rhs.location == nil ? 0 : 1
-        return right > left ? rhs : lhs
+        if lhs.freshness != rhs.freshness {
+            return rhs.freshness == .fresh ? rhs : lhs
+        }
+        let leftCompleteness = completeness(lhs)
+        let rightCompleteness = completeness(rhs)
+        if leftCompleteness != rightCompleteness {
+            return rightCompleteness > leftCompleteness ? rhs : lhs
+        }
+        return canonicalKey(rhs) < canonicalKey(lhs) ? rhs : lhs
+    }
+
+    private func completeness(_ entity: CommandPaletteEntity) -> Int {
+        [entity.detail, entity.location, entity.provider, entity.shortcut]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .count + (entity.semanticState == nil ? 0 : 1)
+    }
+
+    private func canonicalKey(_ entity: CommandPaletteEntity) -> String {
+        [
+            entity.title, entity.detail, entity.location ?? "", entity.provider ?? "",
+            entity.semanticState?.rawValue ?? "", entity.freshness.rawValue, entity.shortcut ?? "",
+            entity.keywords.joined(separator: "\u{1f}"), String(describing: entity.route),
+            String(describing: entity.alternateRoute),
+        ].joined(separator: "\u{1e}")
     }
 
     private func score(_ entity: CommandPaletteEntity, terms: [String]) -> Int? {
@@ -97,7 +171,7 @@ public struct CommandPaletteSearch: Sendable {
             entity.title,
             entity.detail,
             entity.location ?? "",
-            entity.state ?? "",
+            entity.semanticState.map { HerdPresentationStatus(state: $0).rawValue } ?? "",
         ] + entity.keywords + [entity.shortcut ?? ""]
         var total = 0
         for term in terms {
@@ -151,30 +225,66 @@ public struct CommandPaletteSearch: Sendable {
 
 public struct CommandPaletteDispatchGate: Sendable {
     private var dispatched = false
+    private var activationInFlight = false
     public init() {}
-    public mutating func take(_ entity: CommandPaletteEntity, alternate: Bool) -> CommandPaletteRouteIntent? {
-        guard !dispatched else { return nil }
+
+    public mutating func begin(_ entity: CommandPaletteEntity, alternate: Bool) -> CommandPaletteRouteIntent? {
+        guard !dispatched, !activationInFlight else { return nil }
         guard !alternate || entity.alternateRoute != nil else { return nil }
-        dispatched = true
+        activationInFlight = true
         return alternate ? entity.alternateRoute : entity.route
+    }
+
+    public mutating func commit(_ route: CommandPaletteRouteIntent) -> CommandPaletteRouteIntent? {
+        guard activationInFlight, !dispatched else { return nil }
+        activationInFlight = false
+        dispatched = true
+        return route
+    }
+
+    public mutating func cancelActivation() {
+        guard !dispatched else { return }
+        activationInFlight = false
+    }
+
+    public mutating func take(_ entity: CommandPaletteEntity, alternate: Bool) -> CommandPaletteRouteIntent? {
+        guard let route = begin(entity, alternate: alternate) else { return nil }
+        return commit(route)
     }
 }
 
 public enum CommandPaletteTargetResolution: Equatable, Sendable {
     case dispatch(CommandPaletteRouteIntent)
     case refreshRequired
+    case connectionUnavailable(String)
 }
 
 public enum CommandPaletteTargetResolver {
     public static func resolve(
         _ entity: CommandPaletteEntity,
-        currentEntityIDs: Set<CommandPaletteEntityID>
+        currentEntities: [CommandPaletteEntity],
+        alternate: Bool = false
     ) -> CommandPaletteTargetResolution {
+        let current = currentEntities.first { $0.id == entity.id }
         switch entity.kind {
-        case .pane, .workspace, .connection:
-            currentEntityIDs.contains(entity.id) ? .dispatch(entity.route) : .refreshRequired
+        case .pane, .workspace:
+            if let current {
+                return .dispatch(alternate ? current.alternateRoute ?? current.route : current.route)
+            }
+            if let connectionID = entity.connectionID,
+               currentEntities.contains(where: {
+                   $0.kind == .connection
+                       && $0.connectionID == connectionID
+                       && $0.freshness == .disconnected
+               }) {
+                return .connectionUnavailable(connectionID)
+            }
+            return .refreshRequired
+        case .connection:
+            guard let current else { return .refreshRequired }
+            return .dispatch(alternate ? current.alternateRoute ?? current.route : current.route)
         case .project, .command:
-            .dispatch(entity.route)
+            return .dispatch(alternate ? entity.alternateRoute ?? entity.route : entity.route)
         }
     }
 }
@@ -223,9 +333,9 @@ public enum CommandPaletteKeyboard {
 
     public static func movedSelection(current: Int, delta: Int, count: Int) -> Int {
         guard count > 0 else { return 0 }
-        let next = current + delta
-        if next < 0 { return 0 }
-        if next >= count { return count - 1 }
-        return next
+        guard count > 1 else { return 0 }
+        let normalizedCurrent = min(max(current, 0), count - 1)
+        let next = (normalizedCurrent + delta) % count
+        return next >= 0 ? next : next + count
     }
 }

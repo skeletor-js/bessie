@@ -2,8 +2,8 @@ import Foundation
 import CoreFoundation
 
 public enum BessieProjectSchema {
-    public static let currentVersion = 2
-    public static let supportedVersions: ClosedRange<Int> = 1...2
+    public static let currentVersion = 3
+    public static let supportedVersions: ClosedRange<Int> = 1...3
 }
 
 public enum BessieProjectSchemaError: Error, Equatable, Sendable {
@@ -20,6 +20,8 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
     /// Retained only so schema-v1 catalogs can round-trip without data loss.
     /// Grouping is not an active V1 product concept.
     public var group: String?
+    /// Every folder path is interpreted in this connection's filesystem namespace.
+    public var targetConnectionID: String
     public var folders: [BessieProjectFolder]
     public var tabs: [BessieProjectTab]
     public var createdAt: Date
@@ -32,6 +34,7 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
         name: String,
         projectDescription: String = "",
         group: String? = nil,
+        targetConnectionID: String = BessieConnectionDefinition.localBessie.id,
         folders: [BessieProjectFolder],
         tabs: [BessieProjectTab],
         createdAt: Date = Date(),
@@ -43,6 +46,7 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
         self.name = name
         self.projectDescription = projectDescription
         self.group = group
+        self.targetConnectionID = targetConnectionID
         self.folders = folders
         self.tabs = tabs
         self.createdAt = createdAt
@@ -56,6 +60,7 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
         name: String,
         projectDescription: String = "",
         group: String? = nil,
+        targetConnectionID: String = BessieConnectionDefinition.localBessie.id,
         workingDirectory: String,
         tabs: [BessieProjectTab],
         createdAt: Date = Date(),
@@ -68,6 +73,7 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
             name: name,
             projectDescription: projectDescription,
             group: group,
+            targetConnectionID: targetConnectionID,
             folders: [.init(id: id, name: "Primary", path: workingDirectory, isPrimary: true)],
             tabs: tabs,
             createdAt: createdAt,
@@ -102,7 +108,20 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
     }
 
     public func normalized(fileManager: FileManager = .default) throws -> BessieProject {
-        try normalized(fileManager: fileManager, requireWorkingDirectoryExists: true)
+        try normalized(
+            fileManager: fileManager,
+            requireWorkingDirectoryExists: targetConnectionID == BessieConnectionDefinition.localBessie.id
+        )
+    }
+
+    public func normalizedForLaunch(
+        on connectionKind: BessieConnectionKind,
+        fileManager: FileManager = .default
+    ) throws -> BessieProject {
+        try normalized(
+            fileManager: fileManager,
+            requireWorkingDirectoryExists: connectionKind == .local
+        )
     }
 
     func normalizedForCatalog(fileManager: FileManager = .default) throws -> BessieProject {
@@ -125,6 +144,10 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
             issues.append(.init(code: .emptyName, projectID: id, field: "name"))
         }
         project.group = group?.bessieTrimmedOrNil
+        project.targetConnectionID = targetConnectionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if project.targetConnectionID.isEmpty {
+            issues.append(.init(code: .targetConnectionMissing, projectID: id, field: "targetConnectionID"))
+        }
 
         if folders.filter(\.isPrimary).count != 1 {
             issues.append(.init(code: .invalidPrimaryFolderCount, projectID: id, field: "folders"))
@@ -145,7 +168,9 @@ public struct BessieProject: Codable, Equatable, Identifiable, Sendable {
                 continue
             }
             let standardized = URL(fileURLWithPath: folder.path, isDirectory: true).standardizedFileURL
-            let normalizedPath = standardized.resolvingSymlinksInPath().path
+            let normalizedPath = requireWorkingDirectoryExists
+                ? standardized.resolvingSymlinksInPath().path
+                : standardized.path
             if !seenFolderPaths.insert(normalizedPath).inserted {
                 issues.append(.init(code: .duplicateFolderPath, projectID: id, folderID: folder.id, field: "folders.path"))
             }
@@ -371,6 +396,7 @@ public struct BessieProjectValidationIssue: Error, Codable, Equatable, Sendable 
     public enum Code: String, Codable, Equatable, Sendable {
         case unsupportedSchemaVersion
         case emptyName
+        case targetConnectionMissing
         case invalidPrimaryFolderCount
         case emptyFolderName
         case duplicateFolderID
@@ -431,7 +457,9 @@ public enum BessieProjectMigration {
         case 1:
             return try BessieProjectCodec.decodeVersionOne(data).migrated()
         case 2:
-            return try BessieProjectCodec.decodeVersionTwo(data)
+            return try BessieProjectCodec.decodeVersionTwo(data).migrated()
+        case 3:
+            return try BessieProjectCodec.decodeVersionThree(data)
         default:
             throw BessieProjectSchemaError.unsupportedVersion(version)
         }
@@ -480,9 +508,20 @@ public enum BessieProjectCodec {
         }
     }
 
-    fileprivate static func decodeVersionTwo(_ data: Data) throws -> BessieProject {
+    fileprivate static func decodeVersionTwo(_ data: Data) throws -> BessieProjectVersionTwo {
         do {
             try validateVersionTwoDocument(data)
+            return try decoder.decode(BessieProjectVersionTwo.self, from: data)
+        } catch let error as BessieProjectSchemaError {
+            throw error
+        } catch {
+            throw BessieProjectSchemaError.invalidDocument(error.localizedDescription)
+        }
+    }
+
+    fileprivate static func decodeVersionThree(_ data: Data) throws -> BessieProject {
+        do {
+            try validateVersionThreeDocument(data)
             return try decoder.decode(BessieProject.self, from: data)
         } catch let error as BessieProjectSchemaError {
             throw error
@@ -512,6 +551,7 @@ public enum BessieProjectCodec {
         "schemaVersion", "id", "name", "projectDescription", "group", "folders",
         "tabs", "createdAt", "updatedAt", "archivedAt",
     ]
+    private static let versionThreeProjectKeys = versionTwoProjectKeys.union(["targetConnectionID"])
     private static let folderKeys: Set<String> = ["id", "name", "path", "isPrimary"]
     private static let tabKeys: Set<String> = ["id", "name", "panes"]
     private static let versionOnePaneKeys: Set<String> = ["id", "label", "command", "placement"]
@@ -532,6 +572,21 @@ public enum BessieProjectCodec {
             throw BessieProjectSchemaError.invalidDocument("Expected a JSON object.")
         }
         try validateKeys(project, allowed: versionTwoProjectKeys, context: "project")
+        try validateFoldersAndTabs(in: project)
+    }
+
+    private static func validateVersionThreeDocument(_ data: Data) throws {
+        guard let project = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BessieProjectSchemaError.invalidDocument("Expected a JSON object.")
+        }
+        try validateKeys(project, allowed: versionThreeProjectKeys, context: "project")
+        guard project["targetConnectionID"] is String else {
+            throw BessieProjectSchemaError.invalidDocument("Expected project targetConnectionID.")
+        }
+        try validateFoldersAndTabs(in: project)
+    }
+
+    private static func validateFoldersAndTabs(in project: [String: Any]) throws {
         guard let folders = project["folders"] as? [[String: Any]] else {
             throw BessieProjectSchemaError.invalidDocument("Expected project folders.")
         }
@@ -596,8 +651,37 @@ fileprivate struct BessieProjectVersionOne: Codable {
             name: name,
             projectDescription: projectDescription,
             group: group,
+            targetConnectionID: BessieConnectionDefinition.localBessie.id,
             folders: [.init(id: id, name: "Primary", path: workingDirectory, isPrimary: true)],
             tabs: tabs.map { $0.migrated() },
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            archivedAt: archivedAt
+        )
+    }
+}
+
+fileprivate struct BessieProjectVersionTwo: Codable {
+    let schemaVersion: Int
+    let id: UUID
+    var name: String
+    var projectDescription: String
+    var group: String?
+    var folders: [BessieProjectFolder]
+    var tabs: [BessieProjectTab]
+    var createdAt: Date
+    var updatedAt: Date
+    var archivedAt: Date?
+
+    func migrated() -> BessieProject {
+        BessieProject(
+            id: id,
+            name: name,
+            projectDescription: projectDescription,
+            group: group,
+            targetConnectionID: BessieConnectionDefinition.localBessie.id,
+            folders: folders,
+            tabs: tabs,
             createdAt: createdAt,
             updatedAt: updatedAt,
             archivedAt: archivedAt

@@ -130,10 +130,52 @@ public struct BessieIntentSessionProjection: Codable, Equatable, Sendable {
     }
 }
 
+public struct BessieIntentConnectionContext: Codable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+    public let kind: BessieConnectionKind
+    public let sshHost: String?
+    public let enabled: Bool
+    public let selected: Bool
+    public let defaultProjectTarget: Bool
+    public let connected: Bool
+
+    public init(
+        id: String,
+        label: String,
+        kind: BessieConnectionKind,
+        sshHost: String?,
+        enabled: Bool,
+        selected: Bool,
+        defaultProjectTarget: Bool,
+        connected: Bool
+    ) {
+        self.id = id
+        self.label = label
+        self.kind = kind
+        self.sshHost = sshHost
+        self.enabled = enabled
+        self.selected = selected
+        self.defaultProjectTarget = defaultProjectTarget
+        self.connected = connected
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, kind, enabled, selected, connected
+        case sshHost = "ssh_host"
+        case defaultProjectTarget = "default_project_target"
+    }
+}
+
 public protocol BessieIntentLivePort: Sendable {
     func isConnected(connectionID: String?) -> Bool
+    func connectionContexts(connectionID: String?) -> [BessieIntentConnectionContext]
     func projection(connectionID: String) throws -> HerdrSessionProjection
     func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection
+}
+
+public extension BessieIntentLivePort {
+    func connectionContexts(connectionID _: String?) -> [BessieIntentConnectionContext] { [] }
 }
 
 public protocol BessieIntentProjectReadPort: Sendable {
@@ -205,6 +247,8 @@ public struct BessieIntentExecutor: Sendable {
                 "connected": .bool(live.isConnected(connectionID: connectionID)),
                 "connection_id": connectionID.map(JSONValue.string) ?? .null,
             ]))
+        case "connection.context":
+            return try success(request, live.connectionContexts(connectionID: connectionID))
         case "session.projection":
             let connectionID = required(connectionID)
             return try success(

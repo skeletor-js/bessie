@@ -132,7 +132,7 @@ public struct BessieIntentCatalog: Codable, Equatable, Sendable {
 }
 
 public enum BessieIntentRegistry {
-    public static let catalog = BessieIntentCatalog(version: 1, intents: [
+    public static let catalog = BessieIntentCatalog(version: 2, intents: [
         intent(
             "intents.list",
             "List the effective Bessie intent catalog and parameter schemas.",
@@ -153,6 +153,15 @@ public enum BessieIntentRegistry {
             risk: .read,
             properties: [
                 "connection_id": .string("Bessie connection identifier."),
+            ]
+        ),
+        intent(
+            "connection.context",
+            "List configured Bessie herds with enabled, selected, default Project target, and live state; optionally filter by connection ID.",
+            owner: .bessie,
+            risk: .read,
+            properties: [
+                "connection_id": .string("Optional configured Bessie connection identifier."),
             ]
         ),
         intent(
