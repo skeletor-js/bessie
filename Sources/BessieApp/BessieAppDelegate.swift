@@ -10,6 +10,26 @@ enum BessieWindowChromePolicy {
         return identifier == mainWindowIdentifier || title == "Bessie"
     }
 
+    static func isFullScreen(
+        isPanel: Bool,
+        identifier: String?,
+        title: String,
+        styleMask: NSWindow.StyleMask
+    ) -> Bool {
+        applies(isPanel: isPanel, identifier: identifier, title: title)
+            && styleMask.contains(.fullScreen)
+    }
+
+    @MainActor
+    static func isFullScreen(_ window: NSWindow) -> Bool {
+        isFullScreen(
+            isPanel: window is NSPanel,
+            identifier: window.identifier?.rawValue,
+            title: window.title,
+            styleMask: window.styleMask
+        )
+    }
+
     @MainActor
     static func apply(to window: NSWindow) {
         window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])

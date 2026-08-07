@@ -918,10 +918,20 @@ struct BessieProductShell: View {
         .onReceive(NotificationCenter.default.publisher(for: .bessieCommand)) { notification in
             if let command = notification.object as? BessieShortcutCommand { handleShortcut(command) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  BessieWindowChromePolicy.isFullScreen(window)
+            else { return }
             isFullScreen = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  BessieWindowChromePolicy.applies(
+                      isPanel: window is NSPanel,
+                      identifier: window.identifier?.rawValue,
+                      title: window.title
+                  )
+            else { return }
             isFullScreen = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -2837,6 +2847,7 @@ struct BessieProductShell: View {
     }
 
     private func prepareShell() {
+        isFullScreen = NSApp.windows.contains(where: BessieWindowChromePolicy.isFullScreen)
         destination = ProductDestination.initial(flags: featureFlags)
         fleet.setScope(.all)
         reconcilePanePresentationsFromFreshSnapshots()

@@ -3,6 +3,17 @@ import XCTest
 @testable import BessieCore
 
 final class BootstrapTests: XCTestCase {
+    func testBroadSocketSubscriptionExcludesParameterizedAgentStatusChanges() {
+        XCTAssertFalse(HerdrSocketAPI.subscriptionNames.contains("pane.agent_status_changed"))
+    }
+
+    func testQuietSocketSubscriptionProducesSnapshotPollInvalidation() throws {
+        let event = try HerdrEventBuffer().nextEvent(pollInterval: 0.001)
+
+        XCTAssertEqual(event?.name, HerdrSocketAPI.snapshotPollEventName)
+        XCTAssertEqual(event?.data, [:])
+    }
+
     func testAcknowledgedSubscriptionPrecedesSnapshotAndBufferedEventForcesResnapshot() throws {
         let first = HerdrSnapshot.fixture(focusedWorkspaceID: "stale")
         let converged = HerdrSnapshot.fixture(focusedWorkspaceID: "current")

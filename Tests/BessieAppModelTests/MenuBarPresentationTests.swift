@@ -240,6 +240,27 @@ final class MenuBarPresentationTests: XCTestCase {
         ))
     }
 
+    func testMainWindowFullScreenStateCanBeRecoveredAfterMissingTheTransitionNotification() {
+        XCTAssertTrue(BessieWindowChromePolicy.isFullScreen(
+            isPanel: false,
+            identifier: BessieWindowChromePolicy.mainWindowIdentifier,
+            title: "Bessie",
+            styleMask: [.titled, .resizable, .fullScreen]
+        ))
+        XCTAssertFalse(BessieWindowChromePolicy.isFullScreen(
+            isPanel: false,
+            identifier: nil,
+            title: "Settings",
+            styleMask: [.titled, .resizable, .fullScreen]
+        ))
+        XCTAssertFalse(BessieWindowChromePolicy.isFullScreen(
+            isPanel: false,
+            identifier: BessieWindowChromePolicy.mainWindowIdentifier,
+            title: "Bessie",
+            styleMask: [.titled, .resizable]
+        ))
+    }
+
     func testWindowCoordinatorCoalescesConcurrentWindowCreationRequests() {
         let coordinator = BessieWindowCoordinator()
         var creationCount = 0

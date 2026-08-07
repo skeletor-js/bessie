@@ -8,6 +8,17 @@ bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matri
 python3 scripts/check-herdr-runtime.py
 python3 scripts/check-intent-parity.py
 python3 scripts/run-hardening-benchmarks.py --self-test
+python3 - <<'PY'
+import plistlib
+from pathlib import Path
+
+with Path("scripts/Info.plist.in").open("rb") as handle:
+    info = plistlib.load(handle)
+assert info.get("NSPrefersDisplaySafeAreaCompatibilityMode") is False, (
+    "Bessie must opt out of macOS display-safe-area compatibility mode so "
+    "native full screen can use the camera-housing region."
+)
+PY
 
 grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift

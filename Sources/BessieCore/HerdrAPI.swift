@@ -64,20 +64,20 @@ public final class HerdrSocketAPI: HerdrAPI, @unchecked Sendable {
         return try HerdrResponseDecoder.decode(connection.readLine(), expectedID: id)
     }
 
-    private static let subscriptionNames = [
+    static let subscriptionNames = [
         "workspace.created", "workspace.updated", "workspace.metadata_updated", "workspace.renamed",
         "workspace.moved", "workspace.closed", "workspace.focused", "tab.created", "tab.closed",
         "tab.focused", "tab.renamed", "tab.moved", "pane.created", "pane.closed", "pane.updated",
         "pane.focused", "pane.moved", "pane.exited", "pane.agent_detected", "layout.updated",
     ]
+
+    static let snapshotPollInterval: TimeInterval = 1
+    static let snapshotPollEventName = "bessie.snapshot_poll"
 }
 
 private final class SocketEventSubscription: HerdrEventSubscription, @unchecked Sendable {
     private let connection: any HerdrLineConnection
-    private let condition = NSCondition()
-    private var buffered: [HerdrEvent] = []
-    private var terminalError: Error?
-    private var ended = false
+    private let events = HerdrEventBuffer()
 
     init(connection: any HerdrLineConnection) {
         self.connection = connection
@@ -85,19 +85,11 @@ private final class SocketEventSubscription: HerdrEventSubscription, @unchecked 
     }
 
     func drainBufferedEvents() -> [HerdrEvent] {
-        condition.lock()
-        defer { condition.unlock() }
-        defer { buffered.removeAll() }
-        return buffered
+        events.drain()
     }
 
     func nextEvent() throws -> HerdrEvent? {
-        condition.lock()
-        defer { condition.unlock() }
-        while buffered.isEmpty && !ended { condition.wait() }
-        if !buffered.isEmpty { return buffered.removeFirst() }
-        if let terminalError { throw terminalError }
-        return nil
+        try events.nextEvent(pollInterval: HerdrSocketAPI.snapshotPollInterval)
     }
 
     func close() { connection.close() }
@@ -106,17 +98,52 @@ private final class SocketEventSubscription: HerdrEventSubscription, @unchecked 
         do {
             while true {
                 let event = try JSONDecoder().decode(HerdrEvent.self, from: connection.readLine())
-                condition.lock()
-                buffered.append(event)
-                condition.broadcast()
-                condition.unlock()
+                events.append(event)
             }
         } catch {
-            condition.lock()
-            terminalError = error
-            ended = true
-            condition.broadcast()
-            condition.unlock()
+            events.finish(error: error)
         }
+    }
+}
+
+final class HerdrEventBuffer: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var buffered: [HerdrEvent] = []
+    private var terminalError: Error?
+    private var ended = false
+
+    func append(_ event: HerdrEvent) {
+        condition.lock()
+        buffered.append(event)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func drain() -> [HerdrEvent] {
+        condition.lock()
+        defer { condition.unlock() }
+        defer { buffered.removeAll() }
+        return buffered
+    }
+
+    func finish(error: Error?) {
+        condition.lock()
+        terminalError = error
+        ended = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func nextEvent(pollInterval: TimeInterval) throws -> HerdrEvent? {
+        precondition(pollInterval > 0)
+        condition.lock()
+        defer { condition.unlock() }
+        if buffered.isEmpty, !ended {
+            _ = condition.wait(until: Date(timeIntervalSinceNow: pollInterval))
+        }
+        if !buffered.isEmpty { return buffered.removeFirst() }
+        if let terminalError { throw terminalError }
+        if ended { return nil }
+        return HerdrEvent(name: HerdrSocketAPI.snapshotPollEventName, data: [:])
     }
 }
