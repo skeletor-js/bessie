@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum BessieThemeID: String, Codable, CaseIterable, Equatable, Sendable {
@@ -118,16 +119,22 @@ public struct BessiePresentationState: Codable, Equatable, Sendable {
     public var lastWorkspaceIDByConnectionID: [String: String]?
     public var preferences: BessiePreferences
     public var firstRealTerminalCompletionVersion: Int?
+    public var panePresentationRevision: UInt64?
+    public var panePresentationPreferences: [BessiePanePresentationPreference]?
     public init(
         lastWorkspaceID: String? = nil,
         lastWorkspaceIDByConnectionID: [String: String]? = nil,
         preferences: BessiePreferences = BessiePreferences(),
-        firstRealTerminalCompletionVersion: Int? = nil
+        firstRealTerminalCompletionVersion: Int? = nil,
+        panePresentationRevision: UInt64? = nil,
+        panePresentationPreferences: [BessiePanePresentationPreference]? = nil
     ) {
         self.lastWorkspaceID = lastWorkspaceID
         self.lastWorkspaceIDByConnectionID = lastWorkspaceIDByConnectionID
         self.preferences = preferences
         self.firstRealTerminalCompletionVersion = firstRealTerminalCompletionVersion
+        self.panePresentationRevision = panePresentationRevision
+        self.panePresentationPreferences = panePresentationPreferences
     }
 
     enum CodingKeys: String, CodingKey {
@@ -135,19 +142,48 @@ public struct BessiePresentationState: Codable, Equatable, Sendable {
         case lastWorkspaceIDByConnectionID = "last_workspace_id_by_connection_id"
         case preferences
         case firstRealTerminalCompletionVersion = "first_real_terminal_completion_version"
+        case panePresentationRevision = "pane_presentation_revision"
+        case panePresentationPreferences = "pane_presentation_preferences"
     }
 }
 
 public struct BessiePresentationStore: Sendable {
     public static let currentSchemaVersion = 1
+    public static let maximumFileBytes = 1_048_576
     public let url: URL
     public init(url: URL) { self.url = url }
-    public func load() throws -> BessiePresentationState {
-        guard FileManager.default.fileExists(atPath: url.path) else { return BessiePresentationState() }
-        let data = try Data(contentsOf: url)
+    public func load(now: Date = Date()) throws -> BessiePresentationState {
+        try loadWithNormalizationStatus(now: now).state
+    }
+
+    public func loadWithNormalizationStatus(
+        now: Date = Date()
+    ) throws -> (state: BessiePresentationState, didNormalize: Bool) {
+        var details = stat()
+        guard lstat(url.path, &details) == 0 else {
+            if errno == ENOENT { return (BessiePresentationState(), false) }
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        guard (details.st_mode & S_IFMT) == S_IFREG, details.st_nlink == 1 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        guard details.st_size <= Self.maximumFileBytes else {
+            throw BessiePresentationPersistenceError.fileTooLarge
+        }
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw BessiePresentationPersistenceError.invalidSource }
+        defer { close(descriptor) }
+        let data = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readDataToEndOfFile()
+        guard data.count <= Self.maximumFileBytes else { throw BessiePresentationPersistenceError.fileTooLarge }
         let probe = try JSONDecoder().decode(SchemaProbe.self, from: data)
+        let state: BessiePresentationState
         guard let version = probe.schemaVersion else {
-            return try JSONDecoder().decode(BessiePresentationState.self, from: data)
+            state = try JSONDecoder().decode(BessiePresentationState.self, from: data)
+            let result = try normalized(state, now: now)
+            if result != state, state.panePresentationRevision == UInt64.max {
+                throw BessiePanePresentationError.revisionOverflow
+            }
+            return (result, result != state)
         }
         guard version <= Self.currentSchemaVersion else {
             throw BessiePresentationPersistenceError.unsupportedSchema(version)
@@ -155,11 +191,52 @@ public struct BessiePresentationStore: Sendable {
         guard version == Self.currentSchemaVersion else {
             throw BessiePresentationPersistenceError.unsupportedSchema(version)
         }
-        return try JSONDecoder().decode(Envelope.self, from: data).state
+        state = try JSONDecoder().decode(Envelope.self, from: data).state
+        let result = try normalized(state, now: now)
+        if result != state, state.panePresentationRevision == UInt64.max {
+            throw BessiePanePresentationError.revisionOverflow
+        }
+        return (result, result != state)
     }
     public func save(_ state: BessiePresentationState) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(Envelope(schemaVersion: Self.currentSchemaVersion, state: state)).write(to: url, options: .atomic)
+        let parent = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: parent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+        var parentDetails = stat()
+        guard lstat(parent.path, &parentDetails) == 0,
+              (parentDetails.st_mode & S_IFMT) == S_IFDIR,
+              parent.standardizedFileURL.path == parent.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        var existingDetails = stat()
+        if lstat(url.path, &existingDetails) == 0 {
+            guard (existingDetails.st_mode & S_IFMT) == S_IFREG, existingDetails.st_nlink == 1 else {
+                throw BessiePresentationPersistenceError.invalidSource
+            }
+        } else if errno != ENOENT {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        let normalized = try normalized(state, now: .distantPast)
+        let data = try JSONEncoder().encode(Envelope(schemaVersion: Self.currentSchemaVersion, state: normalized))
+        guard data.count <= Self.maximumFileBytes else { throw BessiePresentationPersistenceError.fileTooLarge }
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func normalized(_ state: BessiePresentationState, now: Date) throws -> BessiePresentationState {
+        var state = state
+        let ledger = try BessiePanePresentationLedger(
+            revision: state.panePresentationRevision ?? 0,
+            records: state.panePresentationPreferences ?? [],
+            now: now
+        )
+        state.panePresentationRevision = ledger.revision == 0 ? nil : ledger.revision
+        state.panePresentationPreferences = ledger.records.isEmpty ? nil : ledger.records
+        return state
     }
 
     private struct SchemaProbe: Decodable { let schemaVersion: Int? }
@@ -171,7 +248,99 @@ public struct BessiePresentationStore: Sendable {
 
 public enum BessiePresentationPersistenceError: Error, Equatable, LocalizedError {
     case unsupportedSchema(Int)
+    case fileTooLarge
+    case invalidSource
     public var errorDescription: String? {
-        switch self { case .unsupportedSchema(let version): "This settings file uses unsupported schema version \(version). Update Bessie before changing settings." }
+        switch self {
+        case .unsupportedSchema(let version):
+            "This settings file uses unsupported schema version \(version). Update Bessie before changing settings."
+        case .fileTooLarge:
+            "The presentation settings file exceeds Bessie's 1 MiB safety limit."
+        case .invalidSource:
+            "The presentation settings path is not a safe regular file."
+        }
+    }
+}
+
+public enum BessiePresentationLeaseError: Error, Equatable, LocalizedError, Sendable {
+    case unavailable(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable(let path): "Bessie presentation settings are in use by another process: \(path)"
+        }
+    }
+}
+
+public final class BessiePresentationLease: @unchecked Sendable {
+    private struct Entry { let descriptor: Int32; var references: Int }
+    private final class Registry: @unchecked Sendable {
+        let lock = NSLock()
+        var entries: [String: Entry] = [:]
+    }
+    private static let registry = Registry()
+    private let path: String
+
+    private init(path: String) { self.path = path }
+
+    deinit {
+        Self.registry.lock.withLock {
+            guard var entry = Self.registry.entries[path] else { return }
+            entry.references -= 1
+            if entry.references == 0 {
+                flock(entry.descriptor, LOCK_UN)
+                close(entry.descriptor)
+                Self.registry.entries.removeValue(forKey: path)
+            } else {
+                Self.registry.entries[path] = entry
+            }
+        }
+    }
+
+    public static func lockURL(for presentationURL: URL) -> URL {
+        presentationURL.deletingLastPathComponent().appendingPathComponent(".bessie-presentation.lock")
+    }
+
+    public static func acquire(for presentationURL: URL) throws -> BessiePresentationLease {
+        let lockURL = lockURL(for: presentationURL)
+        if registry.lock.withLock({ () -> Bool in
+            guard var entry = registry.entries[lockURL.path] else { return false }
+            entry.references += 1
+            registry.entries[lockURL.path] = entry
+            return true
+        }) {
+            return BessiePresentationLease(path: lockURL.path)
+        }
+        let parent = lockURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: parent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+        var parentDetails = stat()
+        guard lstat(parent.path, &parentDetails) == 0,
+              (parentDetails.st_mode & S_IFMT) == S_IFDIR,
+              parentDetails.st_uid == geteuid(),
+              (parentDetails.st_mode & 0o077) == 0,
+              parent.standardizedFileURL.path == parent.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw BessiePresentationLeaseError.unavailable(lockURL.path)
+        }
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw BessiePresentationLeaseError.unavailable(lockURL.path) }
+        var details = stat()
+        guard fstat(descriptor, &details) == 0,
+              (details.st_mode & S_IFMT) == S_IFREG,
+              details.st_uid == geteuid(),
+              details.st_nlink == 1,
+              (details.st_mode & 0o077) == 0,
+              flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            throw BessiePresentationLeaseError.unavailable(lockURL.path)
+        }
+        registry.lock.withLock {
+            registry.entries[lockURL.path] = Entry(descriptor: descriptor, references: 1)
+        }
+        return BessiePresentationLease(path: lockURL.path)
     }
 }

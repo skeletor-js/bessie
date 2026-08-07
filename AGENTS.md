@@ -57,18 +57,17 @@ Use the design system under workstream `source-material/design-system/` for asse
 
 The VPS copy is the editing source during this autonomous run. Sync intentionally to the Mac for native builds. Never use `rsync --delete` against a pre-existing destination without first verifying it is the Bessie mirror.
 
-## Required validation
+## Validation
 
 Create repeatable scripts so these are the ordinary checks:
 
 ```bash
 ./scripts/check.sh
-./scripts/mac-verify.sh
 ```
 
-`mac-verify.sh` must sync the source, run Swift tests on the Mac, build/package `dist/Bessie.app`, and run non-destructive live checks against an isolated repository-local Herdr configuration. Do not claim success from compilation alone.
+Do not invoke `./scripts/mac-verify.sh` unless Jordan explicitly asks for that exact script. It is a broad release gate, not the default feature-validation path. Prefer focused native Swift tests, direct isolated real-world checks for the changed behavior, packaging, install identity verification, relaunch, and screenshots. Do not claim success from compilation alone.
 
-After a change passes the required Mac verification, install the newly packaged `dist/Bessie.app` at `/Applications/Bessie.app` on `jordan-macbook`, relaunch it, and verify that the installed executable matches the packaged executable. This is the default completion step for Bessie work unless Jordan explicitly says not to install it.
+After a change passes focused Mac validation, install the newly packaged `dist/Bessie.app` at `/Applications/Bessie.app` on `jordan-macbook`, relaunch it, and verify that the installed executable matches the packaged executable. This is the default completion step for Bessie work unless Jordan explicitly says not to install it.
 
 For UI verification, launch the built app on the Mac, capture a screenshot, and inspect it. For terminal verification, assert output/input using live Herdr pane reads or an equivalent observable check.
 

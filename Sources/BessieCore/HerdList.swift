@@ -75,6 +75,7 @@ public enum HerdRailGroup: String, CaseIterable, Equatable, Sendable {
 
 public struct HerdRailPaneRow: Identifiable, Equatable, Sendable {
     public let id: HerdPaneIdentity
+    public let terminalID: String
     public let title: String
     public let location: String
     public let group: HerdRailGroup
@@ -157,6 +158,7 @@ public struct HerdRailProjection: Equatable, Sendable {
                 .compactMap { $0 }.joined(separator: " · ")
             return HerdRailPaneRow(
                 id: HerdPaneIdentity(connectionID: input.connection.id, paneID: pane.id),
+                terminalID: pane.terminalID,
                 title: title, location: location, group: group, rawState: state,
                 agentKind: agent?.agent ?? agent?.displayAgent,
                 target: RoutedPaneTarget(connectionID: input.connection.id, workspaceID: pane.workspaceID,

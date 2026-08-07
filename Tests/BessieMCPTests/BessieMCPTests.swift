@@ -38,8 +38,8 @@ struct BessieMCPTests {
 
     @Test func toolsListNamesEqualCustomEffectiveCatalog() throws {
         let effective = BessieIntentCatalog(version: 9, intents: [
-            BessieIntentRegistry.catalog.intents[2],
-            BessieIntentRegistry.catalog.intents[6],
+            try #require(BessieIntentRegistry.definition(for: "app.status")),
+            try #require(BessieIntentRegistry.definition(for: "workspace.close")),
         ])
         let adapter = runner { request in
             let value = try! JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(effective))

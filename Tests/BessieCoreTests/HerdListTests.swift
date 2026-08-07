@@ -179,6 +179,78 @@ final class HerdListTests: XCTestCase {
         XCTAssertTrue(empty.rows.isEmpty)
     }
 
+    func testPanePresentationRoutesEveryRowOnceWithPinnedPrecedence() throws {
+        let base = HerdRailProjection(connections: [
+            HerdRailConnectionInput(
+                connection: .localBessie,
+                projection: try HerdrSessionProjection(snapshot: .railFixture),
+                isFresh: true
+            ),
+        ])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let ledger = try BessiePanePresentationLedger(records: [
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "blocked", terminalID: "term-blocked",
+                pinned: true
+            ),
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "working", terminalID: "term-working",
+                snooze: .indefinite
+            ),
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "done", terminalID: "term-done",
+                pinned: true, snooze: .until(now.addingTimeInterval(3_600), provenance: .oneHour)
+            ),
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "shell", terminalID: "term-shell",
+                snooze: .indefinite
+            ),
+        ], now: now)
+
+        let routed = HerdRailPresentation(base: base, ledger: ledger, now: now)
+
+        XCTAssertEqual(routed.pinnedRows.map(\.base.id.paneID), ["blocked", "done"])
+        XCTAssertEqual(routed.snoozedRows.map(\.base.id.paneID), ["working", "shell"])
+        XCTAssertEqual(routed.rows(in: .settled).map(\.base.id.paneID), ["idle"])
+        XCTAssertTrue(routed.shellRows.isEmpty)
+        XCTAssertEqual(Set(routed.allRows.map(\.base.id)), Set(base.rows.map(\.id)))
+        XCTAssertEqual(routed.allRows.count, base.rows.count)
+        XCTAssertEqual(routed.awakeAttentionCount, 1)
+        XCTAssertFalse(routed.navigationRows.contains { $0.isSnoozed })
+        XCTAssertEqual(routed.navigationRows.first?.base.id.paneID, "blocked")
+        XCTAssertFalse(routed.navigationRows.contains { $0.base.id.paneID == "done" })
+        XCTAssertEqual(routed.pinnedRows.last?.snooze?.provenance, .oneHour)
+    }
+
+    func testPanePresentationIgnoresStaleIncarnationAndExpiredSnooze() throws {
+        let base = HerdRailProjection(connections: [
+            HerdRailConnectionInput(
+                connection: .localBessie,
+                projection: try HerdrSessionProjection(snapshot: .railFixture),
+                isFresh: true
+            ),
+        ])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let ledger = try BessiePanePresentationLedger(records: [
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "blocked", terminalID: "reused-terminal",
+                pinned: true
+            ),
+            BessiePanePresentationPreference(
+                connectionID: "local-bessie", paneID: "working", terminalID: "term-working",
+                snooze: .until(now.addingTimeInterval(-1), provenance: .oneHour)
+            ),
+        ], now: .distantPast)
+
+        let routed = HerdRailPresentation(base: base, ledger: ledger, now: now)
+
+        XCTAssertTrue(routed.pinnedRows.isEmpty)
+        XCTAssertTrue(routed.snoozedRows.isEmpty)
+        XCTAssertEqual(routed.rows(in: .needsYou).map(\.base.id.paneID), ["blocked"])
+        XCTAssertEqual(routed.rows(in: .working).map(\.base.id.paneID), ["working"])
+        XCTAssertEqual(routed.awakeAttentionCount, 1)
+    }
+
     func testRailTraversalHandlesZeroOneManyAndBidirectionalWrap() {
         let a = HerdPaneIdentity(connectionID: "local", paneID: "a")
         let b = HerdPaneIdentity(connectionID: "remote", paneID: "a")

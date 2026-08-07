@@ -132,7 +132,7 @@ public struct BessieIntentCatalog: Codable, Equatable, Sendable {
 }
 
 public enum BessieIntentRegistry {
-    public static let catalog = BessieIntentCatalog(version: 2, intents: [
+    public static let catalog = BessieIntentCatalog(version: 3, intents: [
         intent(
             "intents.list",
             "List the effective Bessie intent catalog and parameter schemas.",
@@ -185,6 +185,22 @@ public enum BessieIntentRegistry {
             required: ["connection_id", "pane_id"]
         ),
         intent(
+            "pane.presentation.list",
+            "List Bessie-owned pin and snooze state without terminal content.",
+            owner: .bessie,
+            risk: .read,
+            properties: ["connection_id": .string("Optional Bessie connection identifier.")]
+        ),
+        presentationMutationIntent("pane.pin", "Pin an exact fresh pane incarnation."),
+        presentationMutationIntent("pane.unpin", "Unpin an exact fresh pane incarnation."),
+        presentationMutationIntent(
+            "pane.snooze",
+            "Snooze an exact fresh pane incarnation using a Bessie preset.",
+            extra: ["preset": .string("One of until_further_notice, thirty_minutes, one_hour, three_hours, twelve_hours, twenty_four_hours, or tomorrow.")],
+            extraRequired: ["preset"]
+        ),
+        presentationMutationIntent("pane.wake", "Wake an exact fresh pane incarnation."),
+        intent(
             "workspace.focus",
             "Focus an explicit Herdr workspace on a connection.",
             owner: .herdr,
@@ -229,6 +245,29 @@ public enum BessieIntentRegistry {
 
     public static func definition(for id: BessieIntentID) -> BessieIntentDefinition? {
         catalog.intents.first { $0.id == id }
+    }
+
+    private static func presentationMutationIntent(
+        _ id: String,
+        _ description: String,
+        extra: [String: BessieJSONSchema] = [:],
+        extraRequired: [String] = []
+    ) -> BessieIntentDefinition {
+        intent(
+            id,
+            description,
+            owner: .bessie,
+            risk: .mutate,
+            properties: connectionProperties([
+                "pane_id": .string("Herdr pane identifier scoped to the connection."),
+                "terminal_id": .string("Herdr terminal incarnation identifier."),
+                "expected_revision": BessieJSONSchema(
+                    type: .integer,
+                    description: "Current Bessie pane-presentation revision."
+                ),
+            ].merging(extra) { _, rhs in rhs }),
+            required: ["connection_id", "pane_id", "terminal_id", "expected_revision"] + extraRequired
+        )
     }
 
     public static func definition(for id: String) -> BessieIntentDefinition? {

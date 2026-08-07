@@ -22,6 +22,7 @@ final class HerdRailPresentationTests: XCTestCase {
     func testCollapsedPaneDescriptionIncludesTitleAndLocation() {
         let row = HerdRailPaneRow(
             id: HerdPaneIdentity(connectionID: "remote", paneID: "p1"),
+            terminalID: "terminal-p1",
             title: "Claude review", location: "Hermes · bessie · review", group: .working,
             rawState: .working, agentKind: "claude",
             target: RoutedPaneTarget(connectionID: "remote", workspaceID: "w", tabID: "t", paneID: "p1")

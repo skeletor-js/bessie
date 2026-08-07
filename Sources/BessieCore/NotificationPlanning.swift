@@ -2,6 +2,7 @@ import Foundation
 
 public struct BessieNotificationPane: Equatable, Sendable {
     public let paneID: String
+    public let terminalID: String
     public let state: AgentSemanticState
     public let revision: UInt64
     public let identity: String
@@ -10,6 +11,7 @@ public struct BessieNotificationPane: Equatable, Sendable {
 
     public init(
         paneID: String,
+        terminalID: String? = nil,
         state: AgentSemanticState,
         revision: UInt64,
         identity: String,
@@ -17,6 +19,7 @@ public struct BessieNotificationPane: Equatable, Sendable {
         target: PaneOpenTarget
     ) {
         self.paneID = paneID
+        self.terminalID = terminalID ?? paneID
         self.state = state
         self.revision = revision
         self.identity = identity
@@ -107,6 +110,7 @@ public struct BessieNotificationPlanner: Sendable {
         for panes: [BessieNotificationPane],
         policy: BessieNotifications,
         activePaneID: String?,
+        suppressedPaneIDs: Set<String> = [],
         connectionLabel: String? = nil
     ) -> [BessieNotificationEvent] {
         let nextStates = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneID, $0.state) })
@@ -121,6 +125,7 @@ public struct BessieNotificationPlanner: Sendable {
             let previous = previousStates[pane.paneID]
             guard previous != pane.state,
                   pane.paneID != activePaneID,
+                  !suppressedPaneIDs.contains(pane.paneID),
                   policy.shouldNotify(transitioningTo: pane.state, from: previous)
             else { return nil }
 

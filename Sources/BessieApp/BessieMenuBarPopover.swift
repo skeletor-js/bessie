@@ -62,9 +62,17 @@ struct BessieMenuBarPresentation: Equatable {
 
     init(
         agents: [ConnectedAgentProjection],
-        freshConnectionIDs: Set<String>
+        freshConnectionIDs: Set<String>,
+        snoozedIncarnations: Set<BessiePaneIncarnation> = []
     ) {
-        let fresh = agents.filter { freshConnectionIDs.contains($0.connectionID) }
+        let fresh = agents.filter {
+            freshConnectionIDs.contains($0.connectionID)
+                && !snoozedIncarnations.contains(BessiePaneIncarnation(
+                    connectionID: $0.connectionID,
+                    paneID: $0.paneID,
+                    terminalID: $0.agent.terminalID
+                ))
+        }
         let rows = fresh.map { item in
             (
                 state: AgentSemanticState(herdrValue: item.agent.agentStatus),
@@ -122,7 +130,8 @@ struct BessieMenuBarPopover: View {
         }
         return BessieMenuBarPresentation(
             agents: fleet.agents,
-            freshConnectionIDs: fleet.connectedConnectionIDs
+            freshConnectionIDs: fleet.connectedConnectionIDs,
+            snoozedIncarnations: settings.snoozedPaneIncarnations()
         )
     }
 

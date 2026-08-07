@@ -3,6 +3,19 @@ import XCTest
 @testable import BessieCore
 
 final class TerminalControllerTests: XCTestCase {
+    func testTrustedLocalUseRunsImmediatelyBeforeForwardingOnce() {
+        var events: [String] = []
+        TerminalLocalUseForwarder.forward(
+            .paste("hello"),
+            recordLocalUse: { events.append("wake") },
+            enqueue: { operation in
+                if case .paste(let text) = operation { events.append("paste:\(text)") }
+            }
+        )
+
+        XCTAssertEqual(events, ["wake", "paste:hello"])
+    }
+
     func testFrameDecoderNormalizesPinnedAndDocumentedAliases() throws {
         let pinned = try HerdrTerminalEnvelope.decode(Data(#"{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"SEk="}"#.utf8))
         let documented = try HerdrTerminalEnvelope.decode(Data(#"{"type":"terminal.frame","seq":2,"encoding":"ansi","cols":90,"rows":30,"full":false,"bytes_b64":"IQ=="}"#.utf8))
@@ -15,6 +28,21 @@ final class TerminalControllerTests: XCTestCase {
     func testFrameDecoderRejectsUnknownEncodingAndInvalidBase64() {
         XCTAssertThrowsError(try HerdrTerminalEnvelope.decode(Data(#"{"type":"terminal.frame","seq":1,"encoding":"cells","width":80,"height":24,"full":true,"bytes":"SEk="}"#.utf8)))
         XCTAssertThrowsError(try HerdrTerminalEnvelope.decode(Data(#"{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"%%%"}"#.utf8)))
+    }
+
+    func testFrameDecoderPreservesHostDefaultsExplicitRGBPairAndResetsByteForByte() throws {
+        let ansi = Data("\u{1b}[39;49mhost-default\u{1b}[38;2;255;248;220;48;2;16;16;20mapp-pair\u{1b}[39;49mhost-again".utf8)
+        let envelope = Data(#"{"type":"terminal.frame","seq":1,"encoding":"ansi","width":80,"height":24,"full":true,"bytes":"\#(ansi.base64EncodedString())"}"#.utf8)
+
+        guard case .frame(let frame) = try HerdrTerminalEnvelope.decode(envelope) else {
+            return XCTFail("Expected terminal frame")
+        }
+
+        XCTAssertEqual(frame.bytes, ansi)
+        let decoded = try XCTUnwrap(String(data: frame.bytes, encoding: .utf8))
+        XCTAssertTrue(decoded.contains("\u{1b}[39;49mhost-default"))
+        XCTAssertTrue(decoded.contains("\u{1b}[38;2;255;248;220;48;2;16;16;20mapp-pair"))
+        XCTAssertTrue(decoded.hasSuffix("\u{1b}[39;49mhost-again"))
     }
 
     func testSequencerRequiresMatchingFullThenAppliesOnlyContiguousFrames() {

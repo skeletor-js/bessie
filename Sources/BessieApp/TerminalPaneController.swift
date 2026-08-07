@@ -212,6 +212,8 @@ final class TerminalControllerRegistry: ObservableObject {
     private var pendingSwitchStartedAt: [String: TimeInterval] = [:]
     private var pendingFocusPaneID: String?
     private var pendingFocusRefresh: PaneTerminalController.SurfaceRefresh = .full
+    private var paneIncarnations: [String: BessiePaneIncarnation] = [:]
+    private var recordLocalPaneUse: (BessiePaneIncarnation) -> Void = { _ in }
     private(set) var effectiveTheme = BessieThemeRegistry.definitions[.dark]!.resolvedTerminalTheme
 
     init(
@@ -230,11 +232,29 @@ final class TerminalControllerRegistry: ObservableObject {
                     endpoint: endpoint,
                     theme: self.effectiveTheme,
                     performanceRecorder: performanceRecorder,
+                    recordLocalUse: { [weak self, incarnation = self.paneIncarnations[paneID]] in
+                        guard let self, let incarnation else { return }
+                        self.recordLocalPaneUse(incarnation)
+                    },
                     surfacePresented: { [weak self] in self?.recordSwitchSurfaceAttached(paneID: paneID) }
                 )
             },
             release: { $0.release() }
         )
+    }
+
+    func configureLocalPaneUse(
+        incarnations: [String: BessiePaneIncarnation],
+        record: @escaping (BessiePaneIncarnation) -> Void
+    ) {
+        paneIncarnations = incarnations
+        recordLocalPaneUse = record
+        for (paneID, controller) in controllers {
+            controller.recordLocalUse = { [weak self, incarnation = incarnations[paneID]] in
+                guard let self, let incarnation else { return }
+                self.recordLocalPaneUse(incarnation)
+            }
+        }
     }
 
     func setInitialTheme(_ theme: BessieResolvedTerminalTheme) {
@@ -444,17 +464,25 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     private var lastAutoTakeoverAt: TimeInterval = 0
     private var configuredFontSize = 13.0
     private var configuredTheme: BessieResolvedTerminalTheme?
+    private let localUseCallback: PaneLocalUseCallback
+    var recordLocalUse: () -> Void {
+        didSet { localUseCallback.update(recordLocalUse) }
+    }
 
     init(
         paneID: String,
         endpoint: HerdrTerminalEndpoint,
         theme: BessieResolvedTerminalTheme = BessieThemeRegistry.definitions[.dark]!.resolvedTerminalTheme,
         performanceRecorder: BessiePerformanceRecorder = BessiePerformance.recorder,
+        recordLocalUse: @escaping () -> Void = {},
         surfacePresented: @escaping () -> Void = {}
     ) {
         id = paneID
         self.surfacePresented = surfacePresented
         self.performanceRecorder = performanceRecorder
+        self.recordLocalUse = recordLocalUse
+        let localUseCallback = PaneLocalUseCallback(recordLocalUse)
+        self.localUseCallback = localUseCallback
         ghosttyController = TerminalController(theme: theme.theme) { builder in
             builder.withBackgroundOpacity(1)
             // Herdr owns PTY mouse modes. Local libghostty must not encode mouse
@@ -480,7 +508,14 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         let inputRouter = TerminalInputRouter(transport: herdr, performanceRecorder: performanceRecorder)
         self.inputRouter = inputRouter
         session = InMemoryTerminalSession(
-            write: { [weak inputRouter] data in inputRouter?.enqueue(.raw(data)) },
+            write: { [weak inputRouter] data in
+                guard let inputRouter else { return }
+                TerminalLocalUseForwarder.forward(
+                    .raw(data),
+                    recordLocalUse: localUseCallback.call,
+                    enqueue: inputRouter.enqueue
+                )
+            },
             resize: { [weak herdr] viewport in
                 herdr?.requestResize(
                     grid: TerminalGrid(columns: Int(viewport.columns), rows: Int(viewport.rows)),
@@ -496,6 +531,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         terminalView.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
         terminalView.sendOperation = { [weak self] operation in
             guard let self else { return }
+            self.recordLocalUse()
             // Without a writable controller, mouse/keys are dead. Native Herdr TUI
             // commonly holds the exclusive attach; click-to-control must steal it.
             if case .ownershipConflict = self.status {
@@ -508,8 +544,13 @@ final class PaneTerminalController: ObservableObject, Identifiable {
                 self.takeOver()
                 return
             }
-            self.inputRouter.enqueue(operation)
+            TerminalLocalUseForwarder.forward(
+                operation,
+                recordLocalUse: {},
+                enqueue: self.inputRouter.enqueue
+            )
         }
+        terminalView.recordLocalUse = { [weak self] in self?.recordLocalUse() }
         terminalView.delegate = self
         bridge.onState = { [weak self] state in self?.handle(state) }
         if ghosttyController.theme == theme.theme,
@@ -1092,6 +1133,28 @@ struct GhosttyPaneSurface: NSViewRepresentable {
     }
 }
 
+final class PaneLocalUseCallback: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: () -> Void
+
+    init(_ callback: @escaping () -> Void) { self.callback = callback }
+
+    func update(_ callback: @escaping () -> Void) {
+        lock.withLock { self.callback = callback }
+    }
+
+    func call() {
+        let current: () -> Void = lock.withLock { self.callback }
+        if Thread.isMainThread {
+            current()
+        } else {
+            DispatchQueue.main.async {
+                current()
+            }
+        }
+    }
+}
+
 @MainActor
 final class TerminalSurfaceHostView: NSView {
     private(set) weak var paneController: PaneTerminalController?
@@ -1176,6 +1239,7 @@ final class TerminalSurfaceHostView: NSView {
 @MainActor
 final class BessieTerminalView: TerminalView {
     var sendOperation: ((TerminalInputOperation) -> Void)?
+    var recordLocalUse: () -> Void = {}
     /// Herdr/Bessie pane focus. Must be cheap when the pane is already active —
     /// a full `pane.focus` navigate on every click breaks mouse TUIs.
     var requestFocus: () -> Void = {}
@@ -1291,6 +1355,7 @@ final class BessieTerminalView: TerminalView {
         )
         switch event.type {
         case .leftMouseDown:
+            recordLocalUse()
             heldButton = .left
             handlePointer(kind: .buttonDown, button: .left, pressed: true, event: event) {
                 super.mouseDown(with: event)
@@ -1306,6 +1371,7 @@ final class BessieTerminalView: TerminalView {
             heldButton = nil
             sgrGestureArmed = false
         case .rightMouseDown:
+            recordLocalUse()
             heldButton = .right
             handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event) {
                 super.rightMouseDown(with: event)
@@ -1321,6 +1387,7 @@ final class BessieTerminalView: TerminalView {
             heldButton = nil
             sgrGestureArmed = false
         case .otherMouseDown:
+            recordLocalUse()
             heldButton = .middle
             handlePointer(kind: .buttonDown, button: .middle, pressed: true, event: event) {
                 super.otherMouseDown(with: event)
@@ -1454,6 +1521,7 @@ final class BessieTerminalView: TerminalView {
     // is cell-throttled. Shift keeps local selection via super.
 
     override func mouseDown(with event: NSEvent) {
+        recordLocalUse()
         heldButton = .left
         handlePointer(kind: .buttonDown, button: .left, pressed: true, event: event) {
             super.mouseDown(with: event)
@@ -1475,6 +1543,7 @@ final class BessieTerminalView: TerminalView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        recordLocalUse()
         heldButton = .right
         handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event) {
             super.rightMouseDown(with: event)
@@ -1496,6 +1565,7 @@ final class BessieTerminalView: TerminalView {
     }
 
     override func otherMouseDown(with event: NSEvent) {
+        recordLocalUse()
         heldButton = .middle
         handlePointer(kind: .buttonDown, button: .middle, pressed: true, event: event) {
             super.otherMouseDown(with: event)

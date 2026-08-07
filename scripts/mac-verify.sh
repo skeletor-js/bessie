@@ -881,7 +881,12 @@ intent_names_json=$(intent_cli intents)
 /usr/bin/python3 -c '
 import json, sys
 result = json.load(sys.stdin)
-expected = {"intents.list", "app.status", "connection.status", "session.projection", "pane.focus", "workspace.focus", "workspace.close", "project.list", "project.show"}
+expected = {
+    "intents.list", "app.status", "connection.status", "connection.context",
+    "session.projection", "pane.focus", "pane.presentation.list", "pane.pin",
+    "pane.unpin", "pane.snooze", "pane.wake", "workspace.focus",
+    "workspace.close", "project.list", "project.show",
+}
 actual = {intent["id"] for intent in result.get("value", {}).get("intents", [])}
 if result.get("ok") is not True or actual != expected:
     raise SystemExit(f"CLI intent catalog mismatch: {sorted(actual)}")
@@ -892,6 +897,15 @@ connection_status=$(intent_cli call connection.status --json '{"connection_id":"
 /usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin).get("value", {}); raise SystemExit(0 if value == {"connected": True, "connection_id": "local-bessie"} else f"bad connection status: {value}")' <<<"$connection_status"
 projection_json=$(intent_cli call session.projection --json '{"connection_id":"local-bessie"}')
 /usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin).get("value", {}); raise SystemExit(0 if value.get("connection_id") == "local-bessie" and value.get("workspaces") else f"bad projection: {value}")' <<<"$projection_json"
+cli_terminal_id=$(/usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin)["value"]; target=sys.argv[1]; print(next(pane["terminal_id"] for pane in value["panes"] if pane["pane_id"] == target))' "$cli_pane_id" <<<"$projection_json")
+presentation_list=$(intent_cli call pane.presentation.list --json '{"connection_id":"local-bessie"}')
+presentation_revision=$(/usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin)["value"]["revision"])' <<<"$presentation_list")
+pin_result=$(intent_cli call pane.pin --json "{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\",\"terminal_id\":\"$cli_terminal_id\",\"expected_revision\":$presentation_revision}")
+/usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin)["value"]; raise SystemExit(0 if value["pinned"] is True and value["revision"] == int(sys.argv[1]) + 1 else f"bad pin result: {value}")' "$presentation_revision" <<<"$pin_result"
+presentation_revision=$((presentation_revision + 1))
+snooze_result=$(intent_cli call pane.snooze --json "{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\",\"terminal_id\":\"$cli_terminal_id\",\"expected_revision\":$presentation_revision,\"preset\":\"one_hour\"}")
+/usr/bin/python3 -c 'import json, sys; value=json.load(sys.stdin)["value"]; raise SystemExit(0 if value["pinned"] is True and value["snooze"] == "one_hour" and value["wake_at"] else f"bad snooze result: {value}")' <<<"$snooze_result"
+presentation_revision=$((presentation_revision + 1))
 intent_cli call project.list | assert_intent_ok
 intent_cli call workspace.focus --json "{\"connection_id\":\"local-bessie\",\"workspace_id\":\"$cli_workspace_id\"}" | assert_intent_ok
 intent_cli call pane.focus --json "{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\"}" | assert_intent_ok
@@ -903,7 +917,7 @@ mcp_stderr="$herdr_dir/runtime/bessie-mcp-$$.stderr"
 printf '%s\n' \
     '{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
     '{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}' \
-    '{"jsonrpc":"2.0","id":"call","method":"tools/call","params":{"name":"app.status","arguments":{}}}' \
+    "{\"jsonrpc\":\"2.0\",\"id\":\"call\",\"method\":\"tools/call\",\"params\":{\"name\":\"pane.wake\",\"arguments\":{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\",\"terminal_id\":\"$cli_terminal_id\",\"expected_revision\":$presentation_revision}}}" \
     | BESSIE_INTENT_SOCKET_PATH="$intent_socket" "$mac_dir/.build/debug/bessie-mcp" >"$mcp_stdout" 2>"$mcp_stderr"
 [[ ! -s "$mcp_stderr" ]]
 /usr/bin/python3 -c '
@@ -922,6 +936,8 @@ intent_result = json.loads(called["result"]["content"][0]["text"])
 if called["result"]["isError"] or not intent_result.get("ok"):
     raise SystemExit(f"MCP call failed: {called}")
 ' "$intent_names_json" "$mcp_stdout"
+presentation_revision=$((presentation_revision + 1))
+intent_cli call pane.unpin --json "{\"connection_id\":\"local-bessie\",\"pane_id\":\"$cli_pane_id\",\"terminal_id\":\"$cli_terminal_id\",\"expected_revision\":$presentation_revision}" | assert_intent_ok
 
 # Capture the actual AppKit window without Screen Recording permission and validate a usable PNG artifact.
 for _ in {1..40}; do

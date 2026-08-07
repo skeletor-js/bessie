@@ -178,6 +178,25 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 0)
     }
 
+    func testSnoozedIncarnationIsExcludedFromAttentionAndStatusCounts() {
+        let local = BessieConnectionDefinition.localBessie
+        let blocked = agent("blocked", pane: "p1", connection: local)
+        let working = agent("working", pane: "p2", connection: local)
+        let presentation = BessieMenuBarPresentation(
+            agents: [blocked, working],
+            freshConnectionIDs: [local.id],
+            snoozedIncarnations: [BessiePaneIncarnation(
+                connectionID: local.id,
+                paneID: blocked.paneID,
+                terminalID: blocked.agent.terminalID
+            )]
+        )
+
+        XCTAssertTrue(presentation.needsYou.isEmpty)
+        XCTAssertEqual(presentation.workingRows.map(\.target.paneID), ["p2"])
+        XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 0)
+    }
+
     func testBadgeAccessibilityNamesTheHonestPolicyState() {
         let presentation = BessieMenuBarPresentation.captureFixture
 

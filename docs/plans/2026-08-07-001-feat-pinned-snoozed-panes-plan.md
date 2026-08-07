@@ -170,7 +170,7 @@ The supplied mockup resolves several otherwise ambiguous details: Pinned appears
 
 **Deferred to follow-up work:** custom date/time picker; user-defined or additional snooze presets; manual drag reordering of pins; cross-device preference sync; bulk pin/snooze; revocation of notifications already confirmed delivered before snooze; user-configurable auto-wake policy; historical snooze analytics.
 
-**Out of scope:** pausing agents or processes; muting terminal output at Herdr; changing Herdr semantic states; modifying Herdr/libghostty; pinning workspaces/tabs/Projects; escaping current rail scope; adding pin/snooze sections to the macOS status-item popover; replacing The Herd's canonical state filters; persisting terminal content or process facts; embedding the HTML mockup; implementing BES-44 notch UI; broad unrelated tests; starting BES-45 implementation before the remote-only BES-42/BES-43 work is verified, installed, migrated, and handed to Jordan.
+**Out of scope:** pausing agents or processes; muting terminal output at Herdr; changing Herdr semantic states; modifying Herdr/libghostty; pinning workspaces/tabs/Projects; escaping current rail scope; adding pin/snooze sections to the macOS status-item popover; replacing The Herd's canonical state filters; persisting terminal content or process facts; embedding the HTML mockup; implementing BES-44 notch UI; broad unrelated tests.
 
 ---
 
@@ -298,7 +298,7 @@ Register Bessie-owned `pane.presentation.list`, `pane.pin`, `pane.unpin`, `pane.
 
 ### Pre-execution gate
 
-After BES-42/BES-43 is independently verified, installed, migrated, relaunched, and handed to Jordan—but before U1 starts—re-read the resulting source and diff. Reconcile symbol/file drift into this plan without changing the settled product contract, then confirm there is no other write-capable worker in `/home/hermes/code/bessie`.
+This plan was re-reviewed against clean branch `feat/v1-l-brand-chrome` at `54fd079` after the pre-V1 command and Herd workflows landed. The named persistence, projection, routing, terminal, notification, intent, CLI/MCP, and verification seams remain present. Before U1 starts, confirm the checkout is still clean or preserve any new unrelated changes, and confirm there is no other write-capable worker in `/home/hermes/code/bessie`.
 
 ### U1. Pure preference model and additive persistence
 
@@ -463,4 +463,4 @@ After BES-42/BES-43 is independently verified, installed, migrated, relaunched, 
 
 ## Handoff
 
-BES-45 remains planning-only until the active BES-42/BES-43 remote-only implementation is independently verified, packaged, installed, migrated, relaunched, and handed to Jordan. At that point, re-read touched source seams, reconcile any symbol drift into this plan without changing the product contract, then execute U1-U6 in order. Keep the dirty shared checkout intact and do not start a second write-capable worker before the current writer exits.
+The plan is implementation-ready on clean branch `feat/v1-l-brand-chrome` at `54fd079`. Re-check the live branch/status and named source seams before editing, preserve any unrelated changes that appeared after this review, then execute U1-U6 in order. Do not start a second write-capable worker before the current writer exits.

@@ -90,7 +90,8 @@ final class BessieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
                 connection: source.connection,
                 panes: source.panes,
                 policy: settings.preferences.notifications,
-                activePaneID: nil
+                activePaneID: nil,
+                snoozedIncarnations: settings.snoozedPaneIncarnations()
             )
         }
     }

@@ -33,6 +33,7 @@ final class AgentIntentExecutorTests: XCTestCase {
             "connection_id": .string("local"), "pane_id": .number(1),
         ])), code: .invalidParams)
         assertError(executor.execute(.init(v: 2, id: "5", intent: "app.status", params: [:])), code: .unsupported)
+        assertError(executor.execute(.init(id: String(repeating: "x", count: 257), intent: "app.status", params: [:])), code: .invalidParams)
     }
 
     func testLiveIntentsRequireConnectedMatchingConnection() {
@@ -79,6 +80,7 @@ final class AgentIntentExecutorTests: XCTestCase {
 
         XCTAssertEqual(Set(ids ?? []), [
             "intents.list", "app.status", "connection.status", "connection.context",
+            "pane.presentation.list", "pane.pin", "pane.unpin", "pane.snooze", "pane.wake",
             "project.list", "project.show",
         ])
     }

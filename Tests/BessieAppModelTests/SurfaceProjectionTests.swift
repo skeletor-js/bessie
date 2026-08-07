@@ -334,6 +334,53 @@ final class SurfaceProjectionTests: XCTestCase {
         registry.releaseAll()
     }
 
+    func testPaneLocalUseCallbackMarshalsBackgroundCallsToMainThread() {
+        let callbackRan = expectation(description: "local pane use callback ran")
+        let callback = PaneLocalUseCallback {
+            XCTAssertTrue(Thread.isMainThread)
+            callbackRan.fulfill()
+        }
+
+        DispatchQueue.global().async {
+            callback.call()
+        }
+
+        wait(for: [callbackRan], timeout: 1)
+    }
+
+    @MainActor
+    func testQueuedLocalUseKeepsItsOriginalPaneIncarnation() {
+        let registry = TerminalControllerRegistry()
+        let original = BessiePaneIncarnation(
+            connectionID: "first", paneID: "shared", terminalID: "terminal-first"
+        )
+        let replacement = BessiePaneIncarnation(
+            connectionID: "second", paneID: "shared", terminalID: "terminal-second"
+        )
+        var recorded: [BessiePaneIncarnation] = []
+        registry.configureLocalPaneUse(incarnations: ["shared": original]) {
+            recorded.append($0)
+        }
+        registry.reconcile(
+            presentedPaneIDs: ["shared"],
+            availablePaneIDs: ["shared"],
+            endpoint: HerdrTerminalEndpoint(
+                connectionID: "first",
+                executablePath: "/usr/bin/false",
+                socketPath: "/tmp/missing"
+            )
+        )
+        let queuedUse = registry.controllers["shared"]?.recordLocalUse
+
+        registry.configureLocalPaneUse(incarnations: ["shared": replacement]) {
+            recorded.append($0)
+        }
+        queuedUse?()
+
+        XCTAssertEqual(recorded, [original])
+        registry.releaseAll()
+    }
+
     @MainActor
     func testRegistryPrewarmsReplacementControllerWithSamePaneID() {
         let registry = TerminalControllerRegistry()
@@ -1253,6 +1300,25 @@ final class SurfaceProjectionTests: XCTestCase {
         )
         // Settled → Settled (done ↔ idle) must not re-notify.
         XCTAssertEqual(planner.events(for: [idle], policy: .blockedAndDone, activePaneID: nil), [])
+    }
+
+    func testNotificationPlannerAdvancesHistoryWhilePaneIsSuppressed() {
+        var planner = BessieNotificationPlanner()
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let working = BessieNotificationPane(
+            paneID: "p1", terminalID: "term-1", state: .working, revision: 1,
+            identity: "Codex", location: "alpha / tab / Codex", target: target
+        )
+        let blocked = BessieNotificationPane(
+            paneID: "p1", terminalID: "term-1", state: .blocked, revision: 2,
+            identity: "Codex", location: working.location, target: target
+        )
+
+        XCTAssertTrue(planner.events(for: [working], policy: .blockedOnly, activePaneID: nil).isEmpty)
+        XCTAssertTrue(planner.events(
+            for: [blocked], policy: .blockedOnly, activePaneID: nil, suppressedPaneIDs: ["p1"]
+        ).isEmpty)
+        XCTAssertTrue(planner.events(for: [blocked], policy: .blockedOnly, activePaneID: nil).isEmpty)
     }
 
     func testNotificationDeepLinkRoundTripsFrozenFleetSchema() throws {

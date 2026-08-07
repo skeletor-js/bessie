@@ -14,6 +14,17 @@ public enum TerminalInputOperation: Equatable, Sendable {
     case scroll(direction: TerminalScrollDirection, lines: Int, source: TerminalScrollSource, column: Int?, row: Int?, modifiers: Int)
 }
 
+public enum TerminalLocalUseForwarder {
+    public static func forward(
+        _ operation: TerminalInputOperation,
+        recordLocalUse: () -> Void,
+        enqueue: (TerminalInputOperation) -> Void
+    ) {
+        recordLocalUse()
+        enqueue(operation)
+    }
+}
+
 public struct TerminalFocusRequest: Equatable, Sendable {
     public let paneID: String
     public let generation: UInt64

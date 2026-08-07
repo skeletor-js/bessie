@@ -165,6 +165,7 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
             let paneLabel = panesByID[agent.id]?.presentationTitle ?? agent.identity
             return BessieNotificationPane(
                 paneID: agent.id,
+                terminalID: agent.terminalID,
                 state: AgentSemanticState(herdrValue: agent.agentStatus),
                 revision: agent.revision,
                 identity: agent.identity,

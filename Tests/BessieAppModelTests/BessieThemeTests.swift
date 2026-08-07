@@ -136,6 +136,59 @@ final class BessieThemeTests: XCTestCase {
     }
 
     @MainActor
+    func testThemeChangeMovesHostDefaultsButPreservesApplicationRGBFrame() throws {
+        let dark = BessieThemeRegistry.definitions[.dark]!.resolvedTerminalTheme
+        let light = BessieThemeRegistry.definitions[.light]!.resolvedTerminalTheme
+        let controller = PaneTerminalController(
+            paneID: "semantic-color-pair",
+            endpoint: HerdrTerminalEndpoint(
+                connectionID: "test",
+                executablePath: "/usr/bin/false",
+                socketPath: "/tmp/missing"
+            ),
+            theme: dark
+        )
+        let host = TerminalSurfaceHostView(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
+        let window = NSWindow(
+            contentRect: host.bounds,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.attach(controller: controller, fontSize: 13, requestFocus: {}, responderChanged: { _ in })
+        host.layoutSubtreeIfNeeded()
+        defer {
+            host.detach()
+            window.orderOut(nil)
+            controller.release()
+        }
+        let ansi = Data("\u{1b}[39;49mhost-default \u{1b}[38;2;255;248;220;48;2;16;16;20mapp-pair\u{1b}[39;49m host-again".utf8)
+
+        controller.session.receive(ansi)
+        for _ in 0..<10 where controller.session.readViewportText()?.contains("app-pair") != true {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertTrue(
+            controller.session.readViewportText()?.contains("host-default app-pair host-again") == true,
+            controller.session.readViewportText() ?? "nil viewport"
+        )
+        XCTAssertTrue(controller.ghosttyController.renderedConfig.lowercased().contains("foreground = #f5f5f5"))
+        XCTAssertTrue(controller.ghosttyController.renderedConfig.lowercased().contains("background = #080808"))
+
+        XCTAssertTrue(controller.updateTheme(light))
+
+        XCTAssertTrue(
+            controller.session.readViewportText()?.contains("host-default app-pair host-again") == true,
+            controller.session.readViewportText() ?? "nil viewport"
+        )
+        XCTAssertTrue(controller.ghosttyController.renderedConfig.lowercased().contains("foreground = #0c0c0c"))
+        XCTAssertTrue(controller.ghosttyController.renderedConfig.lowercased().contains("background = #fbfbfb"))
+    }
+
+    @MainActor
     func testRejectedLiveControllerCandidateRestoresWorkingThemeAndStatus() {
         let controller = PaneTerminalController(
             paneID: "theme-live-rejection",

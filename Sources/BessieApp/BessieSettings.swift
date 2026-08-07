@@ -25,13 +25,21 @@ final class BessieSettingsModel: ObservableObject {
     @Published private(set) var runtimePersistenceError: String?
     @Published private(set) var onboardingCompletionError: String?
     @Published private(set) var presentationPersistenceError: String?
+    @Published private(set) var panePresentationLedger: BessiePanePresentationLedger
+    @Published private(set) var presentationDirtyRevision: UInt64?
     @Published private(set) var addConnectionRequested = false
     @Published private(set) var setupEntryGeneration = 0
+    var paneDidBecomeSnoozed: ((BessiePaneIncarnation) -> Void)?
     private var completionBeforeSetupEntry = false
     private let store: BessiePresentationStore
     private let connectionStore: BessieConnectionStore
     private let runtimeStore: HerdrRuntimeSelectionStore
     private let configurationLease: BessieConfigurationLease?
+    private let presentationLease: BessiePresentationLease?
+    private let presentationLoadBlocker: String?
+    private lazy var paneSnoozeSupervisor = BessiePaneSnoozeSupervisor { [weak self] in
+        self?.reconcilePaneSnoozes()
+    }
 
     convenience init() {
         let environment = ProcessInfo.processInfo.environment
@@ -54,15 +62,42 @@ final class BessieSettingsModel: ObservableObject {
 
     init(presentationURL: URL, connectionsURL: URL, runtimeSelectionURL: URL) {
         store = BessiePresentationStore(url: presentationURL)
-        let state: BessiePresentationState?
+        var acquiredPresentationLease: BessiePresentationLease?
+        var presentationLeaseFailure: Error?
         do {
-            state = try store.load()
-            presentationPersistenceError = nil
+            acquiredPresentationLease = try BessiePresentationLease.acquire(for: presentationURL)
+        } catch {
+            presentationLeaseFailure = error
+        }
+        presentationLease = acquiredPresentationLease
+        let state: BessiePresentationState?
+        let loadBlocker: String?
+        let presentationDidNormalize: Bool
+        do {
+            if let presentationLeaseFailure { throw presentationLeaseFailure }
+            let loaded = try store.loadWithNormalizationStatus()
+            state = loaded.state
+            presentationDidNormalize = loaded.didNormalize
+            loadBlocker = nil
         } catch {
             state = nil
-            presentationPersistenceError = error.localizedDescription
-            BessieDiagnosticLog.append("Presentation load failed without rewrite: \(String(reflecting: error))")
+            presentationDidNormalize = false
+            loadBlocker = error.localizedDescription
+            BessieDiagnosticLog.append(
+                "Presentation load blocked without rewrite type=\(String(describing: type(of: error)))"
+            )
         }
+        presentationPersistenceError = loadBlocker
+        presentationLoadBlocker = loadBlocker
+        presentationDirtyRevision = nil
+        var loadedPanePresentationLedger = (try? BessiePanePresentationLedger(
+            revision: state?.panePresentationRevision ?? 0,
+            records: state?.panePresentationPreferences ?? []
+        )) ?? (try! BessiePanePresentationLedger())
+        if presentationDidNormalize {
+            try? loadedPanePresentationLedger.recordLoadNormalization()
+        }
+        panePresentationLedger = loadedPanePresentationLedger
         let loadedPreferences = state?.preferences ?? BessiePreferences()
         preferences = loadedPreferences
         legacyLastWorkspaceID = state?.lastWorkspaceID
@@ -109,12 +144,93 @@ final class BessieSettingsModel: ObservableObject {
             onboarding.step = number <= 10 ? .connect : OnboardingState.Step(rawValue: number - 9) ?? .connect
         } else if onboarding.completed { onboarding.step = .notifications }
         BessieDiagnosticLog.append("Connections selected=\(selectedConnectionID) count=\(connections.count)")
+        if presentationDidNormalize { persist() }
     }
 
     private func persist() {
-        guard presentationPersistenceError == nil else { return }
-        do { try store.save(presentationState) }
-        catch { presentationPersistenceError = error.localizedDescription }
+        guard presentationLoadBlocker == nil, presentationLease != nil else { return }
+        do {
+            try store.save(presentationState)
+            presentationPersistenceError = nil
+            presentationDirtyRevision = nil
+        } catch {
+            presentationPersistenceError = error.localizedDescription
+            presentationDirtyRevision = panePresentationLedger.revision
+        }
+    }
+
+    func retryPresentationPersistence() { persist() }
+
+    @discardableResult
+    func setPanePinned(_ pinned: Bool, incarnation: BessiePaneIncarnation) -> Bool {
+        mutatePanePresentation { try $0.setPinned(pinned, for: incarnation) }
+    }
+
+    @discardableResult
+    func setPaneSnooze(
+        _ preset: BessiePaneSnoozePreset,
+        incarnation: BessiePaneIncarnation,
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> Bool {
+        let snooze = preset.snooze(now: now, calendar: calendar)
+        let changed = mutatePanePresentation { try $0.setSnooze(snooze, for: incarnation, now: now) }
+        if changed { paneDidBecomeSnoozed?(incarnation) }
+        return changed
+    }
+
+    @discardableResult
+    func wakePane(_ incarnation: BessiePaneIncarnation, now: Date = Date()) -> Bool {
+        mutatePanePresentation { try $0.wake(incarnation, now: now) }
+    }
+
+    @discardableResult
+    func reconcilePaneSnoozes(now: Date = Date()) -> Bool {
+        let changed = mutatePanePresentation { try $0.reconcile(now: now) }
+        supervisePaneSnoozes(now: now)
+        return changed
+    }
+
+    func supervisePaneSnoozes(now: Date = Date()) {
+        paneSnoozeSupervisor.update(records: panePresentationLedger.records, now: now)
+    }
+
+    func snoozedPaneIncarnations(now: Date = Date()) -> Set<BessiePaneIncarnation> {
+        Set(panePresentationLedger.records.compactMap { record in
+            guard record.snooze?.isActive(at: now) == true else { return nil }
+            return record.incarnation
+        })
+    }
+
+    @discardableResult
+    func removePanePresentation(_ incarnation: BessiePaneIncarnation) -> Bool {
+        mutatePanePresentation { try $0.remove(incarnation) }
+    }
+
+    @discardableResult
+    func reconcilePanePresentations(
+        connectionID: String,
+        fullSnapshotIncarnations: Set<BessiePaneIncarnation>
+    ) -> Bool {
+        mutatePanePresentation {
+            try $0.reconcileFullSnapshot(connectionID: connectionID, incarnations: fullSnapshotIncarnations)
+        }
+    }
+
+    private func mutatePanePresentation(
+        _ mutation: (inout BessiePanePresentationLedger) throws -> Bool
+    ) -> Bool {
+        var candidate = panePresentationLedger
+        do {
+            guard try mutation(&candidate) else { return false }
+            panePresentationLedger = candidate
+            persist()
+            supervisePaneSnoozes()
+            return true
+        } catch {
+            presentationPersistenceError = error.localizedDescription
+            return false
+        }
     }
 
     /// Drive AppKit appearance so adaptive palette colors and window chrome follow
@@ -354,7 +470,9 @@ final class BessieSettingsModel: ObservableObject {
             lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
             lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
             preferences: preferences,
-            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil
+            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil,
+            panePresentationRevision: panePresentationLedger.revision == 0 ? nil : panePresentationLedger.revision,
+            panePresentationPreferences: panePresentationLedger.records.isEmpty ? nil : panePresentationLedger.records
         )
     }
 
@@ -388,6 +506,49 @@ final class BessieSettingsModel: ObservableObject {
         return false
     }
 
+}
+
+@MainActor
+final class BessiePaneSnoozeSupervisor {
+    private let reconcile: () -> Void
+    private var deadlineTask: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
+
+    init(reconcile: @escaping () -> Void) {
+        self.reconcile = reconcile
+    }
+
+    deinit {
+        deadlineTask?.cancel()
+        watchdogTask?.cancel()
+    }
+
+    func update(records: [BessiePanePresentationPreference], now: Date = Date()) {
+        deadlineTask?.cancel()
+        watchdogTask?.cancel()
+        let schedule = BessiePaneSnoozeSchedule(records: records, now: now)
+        if let deadline = schedule.nextDeadline {
+            let seconds = min(
+                max(0, deadline.timeIntervalSince(now)),
+                Double(UInt64.max) / 1_000_000_000
+            )
+            let nanoseconds = UInt64(seconds * 1_000_000_000)
+            deadlineTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard !Task.isCancelled else { return }
+                self?.reconcile()
+            }
+        }
+        if schedule.needsWatchdog {
+            watchdogTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.reconcile()
+                }
+            }
+        }
+    }
 }
 
 private enum BessieConnectionPersistenceError: LocalizedError {

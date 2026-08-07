@@ -525,6 +525,12 @@ struct BessieProductShell: View {
         guard let scope = effectiveWorkspaceScope else { return baseHerdRailProjection }
         return WorkspaceScopeReducer.filtered(baseHerdRailProjection, scope: scope)
     }
+    private var herdRailPresentation: HerdRailPresentation {
+        HerdRailPresentation(
+            base: herdRailProjection,
+            ledger: settings.panePresentationLedger
+        )
+    }
     private var focusedHerdPanes: [HerdPaneIdentity] {
         freshHierarchyTopology.connections.compactMap { item in
             item.projection.focusedPane.map {
@@ -667,11 +673,17 @@ struct BessieProductShell: View {
             NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification),
         ]).eraseToAnyPublisher()
     }()
+    private static let systemClockChangePublisher: AnyPublisher<Notification, Never> = {
+        Publishers.Merge(
+            NotificationCenter.default.publisher(for: Notification.Name("NSSystemClockDidChangeNotification")),
+            NotificationCenter.default.publisher(for: Notification.Name("NSSystemTimeZoneDidChangeNotification"))
+        ).eraseToAnyPublisher()
+    }()
     private var topologyIdentitySignature: String {
         topology.connections.flatMap { item in
             item.projection.workspaces.map { "w:\(item.connection.id):\($0.id)" }
                 + item.projection.tabs.map { "t:\(item.connection.id):\($0.workspaceID):\($0.id)" }
-                + item.projection.panes.map { "p:\(item.connection.id):\($0.workspaceID):\($0.tabID):\($0.id)" }
+                + item.projection.panes.map { "p:\(item.connection.id):\($0.workspaceID):\($0.tabID):\($0.id):\($0.terminalID)" }
         }.joined(separator: "|")
     }
     private var herdCounts: [HerdListFilter: Int] {
@@ -681,14 +693,25 @@ struct BessieProductShell: View {
             scope: fleet.herdScope
         )
     }
+    private var snoozedPaneIncarnations: Set<BessiePaneIncarnation> {
+        settings.snoozedPaneIncarnations()
+    }
+    private func isAwake(_ item: ConnectedAgentProjection) -> Bool {
+        !snoozedPaneIncarnations.contains(BessiePaneIncarnation(
+            connectionID: item.connectionID,
+            paneID: item.paneID,
+            terminalID: item.agent.terminalID
+        ))
+    }
     private var needsYouCards: [HerdCardModel] {
         HerdListBuilder.cards(
-            agents: fleet.agents,
+            agents: fleet.agents.filter(isAwake),
             connectedConnectionIDs: fleet.connectedConnectionIDs,
             scope: .all,
             filter: .needsYou
         )
     }
+    private var awakeNeedsYouCount: Int { needsYouCards.count }
     private var sidebarHerdCards: [HerdCardModel] {
         HerdListBuilder.cards(
             agents: fleet.agents,
@@ -722,7 +745,7 @@ struct BessieProductShell: View {
     private var zenElsewhereCount: Int {
         BessieZenAgentRouter.needsYouElsewhereCount(
             focused: currentZenTarget,
-            agents: fleet.agents,
+            agents: fleet.agents.filter(isAwake),
             connectedConnectionIDs: fleet.connectedConnectionIDs,
             scope: fleet.herdScope
         )
@@ -741,7 +764,7 @@ struct BessieProductShell: View {
         let panes = surfaces.notificationPanes
             .map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }
             .joined(separator: "|")
-        return "\(notifications.authorizationLoaded)|\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
+        return "\(notifications.authorizationLoaded)|\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(settings.panePresentationLedger.revision)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
     private var notificationRouteSignature: String {
         let pending = notifications.pendingRoute.map {
@@ -869,6 +892,8 @@ struct BessieProductShell: View {
         }
         .onChange(of: topologyIdentitySignature) { _, _ in
             reconcileSelection(for: fleet.herdScope)
+            reconcilePanePresentationsFromFreshSnapshots()
+            configureTerminalLocalPaneUse()
             if let workspaceScope { reconcileWorkspaceScopeSelection(workspaceScope) }
         }
         .onChange(of: navigationRequest) { _, request in consumeNavigationRequest(request) }
@@ -897,6 +922,7 @@ struct BessieProductShell: View {
         }
         .onChange(of: fleet.connectedConnectionIDs) { _, connectedIDs in
             for id in connectedIDs { commandPaletteRetryAttempts.removeValue(forKey: id) }
+            reconcilePanePresentationsFromFreshSnapshots()
         }
         .onChange(of: zenState.focusIntent) { _, _ in
             if let paneID = zenState.selectedPaneID { focusTerminal(paneID: paneID) }
@@ -909,6 +935,15 @@ struct BessieProductShell: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             isFullScreen = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            settings.reconcilePaneSnoozes()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            settings.reconcilePaneSnoozes()
+        }
+        .onReceive(Self.systemClockChangePublisher) { _ in
+            settings.reconcilePaneSnoozes()
         }
         .onReceive(Self.commandPaletteWindowStatePublisher) { _ in
             refreshCommandPaletteAvailability()
@@ -929,7 +964,8 @@ struct BessieProductShell: View {
                 connection: model.activeConnection,
                 panes: surfaces.notificationPanes,
                 policy: settings.preferences.notifications,
-                activePaneID: activeNotificationPaneID
+                activePaneID: activeNotificationPaneID,
+                snoozedIncarnations: settings.snoozedPaneIncarnations()
             )
         }
         .task(id: notificationRouteSignature) { routePendingNotification() }
@@ -1151,7 +1187,7 @@ struct BessieProductShell: View {
 
     private var productRail: some View {
         HerdRail(
-            projection: herdRailProjection,
+            presentation: herdRailPresentation,
             healthMessages: fleet.connectionIssues.map { "\($0.label): \($0.title)" },
             selectedPane: selectedPaneID.map { HerdPaneIdentity(connectionID: selectedTopologyConnectionID ?? model.activeConnection.id, paneID: $0) },
             hierarchy: workspaceHierarchyRail,
@@ -1200,6 +1236,28 @@ struct BessieProductShell: View {
             },
             closePane: { target in
                 topologyPaneClose = scopedPane(for: target)
+            },
+            setPinned: { incarnation, pinned in
+                _ = fleet.dispatchPanePresentationIntent(
+                    pinned ? "pane.pin" : "pane.unpin",
+                    incarnation: incarnation,
+                    settings: settings
+                )
+            },
+            setSnooze: { incarnation, preset in
+                _ = fleet.dispatchPanePresentationIntent(
+                    "pane.snooze",
+                    incarnation: incarnation,
+                    preset: preset,
+                    settings: settings
+                )
+            },
+            wakePane: { incarnation in
+                _ = fleet.dispatchPanePresentationIntent(
+                    "pane.wake",
+                    incarnation: incarnation,
+                    settings: settings
+                )
             }
         )
     }
@@ -1219,7 +1277,7 @@ struct BessieProductShell: View {
 
     /// Icon-only rail: Bessie cow + destination icons + expand control.
     private var collapsedProductRail: some View {
-        let needsYouCount = herdCounts[.needsYou, default: 0]
+        let needsYouCount = awakeNeedsYouCount
         return VStack(spacing: 6) {
             Button {
                 sidebarCollapsed = false
@@ -1310,8 +1368,8 @@ struct BessieProductShell: View {
                     railDestination(.herd)
                     railDestination(.projects)
 
-                    if BessieSidebarAttentionPolicy.isProminent(needsYouCount: herdCounts[.needsYou, default: 0]) {
-                        sidebarAttentionHeader(count: herdCounts[.needsYou, default: 0])
+                    if BessieSidebarAttentionPolicy.isProminent(needsYouCount: awakeNeedsYouCount) {
+                        sidebarAttentionHeader(count: awakeNeedsYouCount)
                         ForEach(needsYouCards) { card in
                             sidebarAttentionCard(card)
                         }
@@ -1739,7 +1797,7 @@ struct BessieProductShell: View {
     }
 
     @ViewBuilder private func railDestination(_ item: ProductDestination, label: String? = nil) -> some View {
-        let needsYouCount = herdCounts[.needsYou, default: 0]
+        let needsYouCount = awakeNeedsYouCount
         Button { destination = item } label: {
             railRow(
                 symbol: item.symbol,
@@ -2135,6 +2193,14 @@ struct BessieProductShell: View {
             return
         }
 
+        if let pane = current.panes.first(where: { $0.id == target.paneID }) {
+            recordLocalPaneUse(BessiePaneIncarnation(
+                connectionID: targetModel.activeConnection.id,
+                paneID: pane.id,
+                terminalID: pane.terminalID
+            ))
+        }
+
         presentRoutedPane(
             routed,
             projection: current,
@@ -2329,7 +2395,7 @@ struct BessieProductShell: View {
             if zenState.isActive,
                let target = BessieZenAgentRouter.nextNeedsYou(
                    from: currentZenTarget,
-                   agents: fleet.agents,
+                   agents: fleet.agents.filter(isAwake),
                    connectedConnectionIDs: fleet.connectedConnectionIDs,
                    scope: fleet.herdScope
                ) {
@@ -2365,6 +2431,7 @@ struct BessieProductShell: View {
             guard let paneID, let tab, let layout = projection.layouts[tab.id],
                   let target = BessiePaneNavigation.target(from: paneID, direction: direction, in: layout.root)
             else { return }
+            recordLocalPaneUse(paneID: target)
             selectedPaneID = target
             terminalRegistry.recordSwitchRequested(paneID: target)
             terminalRegistry.focusWhenPresented(paneID: target)
@@ -2474,6 +2541,7 @@ struct BessieProductShell: View {
             ?? projection.panes.first(where: { $0.tabID == target.id })?.id
         selectedPaneID = paneID
         if let paneID {
+            recordLocalPaneUse(paneID: paneID)
             terminalRegistry.recordSwitchRequested(paneID: paneID)
             terminalRegistry.focusWhenPresented(paneID: paneID)
         }
@@ -2491,6 +2559,7 @@ struct BessieProductShell: View {
         guard !paneIDs.isEmpty else { return }
         let index = current.flatMap { paneIDs.firstIndex(of: $0) } ?? 0
         let target = paneIDs[(index + offset + paneIDs.count) % paneIDs.count]
+        recordLocalPaneUse(paneID: target)
         selectedPaneID = target
         terminalRegistry.recordSwitchRequested(paneID: target)
         terminalRegistry.focusWhenPresented(paneID: target)
@@ -2498,9 +2567,9 @@ struct BessieProductShell: View {
     }
 
     private func openRailPane(offset: Int) {
-        let rows = herdRailProjection.rows
+        let rows = herdRailPresentation.navigationRows
         guard rows.count > 1 else {
-            if let row = rows.first { openRoutedPane(row.target) }
+            if let row = rows.first { openRoutedPane(row.base.target) }
             return
         }
         let current = HerdPaneIdentity(
@@ -2509,8 +2578,67 @@ struct BessieProductShell: View {
         )
         let index = rows.firstIndex { $0.id == current }
         let start = index ?? (offset > 0 ? -1 : 0)
-        let target = rows[(start + offset + rows.count) % rows.count].target
+        let target = rows[(start + offset + rows.count) % rows.count].base.target
         openRoutedPane(target)
+    }
+
+    private func reconcilePanePresentationsFromFreshSnapshots() {
+        for item in fleet.topologyConnections where fleet.connectedConnectionIDs.contains(item.connection.id) {
+            let incarnations = Set(item.projection.panes.map {
+                BessiePaneIncarnation(
+                    connectionID: item.connection.id,
+                    paneID: $0.id,
+                    terminalID: $0.terminalID
+                )
+            })
+            settings.reconcilePanePresentations(
+                connectionID: item.connection.id,
+                fullSnapshotIncarnations: incarnations
+            )
+        }
+    }
+
+    private func configureTerminalLocalPaneUse() {
+        let connectionID = terminalEndpoint.connectionID
+        guard fleet.connectedConnectionIDs.contains(connectionID),
+              let current = fleet.topologyConnections.first(where: {
+                  $0.connection.id == connectionID
+              })?.projection
+        else {
+            terminalRegistry.configureLocalPaneUse(incarnations: [:], record: { _ in })
+            return
+        }
+        terminalRegistry.configureLocalPaneUse(
+            incarnations: Dictionary(uniqueKeysWithValues: current.panes.map {
+                ($0.id, BessiePaneIncarnation(
+                    connectionID: connectionID,
+                    paneID: $0.id,
+                    terminalID: $0.terminalID
+                ))
+            }),
+            record: recordLocalPaneUse
+        )
+    }
+
+    private func recordLocalPaneUse(paneID: String) {
+        guard let pane = projection.panes.first(where: { $0.id == paneID }) else { return }
+        recordLocalPaneUse(BessiePaneIncarnation(
+            connectionID: model.activeConnection.id,
+            paneID: pane.id,
+            terminalID: pane.terminalID
+        ))
+    }
+
+    private func recordLocalPaneUse(_ incarnation: BessiePaneIncarnation) {
+        guard fleet.connectedConnectionIDs.contains(incarnation.connectionID),
+              let current = fleet.topologyConnections.first(where: {
+                  $0.connection.id == incarnation.connectionID
+              })?.projection,
+              current.panes.contains(where: {
+                  $0.id == incarnation.paneID && $0.terminalID == incarnation.terminalID
+              })
+        else { return }
+        settings.wakePane(incarnation)
     }
 
     private func routePendingNotification() {
@@ -2540,6 +2668,7 @@ struct BessieProductShell: View {
             destination = .herd
             return
         }
+        recordLocalPaneUse(paneID: target.paneID)
         notificationRouteInFlight = pending.id
         model.openPane(target) { _ in
             notificationRouteInFlight = nil
@@ -2718,6 +2847,9 @@ struct BessieProductShell: View {
     private func prepareShell() {
         destination = ProductDestination.initial(flags: featureFlags)
         fleet.setScope(.all)
+        reconcilePanePresentationsFromFreshSnapshots()
+        settings.reconcilePaneSnoozes()
+        configureTerminalLocalPaneUse()
         projects.load()
         if commandPaletteMRU.ids.isEmpty {
             commandPaletteMRU = CommandPaletteMRU(ids: fleet.connectionDefinitions.compactMap { connection in
@@ -3053,6 +3185,11 @@ struct BessieProductShell: View {
             guard topologySelectionInFlight == operation,
                   fleet.activeConnectionID == item.id.connectionID
             else { return }
+            settings.removePanePresentation(BessiePaneIncarnation(
+                connectionID: item.id.connectionID,
+                paneID: item.pane.id,
+                terminalID: item.pane.terminalID
+            ))
             applyCloseReconciliation(
                 BessieCloseReconciliation(
                     connectionID: item.id.connectionID,
@@ -3105,6 +3242,14 @@ struct BessieProductShell: View {
             close.resolvedAction(in: projection),
             confirmDestructive: close.requiresIntentConfirmation(in: projection)
         ) { fresh in
+            if case .pane(let paneID) = close,
+               let pane = projection.panes.first(where: { $0.id == paneID }) {
+                settings.removePanePresentation(BessiePaneIncarnation(
+                    connectionID: model.activeConnection.id,
+                    paneID: pane.id,
+                    terminalID: pane.terminalID
+                ))
+            }
             applyCloseReconciliation(
                 BessieCloseReconciliation(
                     connectionID: model.activeConnection.id,

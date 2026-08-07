@@ -85,9 +85,13 @@ struct BessieApp: App {
         recorder.mark(.appStart)
         featureFlags = BessieFeatureFlags(environment: ProcessInfo.processInfo.environment)
         let settings = BessieSettingsModel()
+        let notifications = BessieNotificationCoordinator()
+        settings.paneDidBecomeSnoozed = { [weak notifications] incarnation in
+            notifications?.suppressImmediately(incarnation)
+        }
         let terminalRegistry = TerminalControllerRegistry()
         _settings = StateObject(wrappedValue: settings)
-        _notifications = StateObject(wrappedValue: BessieNotificationCoordinator())
+        _notifications = StateObject(wrappedValue: notifications)
         _fleet = StateObject(wrappedValue: ConnectionFleetViewModel(performanceRecorder: recorder))
         _terminalRegistry = StateObject(wrappedValue: terminalRegistry)
         _themeCoordinator = StateObject(wrappedValue: BessieThemeCoordinator(
@@ -272,6 +276,7 @@ private struct BessieLifecycleInstaller: View {
 
     var body: some View {
         Color.clear.frame(width: 0, height: 0).onAppear {
+            fleet.configurePanePresentationIntents(settings: settings)
             appDelegate.configure(
                 fleet: fleet,
                 settings: settings,
@@ -993,6 +998,147 @@ final class ConnectionFleetViewModel: ObservableObject {
     }
 
     func stopIntentServer() { intentServer.stop() }
+
+    func configurePanePresentationIntents(settings: BessieSettingsModel) {
+        intentServer.configurePresentationHandler { [weak self, weak settings] request in
+            guard let self, let settings else {
+                return .failure(id: request.id, code: .unsupported, message: "Pane presentation state is unavailable.")
+            }
+            return self.executePanePresentationIntent(request, settings: settings)
+        }
+    }
+
+    func dispatchPanePresentationIntent(
+        _ intent: String,
+        incarnation: BessiePaneIncarnation,
+        preset: BessiePaneSnoozePreset? = nil,
+        settings: BessieSettingsModel
+    ) -> BessieIntentResult {
+        var params: [String: JSONValue] = [
+            "connection_id": .string(incarnation.connectionID),
+            "pane_id": .string(incarnation.paneID),
+            "terminal_id": .string(incarnation.terminalID),
+            "expected_revision": .number(Double(settings.panePresentationLedger.revision)),
+        ]
+        if let preset { params["preset"] = .string(preset.rawValue) }
+        return executePanePresentationIntent(
+            BessieIntentRequest(id: UUID().uuidString, intent: intent, params: params),
+            settings: settings
+        )
+    }
+
+    private func executePanePresentationIntent(
+        _ request: BessieIntentRequest,
+        settings: BessieSettingsModel
+    ) -> BessieIntentResult {
+        if request.intent.rawValue == "pane.presentation.list" {
+            let connectionID = request.params.stringValue("connection_id")
+            let records = settings.panePresentationLedger.records.filter {
+                connectionID == nil || $0.connectionID == connectionID
+            }.compactMap { record -> JSONValue? in
+                guard let projection = models[record.connectionID]?.projection,
+                      connectedConnectionIDs.contains(record.connectionID),
+                      projection.panes.contains(where: {
+                          $0.id == record.paneID && $0.terminalID == record.terminalID
+                      }) else { return nil }
+                return panePresentationValue(record.incarnation, settings: settings)
+            }
+            return .success(id: request.id, value: .object([
+                "revision": .number(Double(settings.panePresentationLedger.revision)),
+                "panes": .array(records),
+            ]))
+        }
+
+        guard let connectionID = request.params.stringValue("connection_id"),
+              let paneID = request.params.stringValue("pane_id"),
+              let terminalID = request.params.stringValue("terminal_id"),
+              let expectedRevision = request.params.uint64Value("expected_revision")
+        else {
+            return .failure(id: request.id, code: .invalidParams, message: "Pane presentation identity and expected revision are required.")
+        }
+        guard expectedRevision == settings.panePresentationLedger.revision else {
+            return .failure(
+                id: request.id,
+                code: .conflict,
+                message: "Pane presentation revision changed; refresh current state before retrying.",
+                value: panePresentationValue(
+                    BessiePaneIncarnation(connectionID: connectionID, paneID: paneID, terminalID: terminalID),
+                    settings: settings
+                )
+            )
+        }
+        guard connectedConnectionIDs.contains(connectionID),
+              let projection = models[connectionID]?.projection,
+              projection.panes.contains(where: { $0.id == paneID && $0.terminalID == terminalID })
+        else {
+            return .failure(id: request.id, code: .conflict, message: "The exact fresh pane incarnation is no longer available.")
+        }
+
+        let incarnation = BessiePaneIncarnation(connectionID: connectionID, paneID: paneID, terminalID: terminalID)
+        let beforeRevision = settings.panePresentationLedger.revision
+        var desiredStateMatches = false
+        switch request.intent.rawValue {
+        case "pane.pin":
+            _ = settings.setPanePinned(true, incarnation: incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.pinned == true
+        case "pane.unpin":
+            _ = settings.setPanePinned(false, incarnation: incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.pinned != true
+        case "pane.wake":
+            _ = settings.wakePane(incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.snooze == nil
+        case "pane.snooze":
+            guard let rawPreset = request.params.stringValue("preset"),
+                  let preset = BessiePaneSnoozePreset(rawValue: rawPreset)
+            else {
+                return .failure(id: request.id, code: .invalidParams, message: "Unknown snooze preset.")
+            }
+            let now = Date()
+            let desiredSnooze = preset.snooze(now: now)
+            _ = settings.setPaneSnooze(preset, incarnation: incarnation, now: now)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.snooze == desiredSnooze
+        default:
+            return .failure(id: request.id, code: .unknownIntent, message: "Unknown pane presentation intent.")
+        }
+        guard settings.panePresentationLedger.revision != beforeRevision || desiredStateMatches else {
+            return .failure(
+                id: request.id,
+                code: .conflict,
+                message: "Pane presentation mutation could not be applied; refresh current state before retrying.",
+                value: panePresentationValue(incarnation, settings: settings)
+            )
+        }
+        return .success(id: request.id, value: panePresentationValue(incarnation, settings: settings))
+    }
+
+    private func panePresentationValue(
+        _ incarnation: BessiePaneIncarnation,
+        settings: BessieSettingsModel
+    ) -> JSONValue {
+        let preference = settings.panePresentationLedger.preference(for: incarnation)
+        let snoozeKind: JSONValue
+        let wakeAt: JSONValue
+        switch preference?.snooze {
+        case nil:
+            snoozeKind = .null
+            wakeAt = .null
+        case .indefinite?:
+            snoozeKind = .string(BessiePaneSnoozePreset.untilFurtherNotice.rawValue)
+            wakeAt = .null
+        case .until(let deadline, let provenance)?:
+            snoozeKind = .string(provenance.intentPreset.rawValue)
+            wakeAt = .string(ISO8601DateFormatter().string(from: deadline))
+        }
+        return .object([
+            "connection_id": .string(incarnation.connectionID),
+            "pane_id": .string(incarnation.paneID),
+            "terminal_id": .string(incarnation.terminalID),
+            "pinned": .bool(preference?.pinned == true),
+            "snooze": snoozeKind,
+            "wake_at": wakeAt,
+            "revision": .number(Double(settings.panePresentationLedger.revision)),
+        ])
+    }
 
     func updateIntentConnectionContext(
         connections: [BessieConnectionDefinition],
@@ -1922,5 +2068,33 @@ private struct ConnectFactRow: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 54)
+    }
+}
+
+private extension Dictionary where Key == String, Value == JSONValue {
+    func stringValue(_ key: String) -> String? {
+        guard case .string(let value) = self[key] else { return nil }
+        return value
+    }
+
+    func uint64Value(_ key: String) -> UInt64? {
+        guard case .number(let value) = self[key], value >= 0,
+              value.rounded(.towardZero) == value,
+              value <= Double(UInt64.max)
+        else { return nil }
+        return UInt64(value)
+    }
+}
+
+private extension BessieTimedSnoozeProvenance {
+    var intentPreset: BessiePaneSnoozePreset {
+        switch self {
+        case .thirtyMinutes: return .thirtyMinutes
+        case .oneHour: return .oneHour
+        case .threeHours: return .threeHours
+        case .twelveHours: return .twelveHours
+        case .twentyFourHours: return .twentyFourHours
+        case .tomorrow: return .tomorrow
+        }
     }
 }

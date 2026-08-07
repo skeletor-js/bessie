@@ -246,6 +246,81 @@ final class SettingsAndNotificationsTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: presentationURL), original)
     }
 
+    func testPanePresentationSaveFailureKeepsNewestDirtyRevisionAndRetries() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let presentationURL = root.appendingPathComponent("presentation.json")
+        let model = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        let pane = BessiePaneIncarnation(connectionID: "local", paneID: "pane", terminalID: "terminal")
+        XCTAssertTrue(model.setPanePinned(true, incarnation: pane))
+        try FileManager.default.removeItem(at: presentationURL)
+        try FileManager.default.createDirectory(at: presentationURL, withIntermediateDirectories: false)
+
+        XCTAssertTrue(model.setPaneSnooze(.oneHour, incarnation: pane, now: Date(timeIntervalSince1970: 1_800_000_000)))
+        XCTAssertEqual(model.presentationDirtyRevision, 2)
+        XCTAssertNotNil(model.presentationPersistenceError)
+        XCTAssertEqual(model.panePresentationLedger.preference(for: pane)?.pinned, true)
+
+        try FileManager.default.removeItem(at: presentationURL)
+        model.retryPresentationPersistence()
+        XCTAssertNil(model.presentationDirtyRevision)
+        let reloaded = try BessiePresentationStore(url: presentationURL).load(now: Date(timeIntervalSince1970: 1_800_000_001))
+        XCTAssertEqual(reloaded.panePresentationRevision, 2)
+        XCTAssertEqual(reloaded.panePresentationPreferences?.first?.pinned, true)
+        XCTAssertEqual(reloaded.panePresentationPreferences?.first?.snooze?.provenance, .oneHour)
+    }
+
+    func testBlockedPresentationSourceAllowsSessionMutationButNeverRetryRewrite() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let presentationURL = root.appendingPathComponent("presentation.json")
+        let original = Data(#"{"schemaVersion":999,"state":{"preferences":{}}}"#.utf8)
+        try original.write(to: presentationURL)
+        let model = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        let pane = BessiePaneIncarnation(connectionID: "local", paneID: "pane", terminalID: "terminal")
+
+        XCTAssertTrue(model.setPanePinned(true, incarnation: pane))
+        XCTAssertTrue(model.panePresentationLedger.preference(for: pane)?.pinned == true)
+        model.retryPresentationPersistence()
+        XCTAssertEqual(try Data(contentsOf: presentationURL), original)
+        XCTAssertNil(model.presentationDirtyRevision)
+    }
+
+    func testLaunchNormalizationPersistsExpiredSnoozeWithAdvancedRevision() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let presentationURL = root.appendingPathComponent("presentation.json")
+        let expired = BessiePanePresentationPreference(
+            connectionID: "local",
+            paneID: "pane",
+            terminalID: "terminal",
+            snooze: .until(Date(timeIntervalSince1970: 1), provenance: .oneHour)
+        )
+        try BessiePresentationStore(url: presentationURL).save(BessiePresentationState(
+            panePresentationRevision: 7,
+            panePresentationPreferences: [expired]
+        ))
+
+        _ = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+
+        let persisted = try BessiePresentationStore(url: presentationURL).load()
+        XCTAssertEqual(persisted.panePresentationRevision, 8)
+        XCTAssertNil(persisted.panePresentationPreferences)
+    }
+
     func testFinishSetupPersistsCompletionAndReloadsCompleted() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -395,6 +470,36 @@ final class SettingsAndNotificationsTests: XCTestCase {
             settings.openedURLs[1].absoluteString,
             "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
         )
+    }
+
+    func testSnoozeCancelsQueuedNotificationBeforeCommitAndWakeDoesNotReplay() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = BessieNotificationCoordinator(delivery: delivery, refreshOnInit: false)
+        coordinator.refreshAuthorization()
+        for _ in 0..<50 where !coordinator.authorizationLoaded {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let connection = BessieConnectionDefinition.localBessie
+        let incarnation = BessiePaneIncarnation(connectionID: connection.id, paneID: "p1", terminalID: "term-1")
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let working = BessieNotificationPane(
+            paneID: "p1", terminalID: "term-1", state: .working, revision: 1,
+            identity: "Codex", location: "alpha / tab / Codex", target: target
+        )
+        let blocked = BessieNotificationPane(
+            paneID: "p1", terminalID: "term-1", state: .blocked, revision: 2,
+            identity: "Codex", location: working.location, target: target
+        )
+
+        coordinator.reconcile(connection: connection, panes: [working], policy: .blockedOnly, activePaneID: nil)
+        coordinator.reconcile(connection: connection, panes: [blocked], policy: .blockedOnly, activePaneID: nil)
+        coordinator.suppressImmediately(incarnation)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(delivery.requests.isEmpty)
+
+        coordinator.reconcile(connection: connection, panes: [blocked], policy: .blockedOnly, activePaneID: nil)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(delivery.requests.isEmpty)
     }
 }
 
