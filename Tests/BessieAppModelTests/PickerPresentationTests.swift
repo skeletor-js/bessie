@@ -131,6 +131,19 @@ final class PickerPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.tabs.map(\.isSelected), [false, true])
     }
 
+    func testHierarchyPresentationUsesManualTabFilterInsteadOfOpenPane() throws {
+        let presentation = WorkspaceHierarchyPresentation(
+            connectionLabel: "local",
+            projection: try HerdrSessionProjection(snapshot: .hierarchyTabsFixture),
+            selectedWorkspaceID: "workspace",
+            selectedPaneID: "pane-b",
+            selectedTabID: "tab-a"
+        )
+
+        XCTAssertEqual(presentation.tabLabel, "dev")
+        XCTAssertEqual(presentation.tabs.map(\.isSelected), [true, false])
+    }
+
     func testHierarchyPresentationKeepsChromeOutOfTheWorkspaceCard() {
         XCTAssertEqual(WorkspaceHierarchyPresentation.inCardChromeHeight, 0)
         XCTAssertEqual(BessieDesign.controlRadius, BessieDesign.paneRadius)
@@ -150,7 +163,7 @@ final class PickerPresentationTests: XCTestCase {
         XCTAssertFalse(ProductDestination.visible(flags: .v1).contains(.tabs))
     }
 
-    func testSidebarPaneSelectionPreservesTheCurrentHierarchyFilters() {
+    func testSidebarPaneSelectionNeverChangesTheManualHierarchyFilters() {
         let target = RoutedPaneTarget(
             connectionID: "other-herd",
             workspaceID: "other-workspace",
@@ -170,14 +183,7 @@ final class PickerPresentationTests: XCTestCase {
                 scope
             )
         }
-        XCTAssertEqual(
-            WorkspaceScopeReducer.selectingSidebarPane(target, preserving: nil),
-            .selectedTab(
-                connectionID: target.connectionID,
-                workspaceID: target.workspaceID,
-                tabID: target.tabID
-            )
-        )
+        XCTAssertNil(WorkspaceScopeReducer.selectingSidebarPane(target, preserving: nil))
     }
 
     func testGlobalHierarchyPresentationShowsAggregateLabelsAndPaneCount() throws {

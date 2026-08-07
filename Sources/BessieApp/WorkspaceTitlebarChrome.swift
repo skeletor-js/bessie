@@ -53,6 +53,7 @@ struct WorkspaceHierarchyPresentation: Equatable {
         projection: HerdrSessionProjection,
         selectedWorkspaceID: String?,
         selectedPaneID: String?,
+        selectedTabID explicitSelectedTabID: String? = nil,
         globalSection: WorkspaceHierarchySection? = nil,
         globalPaneCount: Int = 0
     ) {
@@ -60,9 +61,10 @@ struct WorkspaceHierarchyPresentation: Equatable {
             ?? projection.focusedWorkspace
             ?? projection.workspaces.first
         let workspaceTabs = projection.tabs.filter { $0.workspaceID == workspace?.id }
-        let selectedTabID = selectedPaneID.flatMap { paneID in
+        let paneTabID = selectedPaneID.flatMap { paneID in
             projection.panes.first { $0.id == paneID && $0.workspaceID == workspace?.id }?.tabID
         }
+        let selectedTabID = explicitSelectedTabID ?? paneTabID
         let selectedTab = workspaceTabs.first { $0.id == selectedTabID }
             ?? workspaceTabs.first(where: \.focused)
             ?? workspaceTabs.first

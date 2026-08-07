@@ -249,12 +249,8 @@ enum WorkspaceScopeReducer {
     static func selectingSidebarPane(
         _ target: RoutedPaneTarget,
         preserving scope: WorkspaceScope?
-    ) -> WorkspaceScope {
-        scope ?? .selectedTab(
-            connectionID: target.connectionID,
-            workspaceID: target.workspaceID,
-            tabID: target.tabID
-        )
+    ) -> WorkspaceScope? {
+        scope
     }
 
     static func filtered(_ projection: HerdRailProjection, scope: WorkspaceScope) -> HerdRailProjection {
@@ -503,23 +499,7 @@ struct BessieProductShell: View {
         )
     }
     private var effectiveWorkspaceScope: WorkspaceScope? {
-        if let workspaceScope { return workspaceScope }
-        guard destination == .workspace else { return nil }
-        let connectionID = selectedTopologyConnectionID ?? model.activeConnection.id
-        guard let workspaceID = selectedWorkspaceID else { return nil }
-        let connection = freshHierarchyTopology.connections.first { $0.connection.id == connectionID }
-        let selectedTabID = selectedPaneID.flatMap { paneID in
-            connection?.projection.panes.first {
-                $0.id == paneID && $0.workspaceID == workspaceID
-            }?.tabID
-        }
-        guard let tabID = selectedTabID
-                ?? connection?.projection.tabs.first(where: {
-                    $0.workspaceID == workspaceID && $0.focused
-                })?.id
-                ?? connection?.projection.tabs.first(where: { $0.workspaceID == workspaceID })?.id
-        else { return nil }
-        return .selectedTab(connectionID: connectionID, workspaceID: workspaceID, tabID: tabID)
+        workspaceScope
     }
     private var herdRailProjection: HerdRailProjection {
         guard let scope = effectiveWorkspaceScope else { return baseHerdRailProjection }
@@ -542,25 +522,33 @@ struct BessieProductShell: View {
         HerdPickerPresentation.hierarchyRows(
             connections: fleet.connectionDefinitions,
             health: fleet.connectionHealth,
-            selectedConnectionID: selectedTopologyConnectionID ?? model.activeConnection.id
+            selectedConnectionID: effectiveWorkspaceScope?.connectionID ?? model.activeConnection.id
         )
     }
     private var hierarchyWorkspaceRows: [WorkspacePickerRow] {
         WorkspacePickerPresentation.rows(
             topology: freshHierarchyTopology,
-            selectedConnectionID: selectedTopologyConnectionID ?? model.activeConnection.id,
-            selectedWorkspaceID: selectedWorkspaceID
+            selectedConnectionID: effectiveWorkspaceScope?.connectionID ?? model.activeConnection.id,
+            selectedWorkspaceID: effectiveWorkspaceScope?.workspaceID
         )
     }
     private var hierarchyPresentation: WorkspaceHierarchyPresentation {
-        WorkspaceHierarchyPresentation(
-            connectionLabel: model.activeConnection.kind == .local
+        let scope = effectiveWorkspaceScope
+        let connectionID = scope?.connectionID ?? model.activeConnection.id
+        let scopedConnection = freshHierarchyTopology.connections.first {
+            $0.connection.id == connectionID
+        }
+        let connection = scopedConnection?.connection ?? model.activeConnection
+        let scopedProjection = scopedConnection?.projection ?? projection
+        return WorkspaceHierarchyPresentation(
+            connectionLabel: connection.kind == .local
                 ? "local"
-                : ConnectionDisplayLabel(connection: model.activeConnection).short,
-            projection: projection,
-            selectedWorkspaceID: selectedWorkspaceID,
-            selectedPaneID: selectedPaneID,
-            globalSection: effectiveWorkspaceScope?.hierarchySection,
+                : ConnectionDisplayLabel(connection: connection).short,
+            projection: scopedProjection,
+            selectedWorkspaceID: scope?.workspaceID,
+            selectedPaneID: nil,
+            selectedTabID: scope?.tabID,
+            globalSection: scope?.hierarchySection,
             globalPaneCount: herdRailProjection.rows.count
         )
     }
@@ -1094,6 +1082,10 @@ struct BessieProductShell: View {
             manageHerds: openConnectionSettings,
             openWorkspace: { id in
                 guard let item = freshHierarchyTopology.workspaces.first(where: { $0.id == id }) else { return }
+                workspaceScope = .allTabs(
+                    connectionID: item.id.connectionID,
+                    workspaceID: item.id.workspaceID
+                )
                 openWorkspace(item)
             },
             renameWorkspace: { row in
@@ -2896,6 +2888,7 @@ struct BessieProductShell: View {
             restoreActiveSelection()
         }
         selectedTopologyConnectionID = model.activeConnection.id
+        initializeWorkspaceScopeIfNeeded()
         consumeNavigationRequest(navigationRequest)
         if environment["BESSIE_ZEN_AUTOMATION"] == "1",
            let paneID = selectedPaneID ?? projection.focusedPane?.id {
@@ -2938,6 +2931,35 @@ struct BessieProductShell: View {
         routePendingNotification()
     }
 
+    private func initializeWorkspaceScopeIfNeeded() {
+        guard workspaceScope == nil else { return }
+        let connectionID = selectedTopologyConnectionID ?? model.activeConnection.id
+        guard let workspaceID = selectedWorkspaceID
+                ?? projection.focusedWorkspace?.id
+                ?? projection.workspaces.first?.id
+        else {
+            workspaceScope = .allWorkspaces(connectionID: connectionID)
+            return
+        }
+        let tabID = selectedPaneID.flatMap { paneID in
+            projection.panes.first {
+                $0.id == paneID && $0.workspaceID == workspaceID
+            }?.tabID
+        } ?? projection.tabs.first(where: {
+            $0.workspaceID == workspaceID && $0.focused
+        })?.id ?? projection.tabs.first(where: { $0.workspaceID == workspaceID })?.id
+
+        if let tabID {
+            workspaceScope = .selectedTab(
+                connectionID: connectionID,
+                workspaceID: workspaceID,
+                tabID: tabID
+            )
+        } else {
+            workspaceScope = .allTabs(connectionID: connectionID, workspaceID: workspaceID)
+        }
+    }
+
     private var scopedTargetPane: ScopedPaneItem? {
         let panes = selectedTopologyConnectionID.map { scopedCurrentPanes(connectionID: $0) } ?? []
         if let selectedPaneID, let selected = panes.first(where: { $0.pane.id == selectedPaneID }) {
@@ -2976,7 +2998,6 @@ struct BessieProductShell: View {
     private func openWorkspace(_ item: ScopedWorkspaceItem) {
         guard let targetModel = fleet.activate(connectionID: item.id.connectionID) else { return }
         if zenState.isActive { exitZen() }
-        workspaceScope = nil
         let operation = UUID()
         topologySelectionInFlight = operation
         selectedTopologyConnectionID = item.id.connectionID
@@ -3021,6 +3042,7 @@ struct BessieProductShell: View {
             return
         }
         fleet.setScope(.all)
+        workspaceScope = .allWorkspaces(connectionID: connectionID)
         let rememberedID = settings.lastWorkspaceID(for: connectionID)
         let workspaces = freshHierarchyTopology.workspaces.filter { $0.id.connectionID == connectionID }
         let target = rememberedID.flatMap { remembered in
@@ -3102,7 +3124,11 @@ struct BessieProductShell: View {
 
     private func focusHierarchyTab(_ tabID: String) {
         guard let target = projection.tabs.first(where: { $0.id == tabID }) else { return }
-        workspaceScope = nil
+        workspaceScope = .selectedTab(
+            connectionID: model.activeConnection.id,
+            workspaceID: target.workspaceID,
+            tabID: target.id
+        )
         destination = .workspace
         focusTab(target)
     }
@@ -3174,7 +3200,6 @@ struct BessieProductShell: View {
         guard let owner = topology.connections.first(where: { $0.connection.id == item.id.connectionID }),
               let targetModel = fleet.activate(connectionID: item.id.connectionID)
         else { return }
-        workspaceScope = nil
         let operation = UUID()
         topologySelectionInFlight = operation
         let close = PendingClose.pane(item.pane.id)
@@ -4545,6 +4570,31 @@ private struct WorkspaceSurface: View {
 }
 
 private extension WorkspaceScope {
+    var connectionID: String? {
+        switch self {
+        case .selectedTab(let connectionID, _, _),
+             .allTabs(let connectionID, _),
+             .allWorkspaces(let connectionID):
+            connectionID
+        case .allHerds:
+            nil
+        }
+    }
+
+    var workspaceID: String? {
+        switch self {
+        case .selectedTab(_, let workspaceID, _), .allTabs(_, let workspaceID):
+            workspaceID
+        case .allWorkspaces, .allHerds:
+            nil
+        }
+    }
+
+    var tabID: String? {
+        guard case .selectedTab(_, _, let tabID) = self else { return nil }
+        return tabID
+    }
+
     var hierarchySection: WorkspaceHierarchySection? {
         switch self {
         case .selectedTab: nil
