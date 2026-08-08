@@ -136,6 +136,8 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
     public var menuBarVisible: Bool
     public var menuBarBadgePolicy: BessieMenuBarBadgePolicy
     public var menuBarRowClickBehavior: BessieMenuBarRowClickBehavior
+    public var ghosttyCompatibilityEnabled: Bool
+    public var ghosttyCompatibilitySelectedPath: String?
 
     public init(
         appearance: BessieAppearance = .dark,
@@ -149,7 +151,9 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
         railCollapsed: Bool = false,
         menuBarVisible: Bool = true,
         menuBarBadgePolicy: BessieMenuBarBadgePolicy = .needsYou,
-        menuBarRowClickBehavior: BessieMenuBarRowClickBehavior = .focusPane
+        menuBarRowClickBehavior: BessieMenuBarRowClickBehavior = .focusPane,
+        ghosttyCompatibilityEnabled: Bool = false,
+        ghosttyCompatibilitySelectedPath: String? = nil
     ) {
         self.appearance = appearance
         self.density = density
@@ -163,11 +167,14 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
         self.menuBarVisible = menuBarVisible
         self.menuBarBadgePolicy = menuBarBadgePolicy
         self.menuBarRowClickBehavior = menuBarRowClickBehavior
+        self.ghosttyCompatibilityEnabled = ghosttyCompatibilityEnabled
+        self.ghosttyCompatibilitySelectedPath = ghosttyCompatibilitySelectedPath
     }
 
     enum CodingKeys: String, CodingKey {
         case appearance, density, appIcon, cowprintEnabled, terminalFontSize, paneGap, notifications, startupBehavior, railCollapsed
         case menuBarVisible, menuBarBadgePolicy, menuBarRowClickBehavior
+        case ghosttyCompatibilityEnabled, ghosttyCompatibilitySelectedPath
     }
 
     public init(from decoder: Decoder) throws {
@@ -184,6 +191,8 @@ public struct BessiePreferences: Codable, Equatable, Sendable {
         menuBarVisible = try values.decodeIfPresent(Bool.self, forKey: .menuBarVisible) ?? true
         menuBarBadgePolicy = try values.decodeIfPresent(BessieMenuBarBadgePolicy.self, forKey: .menuBarBadgePolicy) ?? .needsYou
         menuBarRowClickBehavior = try values.decodeIfPresent(BessieMenuBarRowClickBehavior.self, forKey: .menuBarRowClickBehavior) ?? .focusPane
+        ghosttyCompatibilityEnabled = try values.decodeIfPresent(Bool.self, forKey: .ghosttyCompatibilityEnabled) ?? false
+        ghosttyCompatibilitySelectedPath = try values.decodeIfPresent(String.self, forKey: .ghosttyCompatibilitySelectedPath)
     }
 }
 

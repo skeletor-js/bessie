@@ -90,14 +90,19 @@ struct BessieApp: App {
             notifications?.suppressImmediately(incarnation)
         }
         let terminalRegistry = TerminalControllerRegistry()
+        let fleet = ConnectionFleetViewModel(performanceRecorder: recorder)
         _settings = StateObject(wrappedValue: settings)
         _notifications = StateObject(wrappedValue: notifications)
-        _fleet = StateObject(wrappedValue: ConnectionFleetViewModel(performanceRecorder: recorder))
+        _fleet = StateObject(wrappedValue: fleet)
         _terminalRegistry = StateObject(wrappedValue: terminalRegistry)
         _themeCoordinator = StateObject(wrappedValue: BessieThemeCoordinator(
             settings: settings,
             terminalRegistry: terminalRegistry,
-            initialSystemScheme: Self.currentSystemScheme
+            initialSystemScheme: Self.currentSystemScheme,
+            applyTerminalTheme: { [weak fleet, weak terminalRegistry] theme in
+                guard let fleet, let terminalRegistry else { return .rejectedAndRestored }
+                return fleet.applyTerminalTheme(theme, activeRegistry: terminalRegistry)
+            }
         ))
     }
 
@@ -1378,6 +1383,35 @@ final class ConnectionFleetViewModel: ObservableObject {
             let sleep = min(pollInterval, remaining)
             try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
         }
+    }
+
+    @discardableResult
+    func applyTerminalTheme(
+        _ candidate: BessieResolvedTerminalTheme,
+        activeRegistry: TerminalControllerRegistry
+    ) -> TerminalThemeTransaction.Result {
+        let registries = [activeRegistry] + supplementalTerminalRegistries
+            .sorted(by: { $0.key < $1.key })
+            .map(\.value)
+            .filter { $0 !== activeRegistry }
+        var updated: [(registry: TerminalControllerRegistry, previous: BessieResolvedTerminalTheme)] = []
+        for registry in registries {
+            let previous = registry.effectiveTheme
+            let result = registry.applyTheme(candidate)
+            guard result.succeeded else {
+                var restored = result != .rollbackFailed
+                for item in updated.reversed() {
+                    restored = item.registry.applyTheme(item.previous).succeeded && restored
+                }
+                if !restored {
+                    BessieDiagnosticLog.append("Fleet terminal theme rollback failed; terminal presentation may be inconsistent")
+                    return .rollbackFailed
+                }
+                return .rejectedAndRestored
+            }
+            updated.append((registry, previous))
+        }
+        return .applied
     }
 
     func terminalRegistry(connectionID: String, activeRegistry: TerminalControllerRegistry) -> TerminalControllerRegistry? {

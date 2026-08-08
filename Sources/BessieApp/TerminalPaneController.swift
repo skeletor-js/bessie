@@ -12,6 +12,14 @@ enum TerminalSurfaceStreamAction: Equatable {
 
 @MainActor
 enum TerminalThemeTransaction {
+    enum Result: Equatable {
+        case applied
+        case rejectedAndRestored
+        case rollbackFailed
+
+        var succeeded: Bool { self == .applied }
+    }
+
     struct Target {
         let apply: (BessieResolvedTerminalTheme) -> Bool
     }
@@ -20,18 +28,19 @@ enum TerminalThemeTransaction {
         candidate: BessieResolvedTerminalTheme,
         previous: BessieResolvedTerminalTheme,
         targets: [Target]
-    ) -> Bool {
+    ) -> Result {
         var updated: [Target] = []
         for target in targets {
             guard target.apply(candidate) else {
+                var restored = target.apply(previous)
                 for applied in updated.reversed() {
-                    _ = applied.apply(previous)
+                    restored = applied.apply(previous) && restored
                 }
-                return false
+                return restored ? .rejectedAndRestored : .rollbackFailed
             }
             updated.append(target)
         }
-        return true
+        return .applied
     }
 }
 
@@ -263,8 +272,8 @@ final class TerminalControllerRegistry: ObservableObject {
     }
 
     @discardableResult
-    func applyTheme(_ candidate: BessieResolvedTerminalTheme) -> Bool {
-        guard candidate != effectiveTheme else { return true }
+    func applyTheme(_ candidate: BessieResolvedTerminalTheme) -> TerminalThemeTransaction.Result {
+        guard candidate != effectiveTheme else { return .applied }
         let previous = effectiveTheme
         let targets = controllers.keys.sorted().compactMap { paneID -> TerminalThemeTransaction.Target? in
             guard let controller = controllers[paneID] else { return nil }
@@ -272,12 +281,15 @@ final class TerminalControllerRegistry: ObservableObject {
                 controller?.updateTheme(theme) == true
             }
         }
-        guard TerminalThemeTransaction.apply(candidate: candidate, previous: previous, targets: targets) else {
-            BessieDiagnosticLog.append("Terminal theme transaction rejected; prior theme retained")
-            return false
+        let result = TerminalThemeTransaction.apply(candidate: candidate, previous: previous, targets: targets)
+        guard result.succeeded else {
+            BessieDiagnosticLog.append(result == .rollbackFailed
+                ? "Terminal theme transaction rejected and rollback failed; terminal presentation may be inconsistent"
+                : "Terminal theme transaction rejected; prior theme restored")
+            return result
         }
         effectiveTheme = candidate
-        return true
+        return .applied
     }
 
     func reconcile(
@@ -483,17 +495,13 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         self.recordLocalUse = recordLocalUse
         let localUseCallback = PaneLocalUseCallback(recordLocalUse)
         self.localUseCallback = localUseCallback
-        ghosttyController = TerminalController(theme: theme.theme) { builder in
-            builder.withBackgroundOpacity(1)
-            // Herdr owns PTY mouse modes. Local libghostty must not encode mouse
-            // sequences from a rendering-only surface — that desyncs capture state
-            // and flooded new shells with SGR gibberish. Keep reporting off until a
-            // negotiated public Herdr mouse-capture capability exists.
-            builder.withCustom("mouse-reporting", "false")
-            builder.withCustom("macos-option-as-alt", "left")
-            builder.withCustom("mouse-hide-while-typing", "true")
-            builder.withFontSize(13)
-        }
+        ghosttyController = TerminalController(
+            theme: theme.theme,
+            terminalConfiguration: Self.terminalOverrides(
+                fontSize: 13,
+                compatibility: theme.compatibility
+            )
+        )
         let bridge = PaneTerminalBridge()
         self.bridge = bridge
         let herdr = HerdrTerminalController(
@@ -610,17 +618,38 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     func updateFontSize(_ fontSize: Double) {
         guard configuredFontSize != fontSize else { return }
         configuredFontSize = fontSize
-        ghosttyController.setTerminalConfiguration(Self.terminalOverrides(fontSize: fontSize))
+        ghosttyController.setTerminalConfiguration(Self.terminalOverrides(
+            fontSize: fontSize,
+            compatibility: configuredTheme?.compatibility
+        ))
     }
 
     @discardableResult
     func updateTheme(_ candidate: BessieResolvedTerminalTheme) -> Bool {
-        guard configuredTheme != candidate else { return true }
+        if configuredTheme == candidate {
+            let expectedConfiguration = Self.terminalOverrides(
+                fontSize: configuredFontSize,
+                compatibility: candidate.compatibility
+            )
+            guard ghosttyController.terminalConfiguration != expectedConfiguration
+                    || ghosttyController.theme != candidate.theme
+                    || ghosttyController.effectiveColorScheme != candidate.scheme
+                    || ghosttyController.lastConfigurationIssue != nil
+            else { return true }
+        }
         let priorTheme = ghosttyController.theme
         let priorScheme = ghosttyController.effectiveColorScheme
+        let priorTerminalConfiguration = ghosttyController.terminalConfiguration
         let priorConfiguredTheme = configuredTheme
         let priorStatus = status
         let priorConfigurationError = themeConfigurationError
+        let candidateTerminalConfiguration = Self.terminalOverrides(
+            fontSize: configuredFontSize,
+            compatibility: candidate.compatibility
+        )
+        if priorTerminalConfiguration != candidateTerminalConfiguration {
+            _ = ghosttyController.setTerminalConfiguration(candidateTerminalConfiguration)
+        }
         if priorTheme != candidate.theme {
             _ = ghosttyController.setTheme(candidate.theme)
         }
@@ -629,22 +658,30 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         // `setTheme(false)` can mean either an unchanged request or a rejected
         // configuration. The controller's requested value and diagnostic are the
         // authoritative distinction, not the boolean alone.
-        guard ghosttyController.theme == candidate.theme,
+        guard ghosttyController.terminalConfiguration == candidateTerminalConfiguration,
+              ghosttyController.theme == candidate.theme,
               ghosttyController.effectiveColorScheme == candidate.scheme,
               ghosttyController.lastConfigurationIssue == nil
         else {
             _ = ghosttyController.setTheme(priorTheme)
             if ghosttyController.effectiveColorScheme != priorScheme { ghosttyController.setColorScheme(priorScheme) }
+            _ = ghosttyController.setTerminalConfiguration(priorTerminalConfiguration)
             if ghosttyController.theme == priorTheme,
                ghosttyController.lastConfigurationIssue != nil {
                 // libghostty 1.3.2 retains the rejected diagnostic when the
                 // requested theme never changed, and equal-theme reapplication
                 // is a no-op. Revalidate the retained theme through a temporary,
                 // imperceptibly distinct override, then restore exact overrides.
-                ghosttyController.setTerminalConfiguration(Self.terminalOverrides(fontSize: configuredFontSize + 0.001))
-                ghosttyController.setTerminalConfiguration(Self.terminalOverrides(fontSize: configuredFontSize))
+                ghosttyController.setTerminalConfiguration(Self.terminalOverrides(
+                    // The pinned builder renders at most two fractional digits;
+                    // use the smallest value that produces a distinct config source.
+                    fontSize: configuredFontSize + 0.01,
+                    compatibility: priorConfiguredTheme?.compatibility
+                ))
+                ghosttyController.setTerminalConfiguration(priorTerminalConfiguration)
             }
             if let priorConfiguredTheme,
+               ghosttyController.terminalConfiguration == priorTerminalConfiguration,
                ghosttyController.theme == priorTheme,
                ghosttyController.effectiveColorScheme == priorScheme,
                ghosttyController.lastConfigurationIssue == nil {
@@ -666,9 +703,40 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         return true
     }
 
-    private static func terminalOverrides(fontSize: Double) -> TerminalConfiguration {
+    private static func terminalOverrides(
+        fontSize: Double,
+        compatibility: GhosttyCompatibilityValues? = nil
+    ) -> TerminalConfiguration {
         TerminalConfiguration { builder in
+            // Live Ghostty configuration updates retain some previously applied
+            // presentation values unless they are reset explicitly. Start every
+            // compatibility transaction from Bessie's established terminal
+            // defaults so disabling the profile (or removing a value on reload)
+            // cannot leave stale imported settings behind.
+            builder.withFontFamily("")
+            builder.withFontThicken(true)
+            builder.withFontThickenStrength(255)
+            builder.withCursorStyle(.block)
+            builder.withCursorStyleBlink(true)
+            if let compatibility {
+                if compatibility.fontFamilyWasReset { builder.withFontFamily("") }
+                for family in compatibility.fontFamilies { builder.withFontFamily(family) }
+                if let value = compatibility.fontThicken { builder.withFontThicken(value) }
+                if let value = compatibility.fontThickenStrength { builder.withFontThickenStrength(value) }
+                if let value = compatibility.cursorStyle {
+                    let style: TerminalCursorStyle = switch value {
+                    case .block: .block
+                    case .bar: .bar
+                    case .underline: .underline
+                    }
+                    builder.withCursorStyle(style)
+                }
+                if let value = compatibility.cursorStyleBlink { builder.withCursorStyleBlink(value) }
+            }
             builder.withBackgroundOpacity(1)
+            // Herdr owns PTY mouse modes. These mandatory compatibility overrides
+            // remain after imported appearance/behavior values and before the
+            // pane-local font-size adjustment.
             builder.withCustom("mouse-reporting", "false")
             builder.withCustom("macos-option-as-alt", "left")
             builder.withCustom("mouse-hide-while-typing", "true")

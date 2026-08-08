@@ -10,7 +10,7 @@ import UserNotifications
 final class BessieSettingsModel: ObservableObject {
     @Published var preferences: BessiePreferences {
         didSet {
-            persist()
+            if !publishingPersistedPreferences { persist() }
         }
     }
     @Published private(set) var lastWorkspaceIDByConnectionID: [String: String]
@@ -38,6 +38,7 @@ final class BessieSettingsModel: ObservableObject {
     private let configurationLease: BessieConfigurationLease?
     private let presentationLease: BessiePresentationLease?
     private let presentationLoadBlocker: String?
+    private var publishingPersistedPreferences = false
     private lazy var paneSnoozeSupervisor = BessiePaneSnoozeSupervisor { [weak self] in
         self?.reconcilePaneSnoozes()
     }
@@ -162,6 +163,32 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     func retryPresentationPersistence() { persist() }
+
+    @discardableResult
+    func commitGhosttyCompatibility(enabled: Bool, selectedPath: String?) -> Bool {
+        guard presentationLoadBlocker == nil, presentationLease != nil else {
+            presentationPersistenceError = presentationLoadBlocker ?? "Bessie couldn't acquire presentation storage."
+            return false
+        }
+        var candidate = preferences
+        candidate.ghosttyCompatibilityEnabled = enabled
+        candidate.ghosttyCompatibilitySelectedPath = selectedPath
+        guard candidate != preferences else { return true }
+        do {
+            try store.save(presentationState(preferences: candidate))
+            publishingPersistedPreferences = true
+            preferences = candidate
+            publishingPersistedPreferences = false
+            presentationPersistenceError = nil
+            presentationDirtyRevision = nil
+            return true
+        } catch {
+            publishingPersistedPreferences = false
+            presentationPersistenceError = error.localizedDescription
+            BessieDiagnosticLog.append("Ghostty compatibility persistence failed: \(String(reflecting: error))")
+            return false
+        }
+    }
 
     @discardableResult
     func setPanePinned(_ pinned: Bool, incarnation: BessiePaneIncarnation) -> Bool {
@@ -474,6 +501,10 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     private var presentationState: BessiePresentationState {
+        presentationState(preferences: preferences)
+    }
+
+    private func presentationState(preferences: BessiePreferences) -> BessiePresentationState {
         BessiePresentationState(
             lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
             lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
@@ -974,6 +1005,7 @@ struct BessieGeneralSettingsControls: View {
 
 struct BessieTerminalSettingsControls: View {
     @EnvironmentObject private var model: BessieSettingsModel
+    @EnvironmentObject private var themeCoordinator: BessieThemeCoordinator
 
     var body: some View {
         Group {
@@ -983,7 +1015,66 @@ struct BessieTerminalSettingsControls: View {
             BessieSettingRow(label: "Pane spacing", hint: "The gap between tiled panes.") {
                 BessieSettingsStepper(value: $model.preferences.paneGap, range: 0...16, rangeLabel: "0–16", label: "Pane spacing")
             }
+            BessieSettingRow(
+                label: "Ghostty compatibility",
+                hint: "Apply compatible settings from a Ghostty configuration. Bessie only uses supported presentation settings."
+            ) {
+                Toggle("", isOn: compatibilityBinding)
+                    .labelsHidden()
+                    .accessibilityLabel("Ghostty compatibility")
+                    .toggleStyle(BessieSettingsSwitchStyle())
+            }
+            BessieSettingRow(label: "Ghostty configuration", hint: selectedConfigurationLabel) {
+                HStack(spacing: 8) {
+                    Button("Choose…") { chooseConfiguration() }
+                        .buttonStyle(BessieSecondaryButtonStyle())
+                    if model.preferences.ghosttyCompatibilityEnabled {
+                        Button("Reload") { themeCoordinator.reloadCompatibilityConfiguration() }
+                            .buttonStyle(BessieQuietButtonStyle())
+                    }
+                }
+            }
+            if let message = themeCoordinator.compatibilityError {
+                Text(message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(BessieDesign.strong)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("ghostty-compatibility-error")
+            } else if let summary = themeCoordinator.compatibilitySummary {
+                Text(summary)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(BessieDesign.subtle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("ghostty-compatibility-summary")
+            }
         }
+    }
+
+    private var compatibilityBinding: Binding<Bool> {
+        Binding(
+            get: { model.preferences.ghosttyCompatibilityEnabled },
+            set: { themeCoordinator.setCompatibilityEnabled($0) }
+        )
+    }
+
+    private var selectedConfigurationLabel: String {
+        guard let path = model.preferences.ghosttyCompatibilitySelectedPath else {
+            return "Choose a config before enabling. The file is read-only and is never passed to Ghostty."
+        }
+        return "Selected: \(URL(fileURLWithPath: path).lastPathComponent). Changes apply only when you choose Reload."
+    }
+
+    private func chooseConfiguration() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Ghostty Configuration"
+        panel.prompt = "Choose"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        themeCoordinator.selectCompatibilityConfiguration(url)
     }
 }
 

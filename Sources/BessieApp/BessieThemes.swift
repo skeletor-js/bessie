@@ -53,6 +53,28 @@ struct BessieResolvedTerminalTheme: Equatable, Sendable {
     let concreteID: BessieThemeID
     let scheme: TerminalColorScheme
     let theme: TerminalTheme
+    let compatibility: GhosttyCompatibilityValues?
+
+    init(
+        concreteID: BessieThemeID,
+        scheme: TerminalColorScheme,
+        theme: TerminalTheme,
+        compatibility: GhosttyCompatibilityValues? = nil
+    ) {
+        self.concreteID = concreteID
+        self.scheme = scheme
+        self.theme = theme
+        self.compatibility = compatibility
+    }
+
+    func applyingCompatibility(_ profile: GhosttyCompatibilityProfile?) -> BessieResolvedTerminalTheme {
+        return BessieResolvedTerminalTheme(
+            concreteID: concreteID,
+            scheme: scheme,
+            theme: theme,
+            compatibility: profile?.effective
+        )
+    }
 }
 
 enum CatppuccinDerivativeTarget: Equatable, Sendable {

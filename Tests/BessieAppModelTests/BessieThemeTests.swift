@@ -295,7 +295,7 @@ final class BessieThemeTests: XCTestCase {
             .init { third = $0; return true },
         ])
 
-        XCTAssertFalse(result)
+        XCTAssertEqual(result, .rejectedAndRestored)
         XCTAssertEqual(first, previous)
         XCTAssertEqual(second, previous)
         XCTAssertEqual(third, previous)
@@ -312,8 +312,26 @@ final class BessieThemeTests: XCTestCase {
             .init { _ in secondCalls += 1; return true },
         ])
 
-        XCTAssertFalse(result)
+        XCTAssertEqual(result, .rollbackFailed)
         XCTAssertEqual(secondCalls, 0)
+    }
+
+    @MainActor
+    func testThemeTransactionReportsRollbackFailureInsteadOfClaimingRestoration() {
+        let previous = BessieThemeRegistry.definitions[.dark]!.resolvedTerminalTheme
+        let candidate = BessieThemeRegistry.definitions[.catppuccinLatte]!.resolvedTerminalTheme
+        var firstCalls: [BessieResolvedTerminalTheme] = []
+
+        let result = TerminalThemeTransaction.apply(candidate: candidate, previous: previous, targets: [
+            .init { theme in
+                firstCalls.append(theme)
+                return theme == candidate
+            },
+            .init { theme in theme == previous },
+        ])
+
+        XCTAssertEqual(result, .rollbackFailed)
+        XCTAssertEqual(firstCalls, [candidate, previous])
     }
 
     @MainActor
@@ -445,7 +463,7 @@ final class BessieThemeTests: XCTestCase {
         let original = registry.controllers.mapValues(ObjectIdentifier.init)
         let latte = BessieThemeRegistry.definitions[.catppuccinLatte]!.resolvedTerminalTheme
 
-        XCTAssertTrue(registry.applyTheme(latte))
+        XCTAssertEqual(registry.applyTheme(latte), .applied)
         for (paneID, controller) in registry.controllers {
             XCTAssertEqual(ObjectIdentifier(controller), original[paneID])
             XCTAssertEqual(controller.ghosttyController.theme, latte.theme)
@@ -478,7 +496,7 @@ final class BessieThemeTests: XCTestCase {
         let coordinator = BessieThemeCoordinator(
             settings: settings,
             terminalRegistry: registry,
-            applyTerminalTheme: { _ in false }
+            applyTerminalTheme: { _ in .rejectedAndRestored }
         )
 
         XCTAssertFalse(coordinator.requestSelection(.catppuccinMocha))
@@ -511,7 +529,7 @@ final class BessieThemeTests: XCTestCase {
         let coordinator = BessieThemeCoordinator(
             settings: settings,
             terminalRegistry: TerminalControllerRegistry(),
-            applyTerminalTheme: { _ in false }
+            applyTerminalTheme: { _ in .rejectedAndRestored }
         )
 
         XCTAssertFalse(coordinator.resetPreferencesToDefaults())
@@ -568,7 +586,7 @@ final class BessieThemeTests: XCTestCase {
             settings: settings,
             terminalRegistry: registry,
             initialSystemScheme: .dark,
-            applyTerminalTheme: { _ in terminalApplyCount += 1; return true }
+            applyTerminalTheme: { _ in terminalApplyCount += 1; return .applied }
         )
 
         coordinator.effectiveAppearanceChanged(.light)
