@@ -113,11 +113,12 @@ fi
 codesign --verify --strict "$runtime_path"
 codesign --verify --deep --strict "$app_path"
 if [[ "$package_variant" == production ]]; then
-    if codesign -dv --verbose=4 "$app_path" 2>&1 | grep -Fq 'Signature=adhoc'; then
+    signature_details=$(codesign -dv --verbose=4 "$app_path" 2>&1)
+    if grep -F 'Signature=adhoc' <<<"$signature_details" >/dev/null; then
         echo "Production package unexpectedly has an ad-hoc signature." >&2
         exit 1
     fi
-    codesign -dv --verbose=4 "$app_path" 2>&1 | grep -Fq "$codesign_identity"
+    grep -F "$codesign_identity" <<<"$signature_details" >/dev/null
 fi
 
 test -x "$runtime_path"

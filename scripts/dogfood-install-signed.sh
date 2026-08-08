@@ -77,7 +77,8 @@ backup="/tmp/Bessie.app.backup-$$"
 
 test -x "$pkg_bin"
 codesign --verify --deep --strict "$pkg_app"
-codesign -dv --verbose=4 "$pkg_app" 2>&1 | grep -Fq "$identity"
+signature_details=$(codesign -dv --verbose=4 "$pkg_app" 2>&1)
+grep -F "$identity" <<<"$signature_details" >/dev/null
 
 # Prefer not killing unrelated apps; only stop BessieApp.
 if pids=$(pgrep -f "^/Applications/Bessie.app/Contents/MacOS/BessieApp" || true); then
