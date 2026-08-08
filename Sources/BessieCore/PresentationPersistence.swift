@@ -24,6 +24,80 @@ public enum BessieStartupBehavior: String, Codable, CaseIterable, Equatable, Sen
 public enum BessieMenuBarBadgePolicy: String, Codable, CaseIterable, Equatable, Sendable { case needsYou, needsYouAndUnknown, nothing }
 public enum BessieMenuBarRowClickBehavior: String, Codable, CaseIterable, Equatable, Sendable { case focusPane, openBessie }
 
+public enum BessieWorkspaceScopePreference: Codable, Equatable, Sendable {
+    case selectedTab(connectionID: String, workspaceID: String, tabID: String)
+    case allTabs(connectionID: String, workspaceID: String)
+    case allWorkspaces(connectionID: String)
+    case allHerds
+
+    private enum Kind: String, Codable {
+        case selectedTab = "selected_tab"
+        case allTabs = "all_tabs"
+        case allWorkspaces = "all_workspaces"
+        case allHerds = "all_herds"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case connectionID = "connection_id"
+        case workspaceID = "workspace_id"
+        case tabID = "tab_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try values.decode(Kind.self, forKey: .kind)
+        func identifier(_ key: CodingKeys) throws -> String {
+            let value = try values.decode(String.self, forKey: key)
+            guard !value.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key,
+                    in: values,
+                    debugDescription: "Workspace scope identifiers must not be empty."
+                )
+            }
+            return value
+        }
+        switch kind {
+        case .selectedTab:
+            self = try .selectedTab(
+                connectionID: identifier(.connectionID),
+                workspaceID: identifier(.workspaceID),
+                tabID: identifier(.tabID)
+            )
+        case .allTabs:
+            self = try .allTabs(
+                connectionID: identifier(.connectionID),
+                workspaceID: identifier(.workspaceID)
+            )
+        case .allWorkspaces:
+            self = try .allWorkspaces(connectionID: identifier(.connectionID))
+        case .allHerds:
+            self = .allHerds
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .selectedTab(let connectionID, let workspaceID, let tabID):
+            try values.encode(Kind.selectedTab, forKey: .kind)
+            try values.encode(connectionID, forKey: .connectionID)
+            try values.encode(workspaceID, forKey: .workspaceID)
+            try values.encode(tabID, forKey: .tabID)
+        case .allTabs(let connectionID, let workspaceID):
+            try values.encode(Kind.allTabs, forKey: .kind)
+            try values.encode(connectionID, forKey: .connectionID)
+            try values.encode(workspaceID, forKey: .workspaceID)
+        case .allWorkspaces(let connectionID):
+            try values.encode(Kind.allWorkspaces, forKey: .kind)
+            try values.encode(connectionID, forKey: .connectionID)
+        case .allHerds:
+            try values.encode(Kind.allHerds, forKey: .kind)
+        }
+    }
+}
+
 public enum BessieFeature: String, CaseIterable, Equatable, Sendable {
     case fileBrowserEditor
     case followFiles
@@ -121,13 +195,15 @@ public struct BessiePresentationState: Codable, Equatable, Sendable {
     public var firstRealTerminalCompletionVersion: Int?
     public var panePresentationRevision: UInt64?
     public var panePresentationPreferences: [BessiePanePresentationPreference]?
+    public var workspaceScope: BessieWorkspaceScopePreference?
     public init(
         lastWorkspaceID: String? = nil,
         lastWorkspaceIDByConnectionID: [String: String]? = nil,
         preferences: BessiePreferences = BessiePreferences(),
         firstRealTerminalCompletionVersion: Int? = nil,
         panePresentationRevision: UInt64? = nil,
-        panePresentationPreferences: [BessiePanePresentationPreference]? = nil
+        panePresentationPreferences: [BessiePanePresentationPreference]? = nil,
+        workspaceScope: BessieWorkspaceScopePreference? = nil
     ) {
         self.lastWorkspaceID = lastWorkspaceID
         self.lastWorkspaceIDByConnectionID = lastWorkspaceIDByConnectionID
@@ -135,6 +211,7 @@ public struct BessiePresentationState: Codable, Equatable, Sendable {
         self.firstRealTerminalCompletionVersion = firstRealTerminalCompletionVersion
         self.panePresentationRevision = panePresentationRevision
         self.panePresentationPreferences = panePresentationPreferences
+        self.workspaceScope = workspaceScope
     }
 
     enum CodingKeys: String, CodingKey {
@@ -144,6 +221,7 @@ public struct BessiePresentationState: Codable, Equatable, Sendable {
         case firstRealTerminalCompletionVersion = "first_real_terminal_completion_version"
         case panePresentationRevision = "pane_presentation_revision"
         case panePresentationPreferences = "pane_presentation_preferences"
+        case workspaceScope = "workspace_scope"
     }
 }
 

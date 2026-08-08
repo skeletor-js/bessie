@@ -186,6 +186,77 @@ final class PickerPresentationTests: XCTestCase {
         XCTAssertNil(WorkspaceScopeReducer.selectingSidebarPane(target, preserving: nil))
     }
 
+    func testPersistedWorkspaceScopeRevalidatesOnlyAgainstFreshTopology() {
+        let workspaces = ["herd": Set(["workspace"])]
+        let tabs = ["herd": ["workspace": Set(["tab"])]]
+
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                .selectedTab(connectionID: "herd", workspaceID: "workspace", tabID: "tab"),
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: ["herd"],
+                workspaceIDsByConnectionID: workspaces,
+                tabIDsByConnectionIDAndWorkspaceID: tabs
+            ),
+            .selectedTab(connectionID: "herd", workspaceID: "workspace", tabID: "tab")
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                .selectedTab(connectionID: "herd", workspaceID: "workspace", tabID: "missing"),
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: ["herd"],
+                workspaceIDsByConnectionID: workspaces,
+                tabIDsByConnectionIDAndWorkspaceID: tabs
+            ),
+            .allTabs(connectionID: "herd", workspaceID: "workspace")
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                .allTabs(connectionID: "herd", workspaceID: "missing"),
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: ["herd"],
+                workspaceIDsByConnectionID: workspaces,
+                tabIDsByConnectionIDAndWorkspaceID: tabs
+            ),
+            .allWorkspaces(connectionID: "herd")
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                .allWorkspaces(connectionID: "missing"),
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: ["herd"],
+                workspaceIDsByConnectionID: workspaces,
+                tabIDsByConnectionIDAndWorkspaceID: tabs
+            ),
+            .allHerds
+        )
+        let pendingScope = WorkspaceScope.selectedTab(
+            connectionID: "herd",
+            workspaceID: "pending",
+            tabID: "pending"
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                pendingScope,
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: [],
+                workspaceIDsByConnectionID: [:],
+                tabIDsByConnectionIDAndWorkspaceID: [:]
+            ),
+            pendingScope
+        )
+        XCTAssertEqual(
+            WorkspaceScopeReducer.revalidated(
+                pendingScope,
+                availableConnectionIDs: ["herd"],
+                freshConnectionIDs: ["herd"],
+                workspaceIDsByConnectionID: workspaces,
+                tabIDsByConnectionIDAndWorkspaceID: tabs
+            ),
+            .allWorkspaces(connectionID: "herd")
+        )
+    }
+
     func testGlobalHierarchyPresentationShowsAggregateLabelsAndPaneCount() throws {
         let presentation = WorkspaceHierarchyPresentation(
             connectionLabel: "local",

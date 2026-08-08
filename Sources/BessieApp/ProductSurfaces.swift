@@ -230,12 +230,7 @@ struct ScopedTopologyProjection {
     }
 }
 
-enum WorkspaceScope: Equatable {
-    case selectedTab(connectionID: String, workspaceID: String, tabID: String)
-    case allTabs(connectionID: String, workspaceID: String)
-    case allWorkspaces(connectionID: String)
-    case allHerds
-}
+typealias WorkspaceScope = BessieWorkspaceScopePreference
 
 enum WorkspaceScopeReducer {
     static func selectingAll(_ section: WorkspaceHierarchySection, connectionID: String, workspaceID: String) -> WorkspaceScope {
@@ -251,6 +246,38 @@ enum WorkspaceScopeReducer {
         preserving scope: WorkspaceScope?
     ) -> WorkspaceScope? {
         scope
+    }
+
+    static func revalidated(
+        _ scope: WorkspaceScope,
+        availableConnectionIDs: Set<String>,
+        freshConnectionIDs: Set<String>,
+        workspaceIDsByConnectionID: [String: Set<String>],
+        tabIDsByConnectionIDAndWorkspaceID: [String: [String: Set<String>]]
+    ) -> WorkspaceScope {
+        guard let connectionID = scope.connectionID else { return .allHerds }
+        guard availableConnectionIDs.contains(connectionID) else { return .allHerds }
+        guard freshConnectionIDs.contains(connectionID) else { return scope }
+
+        switch scope {
+        case .allHerds:
+            return .allHerds
+        case .allWorkspaces:
+            return scope
+        case .allTabs(_, let workspaceID):
+            guard workspaceIDsByConnectionID[connectionID]?.contains(workspaceID) == true else {
+                return .allWorkspaces(connectionID: connectionID)
+            }
+            return scope
+        case .selectedTab(_, let workspaceID, let tabID):
+            guard workspaceIDsByConnectionID[connectionID]?.contains(workspaceID) == true else {
+                return .allWorkspaces(connectionID: connectionID)
+            }
+            guard tabIDsByConnectionIDAndWorkspaceID[connectionID]?[workspaceID]?.contains(tabID) == true else {
+                return .allTabs(connectionID: connectionID, workspaceID: workspaceID)
+            }
+            return scope
+        }
     }
 
     static func filtered(_ projection: HerdRailProjection, scope: WorkspaceScope) -> HerdRailProjection {
@@ -999,6 +1026,9 @@ struct BessieProductShell: View {
         .onChange(of: selectedWorkspaceID) { _, id in
             settings.recordLastWorkspace(id, connectionID: selectedTopologyConnectionID ?? model.activeConnection.id)
         }
+        .onChange(of: workspaceScope) { _, scope in
+            if let scope { settings.recordWorkspaceScope(scope) }
+        }
         .onChange(of: settings.onboarding.completed) { _, completed in
             if !completed, showCommandPalette { commandPalette.dismiss() }
             refreshCommandPaletteAvailability()
@@ -1006,6 +1036,7 @@ struct BessieProductShell: View {
         .onChange(of: fleet.connectedConnectionIDs) { _, connectedIDs in
             for id in connectedIDs { commandPaletteRetryAttempts.removeValue(forKey: id) }
             reconcilePanePresentationsFromFreshSnapshots()
+            if let workspaceScope { reconcileWorkspaceScopeSelection(workspaceScope) }
         }
         .onChange(of: zenState.focusIntent) { _, _ in
             if let paneID = zenState.selectedPaneID { focusTerminal(paneID: paneID) }
@@ -3003,7 +3034,9 @@ struct BessieProductShell: View {
             restoreActiveSelection()
         }
         selectedTopologyConnectionID = model.activeConnection.id
+        workspaceScope = settings.workspaceScopePreference
         initializeWorkspaceScopeIfNeeded()
+        if let workspaceScope { reconcileWorkspaceScopeSelection(workspaceScope) }
         consumeNavigationRequest(navigationRequest)
         if environment["BESSIE_ZEN_AUTOMATION"] == "1",
            let paneID = selectedPaneID ?? projection.focusedPane?.id {
@@ -3196,7 +3229,24 @@ struct BessieProductShell: View {
     }
 
     private func reconcileWorkspaceScopeSelection(_ scope: WorkspaceScope) {
-        let filtered = WorkspaceScopeReducer.filtered(baseHerdRailProjection, scope: scope)
+        var workspaceIDsByConnectionID: [String: Set<String>] = [:]
+        var tabIDsByConnectionIDAndWorkspaceID: [String: [String: Set<String>]] = [:]
+        for item in freshHierarchyTopology.workspaces {
+            workspaceIDsByConnectionID[item.id.connectionID, default: []].insert(item.id.workspaceID)
+        }
+        for item in freshHierarchyTopology.tabs {
+            tabIDsByConnectionIDAndWorkspaceID[item.id.connectionID, default: [:]][item.tab.workspaceID, default: []]
+                .insert(item.tab.id)
+        }
+        let revalidated = WorkspaceScopeReducer.revalidated(
+            scope,
+            availableConnectionIDs: Set(fleet.connectionDefinitions.filter(\.enabled).map(\.id)),
+            freshConnectionIDs: Set(freshHierarchyTopology.connections.map(\.connection.id)),
+            workspaceIDsByConnectionID: workspaceIDsByConnectionID,
+            tabIDsByConnectionIDAndWorkspaceID: tabIDsByConnectionIDAndWorkspaceID
+        )
+        if revalidated != scope { workspaceScope = revalidated }
+        let filtered = WorkspaceScopeReducer.filtered(baseHerdRailProjection, scope: revalidated)
         let retained = selectedPaneID.map {
             HerdPaneIdentity(
                 connectionID: selectedTopologyConnectionID ?? model.activeConnection.id,

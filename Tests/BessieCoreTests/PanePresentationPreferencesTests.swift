@@ -150,6 +150,28 @@ final class PanePresentationPreferencesTests: XCTestCase {
         }
     }
 
+    func testWorkspaceScopePreferenceRoundTripsWithoutBreakingLegacyPresentationFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("presentation.json")
+        let store = BessiePresentationStore(url: url)
+        let scopes: [BessieWorkspaceScopePreference] = [
+            .selectedTab(connectionID: "herd", workspaceID: "workspace", tabID: "tab"),
+            .allTabs(connectionID: "herd", workspaceID: "workspace"),
+            .allWorkspaces(connectionID: "herd"),
+            .allHerds,
+        ]
+
+        for scope in scopes {
+            try store.save(BessiePresentationState(workspaceScope: scope))
+            XCTAssertEqual(try store.load().workspaceScope, scope)
+        }
+
+        let legacy = Data(#"{"schemaVersion":1,"state":{"preferences":{}}}"#.utf8)
+        try legacy.write(to: url)
+        XCTAssertNil(try store.load().workspaceScope)
+    }
+
     func testPresentationLeaseIsExclusive() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

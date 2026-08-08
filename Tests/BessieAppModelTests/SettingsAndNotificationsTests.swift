@@ -246,6 +246,30 @@ final class SettingsAndNotificationsTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: presentationURL), original)
     }
 
+    func testWorkspaceScopePersistsThroughSettingsModelRelaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let presentationURL = root.appendingPathComponent("presentation.json")
+        let model = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        let scope = BessieWorkspaceScopePreference.allTabs(
+            connectionID: "herd",
+            workspaceID: "workspace"
+        )
+
+        model.recordWorkspaceScope(scope)
+
+        let reloaded = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        XCTAssertEqual(reloaded.workspaceScopePreference, scope)
+    }
+
     func testPanePresentationSaveFailureKeepsNewestDirtyRevisionAndRetries() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

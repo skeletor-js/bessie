@@ -14,6 +14,7 @@ final class BessieSettingsModel: ObservableObject {
         }
     }
     @Published private(set) var lastWorkspaceIDByConnectionID: [String: String]
+    @Published private(set) var workspaceScopePreference: BessieWorkspaceScopePreference?
     private let legacyLastWorkspaceID: String?
     @Published private(set) var connections: [BessieConnectionDefinition]
     @Published private(set) var selectedConnectionID: String
@@ -102,6 +103,7 @@ final class BessieSettingsModel: ObservableObject {
         preferences = loadedPreferences
         legacyLastWorkspaceID = state?.lastWorkspaceID
         lastWorkspaceIDByConnectionID = state?.lastWorkspaceIDByConnectionID ?? [:]
+        workspaceScopePreference = state?.workspaceScope
         connectionStore = BessieConnectionStore(url: connectionsURL)
         runtimeStore = HerdrRuntimeSelectionStore(url: runtimeSelectionURL)
         runtimeSelection = runtimeStore.load()
@@ -276,6 +278,12 @@ final class BessieSettingsModel: ObservableObject {
 
     func recordLastWorkspace(_ id: String?, connectionID: String) {
         lastWorkspaceIDByConnectionID[connectionID] = id
+        persist()
+    }
+
+    func recordWorkspaceScope(_ scope: BessieWorkspaceScopePreference) {
+        guard workspaceScopePreference != scope else { return }
+        workspaceScopePreference = scope
         persist()
     }
 
@@ -472,7 +480,8 @@ final class BessieSettingsModel: ObservableObject {
             preferences: preferences,
             firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil,
             panePresentationRevision: panePresentationLedger.revision == 0 ? nil : panePresentationLedger.revision,
-            panePresentationPreferences: panePresentationLedger.records.isEmpty ? nil : panePresentationLedger.records
+            panePresentationPreferences: panePresentationLedger.records.isEmpty ? nil : panePresentationLedger.records,
+            workspaceScope: workspaceScopePreference
         )
     }
 
