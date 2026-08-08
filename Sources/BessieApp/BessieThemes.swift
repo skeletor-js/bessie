@@ -55,6 +55,137 @@ struct BessieResolvedTerminalTheme: Equatable, Sendable {
     let theme: TerminalTheme
 }
 
+enum CatppuccinDerivativeTarget: Equatable, Sendable {
+    case palette(CatppuccinColorName)
+    case composited(foreground: CatppuccinColorName, alpha: Double, background: CatppuccinColorName)
+
+    func hex(for flavor: CatppuccinFlavor) -> String {
+        switch self {
+        case let .palette(name):
+            return CatppuccinPalette.v1_8_0[flavor][name]!.hex
+        case let .composited(foreground, alpha, background):
+            let foregroundHex = CatppuccinPalette.v1_8_0[flavor][foreground]!.hex
+            let backgroundHex = CatppuccinPalette.v1_8_0[flavor][background]!.hex
+            let foregroundChannels = Self.channels(foregroundHex)
+            let backgroundChannels = Self.channels(backgroundHex)
+            let channels = zip(foregroundChannels, backgroundChannels).map {
+                Int((Double($0) * alpha + Double($1) * (1 - alpha)).rounded())
+            }
+            return String(format: "#%02x%02x%02x", channels[0], channels[1], channels[2])
+        }
+    }
+
+    private static func channels(_ hex: String) -> [Int] {
+        let value = String(hex.dropFirst())
+        return stride(from: 0, to: 6, by: 2).map { index in
+            Int(value[value.index(value.startIndex, offsetBy: index)..<value.index(value.startIndex, offsetBy: index + 2)], radix: 16)!
+        }
+    }
+}
+
+enum CatppuccinAccessibilityDerivative: String, CaseIterable, Hashable, Sendable {
+    case latteOnBlue
+    case latteLink
+    case latteActiveBorder
+    case latteDiffAdded
+    case latteDiffRemoved
+    case latteDiffHunk
+
+    var source: CatppuccinColorName {
+        switch self {
+        case .latteOnBlue: .base
+        case .latteLink: .blue
+        case .latteActiveBorder: .lavender
+        case .latteDiffAdded: .green
+        case .latteDiffRemoved: .red
+        case .latteDiffHunk: .peach
+        }
+    }
+
+    var target: CatppuccinDerivativeTarget {
+        switch self {
+        case .latteOnBlue: .palette(.blue)
+        case .latteLink: .palette(.base)
+        case .latteActiveBorder: .composited(foreground: .overlay2, alpha: 0.25, background: .surface0)
+        case .latteDiffAdded, .latteDiffRemoved, .latteDiffHunk: .palette(.crust)
+        }
+    }
+
+    var requiredContrast: Double { self == .latteActiveBorder ? 3 : 4.5 }
+
+    var measuredContrast: Double {
+        switch self {
+        case .latteOnBlue: 4.501312632826
+        case .latteLink: 4.505819186617
+        case .latteActiveBorder: 3.010447412869
+        case .latteDiffAdded: 4.544364425300
+        case .latteDiffRemoved: 4.512243615966
+        case .latteDiffHunk: 4.514935942774
+        }
+    }
+
+    var hex: String {
+        switch self {
+        case .latteOnBlue: "#f3f5f9"
+        case .latteLink: "#1d64ef"
+        case .latteActiveBorder: "#4c5bcc"
+        case .latteDiffAdded: "#2d711e"
+        case .latteDiffRemoved: "#c60e36"
+        case .latteDiffHunk: "#aa4307"
+        }
+    }
+}
+
+struct CatppuccinSemanticValue: Equatable, Sendable {
+    let source: CatppuccinColorName
+    let alpha: Double
+    let derivative: CatppuccinAccessibilityDerivative?
+    let hex: String
+}
+
+struct CatppuccinSemanticMapping {
+    let values: [BessieSemanticColor.Role: CatppuccinSemanticValue]
+    let palette: BessiePalette
+}
+
+struct CatppuccinDerivativeCandidate: Equatable, Sendable {
+    let name: String
+    let contrast: Double
+    let lightnessDelta: Double
+    let hueDelta: Double
+    let chromaRetention: Double
+}
+
+enum CatppuccinDerivativeDisposition: Equatable, Sendable {
+    case targetMet
+    case strongestBoundedFallback
+}
+
+struct CatppuccinDerivativeSelection: Equatable, Sendable {
+    let candidate: CatppuccinDerivativeCandidate
+    let disposition: CatppuccinDerivativeDisposition
+}
+
+enum CatppuccinDerivativePolicy {
+    static func select(
+        from candidates: [CatppuccinDerivativeCandidate],
+        requiredContrast: Double,
+        maximumHueDelta: Double = 5,
+        minimumChromaRetention: Double = 0.60
+    ) -> CatppuccinDerivativeSelection? {
+        let bounded = candidates.filter {
+            $0.hueDelta <= maximumHueDelta && $0.chromaRetention >= minimumChromaRetention
+        }
+        if let candidate = bounded
+            .filter({ $0.contrast >= requiredContrast })
+            .min(by: { $0.lightnessDelta < $1.lightnessDelta }) {
+            return CatppuccinDerivativeSelection(candidate: candidate, disposition: .targetMet)
+        }
+        guard let candidate = bounded.max(by: { $0.contrast < $1.contrast }) else { return nil }
+        return CatppuccinDerivativeSelection(candidate: candidate, disposition: .strongestBoundedFallback)
+    }
+}
+
 enum BessieThemeRegistry {
     static let selectableIDs = BessieThemeID.allCases
 
@@ -85,14 +216,7 @@ enum BessieThemeRegistry {
             id: .catppuccinLatte,
             name: "Catppuccin Latte",
             scheme: .light,
-            palette: palette(
-                desk: "#dce0e8", window: "#e6e9ef", background: "#eff1f5", rail: "#e6e9ef", panel: "#ffffff", inset: "#dce0e8",
-                code: "#e6e9ef", codeText: "#4c4f69", codeSubtle: "#6c6f85", strong: "#3c3f59", text: "#4c4f69", subtle: "#6c6f85", faint: "#8c8fa1",
-                border: "#7c7f93", borderOpacity: 0.22, borderStrong: "#6c6f85", borderStrongOpacity: 0.34, hover: "#7c7f93", hoverOpacity: 0.10, selected: "#1e66f5", selectedOpacity: 0.13,
-                accent: "#1e66f5", accentSoft: "#1e66f5", accentSoftOpacity: 0.14, accentForeground: "#ffffff",
-                blocked: "#d20f39", running: "#1e66f5", done: "#40a02b", idle: "#8c8fa1",
-                diffAdded: "#287d16", diffAddedPlate: "#40a02b", diffRemoved: "#b80c32", diffRemovedPlate: "#d20f39", diffHunk: "#1e66f5", diffHunkPlate: "#1e66f5"
-            ),
+            palette: catppuccinMapping(for: .latte).palette,
             terminal: terminal(
                 foreground: "#4c4f69", background: "#eff1f5", cursor: "#dc8a78", cursorText: "#eff1f5",
                 selectionForeground: "#4c4f69", selectionBackground: "#d8dae1",
@@ -103,14 +227,7 @@ enum BessieThemeRegistry {
             id: .catppuccinFrappe,
             name: "Catppuccin Frappé",
             scheme: .dark,
-            palette: palette(
-                desk: "#232634", window: "#292c3c", background: "#303446", rail: "#292c3c", panel: "#414559", inset: "#292c3c",
-                code: "#232634", codeText: "#c6d0f5", codeSubtle: "#a5adce", strong: "#f2d5cf", text: "#c6d0f5", subtle: "#a5adce", faint: "#838ba7",
-                border: "#a5adce", borderOpacity: 0.16, borderStrong: "#b5bfe2", borderStrongOpacity: 0.28, hover: "#c6d0f5", hoverOpacity: 0.07, selected: "#8caaee", selectedOpacity: 0.17,
-                accent: "#8caaee", accentSoft: "#8caaee", accentSoftOpacity: 0.16, accentForeground: "#232634",
-                blocked: "#e78284", running: "#8caaee", done: "#a6d189", idle: "#737994",
-                diffAdded: "#a6d189", diffAddedPlate: "#a6d189", diffRemoved: "#e78284", diffRemovedPlate: "#e78284", diffHunk: "#8caaee", diffHunkPlate: "#8caaee"
-            ),
+            palette: catppuccinMapping(for: .frappe).palette,
             terminal: terminal(
                 foreground: "#c6d0f5", background: "#303446", cursor: "#f2d5cf", cursorText: "#232634",
                 selectionForeground: "#c6d0f5", selectionBackground: "#44495d",
@@ -121,14 +238,7 @@ enum BessieThemeRegistry {
             id: .catppuccinMacchiato,
             name: "Catppuccin Macchiato",
             scheme: .dark,
-            palette: palette(
-                desk: "#181926", window: "#1e2030", background: "#24273a", rail: "#1e2030", panel: "#363a4f", inset: "#1e2030",
-                code: "#181926", codeText: "#cad3f5", codeSubtle: "#a5adcb", strong: "#f4dbd6", text: "#cad3f5", subtle: "#a5adcb", faint: "#8087a2",
-                border: "#a5adcb", borderOpacity: 0.16, borderStrong: "#b8c0e0", borderStrongOpacity: 0.28, hover: "#cad3f5", hoverOpacity: 0.07, selected: "#8aadf4", selectedOpacity: 0.17,
-                accent: "#8aadf4", accentSoft: "#8aadf4", accentSoftOpacity: 0.16, accentForeground: "#181926",
-                blocked: "#ed8796", running: "#8aadf4", done: "#a6da95", idle: "#6e738d",
-                diffAdded: "#a6da95", diffAddedPlate: "#a6da95", diffRemoved: "#ed8796", diffRemovedPlate: "#ed8796", diffHunk: "#8aadf4", diffHunkPlate: "#8aadf4"
-            ),
+            palette: catppuccinMapping(for: .macchiato).palette,
             terminal: terminal(
                 foreground: "#cad3f5", background: "#24273a", cursor: "#f4dbd6", cursorText: "#181926",
                 selectionForeground: "#cad3f5", selectionBackground: "#3a3e53",
@@ -139,14 +249,7 @@ enum BessieThemeRegistry {
             id: .catppuccinMocha,
             name: "Catppuccin Mocha",
             scheme: .dark,
-            palette: palette(
-                desk: "#11111b", window: "#181825", background: "#1e1e2e", rail: "#181825", panel: "#313244", inset: "#181825",
-                code: "#11111b", codeText: "#cdd6f4", codeSubtle: "#a6adc8", strong: "#f5e0dc", text: "#cdd6f4", subtle: "#a6adc8", faint: "#7f849c",
-                border: "#a6adc8", borderOpacity: 0.16, borderStrong: "#bac2de", borderStrongOpacity: 0.28, hover: "#cdd6f4", hoverOpacity: 0.07, selected: "#89b4fa", selectedOpacity: 0.17,
-                accent: "#89b4fa", accentSoft: "#89b4fa", accentSoftOpacity: 0.16, accentForeground: "#11111b",
-                blocked: "#f38ba8", running: "#89b4fa", done: "#a6e3a1", idle: "#6c7086",
-                diffAdded: "#a6e3a1", diffAddedPlate: "#a6e3a1", diffRemoved: "#f38ba8", diffRemovedPlate: "#f38ba8", diffHunk: "#89b4fa", diffHunkPlate: "#89b4fa"
-            ),
+            palette: catppuccinMapping(for: .mocha).palette,
             terminal: terminal(
                 foreground: "#cdd6f4", background: "#1e1e2e", cursor: "#f5e0dc", cursorText: "#11111b",
                 selectionForeground: "#cdd6f4", selectionBackground: "#353749",
@@ -212,27 +315,67 @@ enum BessieThemeRegistry {
         )
     }
 
-    private static func palette(
-        desk: String, window: String, background: String, rail: String, panel: String, inset: String,
-        code: String, codeText: String, codeSubtle: String, strong: String, text: String, subtle: String, faint: String,
-        border: String, borderOpacity: Double, borderStrong: String, borderStrongOpacity: Double,
-        hover: String, hoverOpacity: Double, selected: String, selectedOpacity: Double,
-        accent: String, accentSoft: String, accentSoftOpacity: Double, accentForeground: String,
-        blocked: String, running: String, done: String, idle: String,
-        diffAdded: String, diffAddedPlate: String, diffRemoved: String, diffRemovedPlate: String,
-        diffHunk: String, diffHunkPlate: String
-    ) -> BessiePalette {
-        BessiePalette(
-            desk: color(desk), window: color(window), background: color(background), rail: color(rail), panel: color(panel), inset: color(inset),
-            code: color(code), codeText: color(codeText), codeSubtle: color(codeSubtle),
-            strong: color(strong), text: color(text), subtle: color(subtle), faint: color(faint),
-            border: color(border, opacity: borderOpacity), borderStrong: color(borderStrong, opacity: borderStrongOpacity),
-            hover: color(hover, opacity: hoverOpacity), selected: color(selected, opacity: selectedOpacity),
-            accent: color(accent), accentSoft: color(accentSoft, opacity: accentSoftOpacity), accentForeground: color(accentForeground),
-            blocked: color(blocked), running: color(running), done: color(done), idle: color(idle),
-            diffAdded: color(diffAdded), diffAddedPlate: color(diffAddedPlate, opacity: 0.20),
-            diffRemoved: color(diffRemoved), diffRemovedPlate: color(diffRemovedPlate, opacity: 0.20),
-            diffHunk: color(diffHunk), diffHunkPlate: color(diffHunkPlate, opacity: 0.20)
+    static func catppuccinMapping(for flavor: CatppuccinFlavor) -> CatppuccinSemanticMapping {
+        func value(
+            _ source: CatppuccinColorName,
+            alpha: Double = 1,
+            derivative: CatppuccinAccessibilityDerivative? = nil
+        ) -> CatppuccinSemanticValue {
+            precondition(derivative == nil || flavor == .latte)
+            precondition(derivative == nil || derivative?.source == source)
+            return CatppuccinSemanticValue(
+                source: source,
+                alpha: alpha,
+                derivative: derivative,
+                hex: derivative?.hex ?? CatppuccinPalette.v1_8_0[flavor][source]!.hex
+            )
+        }
+
+        let latte = flavor == .latte
+        let values: [BessieSemanticColor.Role: CatppuccinSemanticValue] = [
+            .desk: value(.crust), .window: value(.mantle), .background: value(.base),
+            .rail: value(.mantle), .panel: value(.surface0), .inset: value(.mantle),
+            .code: value(.crust), .codeText: value(.text), .codeSubtle: value(.subtext0),
+            .strong: value(.text), .text: value(.subtext1), .subtle: value(.subtext0),
+            .faint: value(.overlay1), .border: value(.overlay0, alpha: 0.20),
+            .borderStrong: value(.overlay0, alpha: 0.40),
+            .activeBorder: value(.lavender, derivative: latte ? .latteActiveBorder : nil),
+            .hover: value(.overlay2, alpha: 0.10), .selected: value(.overlay2, alpha: 0.25),
+            .accent: value(.blue), .accentSoft: value(.blue, alpha: 0.15),
+            .accentForeground: value(.base, derivative: latte ? .latteOnBlue : nil),
+            .link: value(.blue, derivative: latte ? .latteLink : nil),
+            .controlTint: value(.blue), .insertionPoint: value(.rosewater),
+            .destructive: value(.red), .blocked: value(.red), .running: value(.blue),
+            .done: value(.green), .idle: value(.overlay0),
+            .diffAdded: value(.green, derivative: latte ? .latteDiffAdded : nil),
+            .diffAddedPlate: value(.green, alpha: 0.20),
+            .diffRemoved: value(.red, derivative: latte ? .latteDiffRemoved : nil),
+            .diffRemovedPlate: value(.red, alpha: 0.20),
+            .diffHunk: value(.peach, derivative: latte ? .latteDiffHunk : nil),
+            .diffHunkPlate: value(.peach, alpha: 0.20),
+        ]
+        func mapped(_ role: BessieSemanticColor.Role) -> Color {
+            let semantic = values[role]!
+            return color(semantic.hex, opacity: semantic.alpha)
+        }
+
+        return CatppuccinSemanticMapping(
+            values: values,
+            palette: BessiePalette(
+                desk: mapped(.desk), window: mapped(.window), background: mapped(.background),
+                rail: mapped(.rail), panel: mapped(.panel), inset: mapped(.inset),
+                code: mapped(.code), codeText: mapped(.codeText), codeSubtle: mapped(.codeSubtle),
+                strong: mapped(.strong), text: mapped(.text), subtle: mapped(.subtle), faint: mapped(.faint),
+                border: mapped(.border), borderStrong: mapped(.borderStrong), activeBorder: mapped(.activeBorder),
+                hover: mapped(.hover), selected: mapped(.selected), accent: mapped(.accent),
+                accentSoft: mapped(.accentSoft), accentForeground: mapped(.accentForeground),
+                destructive: mapped(.destructive), link: mapped(.link), controlTint: mapped(.controlTint),
+                insertionPoint: mapped(.insertionPoint), blocked: mapped(.blocked), running: mapped(.running),
+                done: mapped(.done), idle: mapped(.idle), diffAdded: mapped(.diffAdded),
+                diffAddedPlate: mapped(.diffAddedPlate), diffRemoved: mapped(.diffRemoved),
+                diffRemovedPlate: mapped(.diffRemovedPlate), diffHunk: mapped(.diffHunk),
+                diffHunkPlate: mapped(.diffHunkPlate)
+            )
         )
     }
 

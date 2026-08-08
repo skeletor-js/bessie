@@ -24,7 +24,7 @@ struct RuntimeSettingsView: View {
             .padding(.vertical, 12)
             .overlay(alignment: .bottom) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
             if let error = model.runtimePersistenceError {
-                Text(error).font(.system(size: 11)).foregroundStyle(.red)
+                Text(error).font(.system(size: 11)).foregroundStyle(BessieDesign.destructive)
             }
         }
     }

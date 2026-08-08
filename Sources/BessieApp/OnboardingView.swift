@@ -164,6 +164,7 @@ struct OnboardingView: View {
                     TextField("/absolute/remote/folder", text: $path)
                         .focused($pathFocused)
                         .textFieldStyle(.roundedBorder)
+                        .tint(BessieDesign.insertionPoint)
                         .accessibilityLabel("Initial workspace folder")
                 }
                 .padding(.top, 4)
@@ -185,8 +186,7 @@ struct OnboardingView: View {
             }
             .padding(.horizontal, 15).frame(height: 70)
             .background(BessieDesign.panel)
-            .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.accent : BessieDesign.border, lineWidth: 1) }
-            .overlay { RoundedRectangle(cornerRadius: 7).stroke(selected ? BessieDesign.accentSoft : BessieSemanticColor.clear, lineWidth: 3) }
+            .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1) }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -213,8 +213,7 @@ struct OnboardingView: View {
         }
         .frame(height: 66)
         .background(BessieDesign.panel)
-        .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.accent : BessieDesign.border, lineWidth: 1) }
-        .overlay { RoundedRectangle(cornerRadius: 7).stroke(selected ? BessieDesign.accentSoft : BessieSemanticColor.clear, lineWidth: 3) }
+        .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1) }
         .accessibilityLabel(selected ? "Remote herd, \(settings.selectedConnection.name)" : "Join a remote herd")
         .accessibilityValue(selected ? "Selected" : "Not selected")
     }

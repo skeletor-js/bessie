@@ -255,9 +255,10 @@ private struct BessieConfigurationBlockedView: View {
                 .font(.title2.weight(.semibold))
             Text(message ?? "Bessie could not safely load its herd configuration.")
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(BessieDesign.subtle)
                 .frame(maxWidth: 520)
             Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                .tint(BessieDesign.controlTint)
                 .keyboardShortcut(.defaultAction)
         }
         .padding(40)
@@ -1919,7 +1920,6 @@ struct ConnectView: View {
                 .padding(.bottom, max(2, density.cardGap - 2))
             }
         }
-        .tint(BessieDesign.strong)
     }
 
     private static var bundledRuntimeURL: URL? {

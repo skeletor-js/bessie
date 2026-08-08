@@ -609,7 +609,6 @@ struct BessieSettingsView: View {
                 .frame(width: 720, height: 620)
             }
         }
-        .tint(BessieDesign.strong)
         .navigationTitle("Bessie settings")
         .task { notifications.refreshAuthorization() }
         .onAppear {
@@ -632,6 +631,7 @@ struct BessieSettingsView: View {
                     model.setConnectionEnabled(connectionID: connectionPendingDisable.id, enabled: false)
                     self.connectionPendingDisable = nil
                 }
+                .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { connectionPendingDisable = nil }
         } message: {
@@ -650,6 +650,7 @@ struct BessieSettingsView: View {
                     model.removeConnection(connectionPendingRemoval.id)
                     self.connectionPendingRemoval = nil
                 }
+                .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { connectionPendingRemoval = nil }
         } message: {
@@ -941,6 +942,7 @@ struct BessieSettingsView: View {
                 .foregroundStyle(BessieDesign.subtle)
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
+                .tint(BessieDesign.insertionPoint)
                 .font(.system(size: 12, design: .monospaced))
                 .padding(.horizontal, 10)
                 .frame(height: 34)
@@ -997,6 +999,7 @@ struct BessieAppearanceSettingsControls: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .tint(BessieDesign.controlTint)
                 .frame(width: 220)
                 .accessibilityLabel("Theme")
             }
@@ -1176,7 +1179,7 @@ private struct BessieSettingsSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             Capsule()
-                .fill(configuration.isOn ? BessieDesign.strong : BessieDesign.inset)
+                .fill(configuration.isOn ? BessieDesign.controlTint : BessieDesign.inset)
                 .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                     Circle().fill(configuration.isOn ? BessieDesign.background : BessieDesign.subtle)
                         .frame(width: 16, height: 16).padding(3)

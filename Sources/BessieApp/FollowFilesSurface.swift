@@ -8,7 +8,7 @@ struct FollowFilesSurface: View {
         Group {
             switch model.availability {
             case .loading:
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity)
             case .remoteUnsupported:
                 message(
                     symbol: "externaldrive.badge.xmark",
@@ -120,7 +120,7 @@ struct FollowFilesSurface: View {
 
     @ViewBuilder private var preview: some View {
         if model.previewLoading {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let preview = model.preview {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {

@@ -25,6 +25,79 @@ final class BessieVisualFoundationTests: XCTestCase {
         XCTAssertEqual(BessieDesign.panelDuration, 0.28)
     }
 
+    func testSemanticDesignFacadeExposesIntentSpecificThemeRoles() {
+        XCTAssertEqual(BessieDesign.activeBorder.role, .activeBorder)
+        XCTAssertEqual(BessieDesign.destructive.role, .destructive)
+        XCTAssertEqual(BessieDesign.link.role, .link)
+        XCTAssertEqual(BessieDesign.controlTint.role, .controlTint)
+        XCTAssertEqual(BessieDesign.insertionPoint.role, .insertionPoint)
+    }
+
+    func testNativeSemanticCallersOwnSelectionControlAndDestructiveIntent() throws {
+        let design = try appSource("BessieDesignSystem.swift")
+        let app = try appSource("BessieApp.swift")
+        let settings = try appSource("BessieSettings.swift")
+        let palette = try appSource("BessieCommandPalette.swift")
+        let onboarding = try appSource("OnboardingView.swift")
+        let product = try appSource("ProductSurfaces.swift")
+        let runtime = try appSource("RuntimeSettingsView.swift")
+
+        for source in [design, app, settings, product] {
+            XCTAssertFalse(source.contains(".tint(BessieDesign.strong)"))
+        }
+        XCTAssertTrue(design.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertFalse(design.contains("static let red = BessieSemanticColor(.red)"))
+        XCTAssertFalse(app.contains(".foregroundStyle(.secondary)"))
+        XCTAssertTrue(palette.contains(".background(selected ? BessieDesign.selected : BessieSemanticColor.clear)"))
+        XCTAssertTrue(onboarding.contains("selected ? BessieDesign.activeBorder : BessieDesign.border"))
+        XCTAssertFalse(product.contains("BessieDesign.selected.opacity"))
+        XCTAssertTrue(product.contains(".background(BessieDesign.accentSoft)"))
+        XCTAssertTrue(product.contains("selected ? BessieDesign.activeBorder"))
+        XCTAssertTrue(product.contains("destructive ? BessieDesign.destructive : BessieDesign.text"))
+        XCTAssertTrue(product.contains("hovering ? BessieDesign.hover : BessieSemanticColor.clear"))
+        XCTAssertTrue(product.contains("focused ? BessieDesign.activeBorder : BessieSemanticColor.clear"))
+        XCTAssertTrue(runtime.contains(".foregroundStyle(BessieDesign.destructive)"))
+        XCTAssertFalse(runtime.contains(".foregroundStyle(.red)"))
+        XCTAssertTrue(settings.contains("configuration.isOn ? BessieDesign.controlTint : BessieDesign.inset"))
+    }
+
+    func testNativeSemanticCallersOwnCaretLinkProgressAndDiffRoles() throws {
+        let settings = try appSource("BessieSettings.swift")
+        let palette = try appSource("BessieCommandPalette.swift")
+        let onboarding = try appSource("OnboardingView.swift")
+        let product = try appSource("ProductSurfaces.swift")
+        let markdown = try appSource("MarkdownFileEditor.swift")
+        let follow = try appSource("FollowFilesSurface.swift")
+
+        XCTAssertTrue(settings.contains(".tint(BessieDesign.controlTint)"))
+        XCTAssertTrue(settings.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertTrue(palette.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertTrue(onboarding.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertTrue(product.contains(".tint(BessieDesign.controlTint)"))
+        XCTAssertTrue(product.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertGreaterThanOrEqual(product.components(separatedBy: ".tint(BessieDesign.running)").count - 1, 4)
+        XCTAssertGreaterThanOrEqual(follow.components(separatedBy: ".tint(BessieDesign.running)").count - 1, 2)
+        XCTAssertTrue(markdown.contains(".tint(BessieDesign.link)"))
+        XCTAssertTrue(markdown.contains(".tint(BessieDesign.controlTint)"))
+        XCTAssertTrue(markdown.contains(".tint(BessieDesign.insertionPoint)"))
+        XCTAssertTrue(markdown.contains(".tint(BessieDesign.running)"))
+
+        XCTAssertTrue(follow.contains("return BessieDesign.diffHunk"))
+        XCTAssertTrue(follow.contains("return BessieDesign.diffHunkPlate"))
+        XCTAssertTrue(follow.contains("return BessieDesign.diffAdded"))
+        XCTAssertTrue(follow.contains("return BessieDesign.diffAddedPlate"))
+        XCTAssertTrue(follow.contains("return BessieDesign.diffRemoved"))
+        XCTAssertTrue(follow.contains("return BessieDesign.diffRemovedPlate"))
+    }
+
+    func testAccessibilityEnvironmentsDoNotSelectAlternateSemanticColorBranches() {
+        XCTAssertEqual(BessieDesign.selected.role, .selected)
+        XCTAssertEqual(BessieDesign.blocked.role, .blocked)
+        XCTAssertEqual(BessieDesign.destructive.role, .destructive)
+        XCTAssertEqual(BessieStatusPresentation.needsYou.accessibilityLabel, "Needs you, filled circle")
+        XCTAssertEqual(BessieStateGeometry.needsYouFilledCircle.rawValue, "needsYouFilledCircle")
+    }
+
     func testOnboardingWindowTitlesMatchTheBinding() {
         XCTAssertEqual(BessieOnboardingWindowChrome.splashTitle, "bessie")
         XCTAssertEqual(BessieOnboardingWindowChrome.welcomeTitle, "welcome to bessie")
@@ -395,6 +468,17 @@ final class BessieVisualFoundationTests: XCTestCase {
             try dark.write(to: URL(fileURLWithPath: evidenceDirectory).appendingPathComponent("cowprint-static-dark.png"))
             try light.write(to: URL(fileURLWithPath: evidenceDirectory).appendingPathComponent("cowprint-static-light.png"))
         }
+    }
+
+    private func appSource(_ name: String) throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/BessieApp/\(name)"),
+            encoding: .utf8
+        )
     }
 
     private func contrastRatio(foreground: Double, background: Double) -> Double {

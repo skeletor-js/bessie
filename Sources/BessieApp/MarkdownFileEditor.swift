@@ -131,6 +131,7 @@ struct MarkdownFileEditor: View {
                     Text("Edit").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .tint(BessieDesign.controlTint)
                 .frame(width: 180)
                 Spacer()
                 if text != savedText { Text("Unsaved").foregroundStyle(BessieDesign.accent) }
@@ -141,6 +142,7 @@ struct MarkdownFileEditor: View {
             Divider()
             if editing {
                 TextEditor(text: $text)
+                    .tint(BessieDesign.insertionPoint)
                     .font(.system(size: 13, design: .monospaced))
                     .padding(8)
             } else {
@@ -152,6 +154,7 @@ struct MarkdownFileEditor: View {
         }
         .alert("File changed on disk", isPresented: $conflict) {
             Button("Reload", role: .destructive) { reload() }
+                .foregroundStyle(BessieDesign.destructive)
             Button("Overwrite") { performSave(overwrite: true) }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Reload the newer version or explicitly overwrite it with your draft.") }
@@ -202,6 +205,7 @@ private struct NativeMarkdownPreview: View {
                 NSWorkspace.shared.open(url)
                 return .handled
             })
+            .tint(BessieDesign.link)
         case .failure(let error):
             ContentUnavailableView(
                 "Markdown preview unavailable",
@@ -305,6 +309,7 @@ private struct MarkdownImagePreview: View {
             } else {
                 ProgressView("Loading \(reference.lastPathComponent)…")
                     .controlSize(.small)
+                    .tint(BessieDesign.running)
             }
         }
         .task(id: reference) {

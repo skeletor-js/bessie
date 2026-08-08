@@ -57,17 +57,31 @@ fallback for unknown agent IDs. Shell and non-agent processes do not use it.
 Existing Bessie cow/logo/cowprint assets retain their existing project
 provenance. No cold-open video is included here; that belongs to plan unit U8.
 
-## Catppuccin terminal palettes
+## Catppuccin native and terminal palettes
 
-Bessie includes adapted terminal palette values for Catppuccin Latte, Frappé,
-Macchiato, and Mocha from the official Catppuccin Ghostty port, pinned at commit
+Bessie's native Latte, Frappé, Macchiato, and Mocha palettes use the official
+Catppuccin palette v1.8.0 data:
+
+https://github.com/catppuccin/palette/blob/v1.8.0/palette.json
+
+Native semantic assignments follow the Catppuccin style guide pinned at commit
+`a310b246a3cfcdadb6f5b174d879743e084e87ea`:
+
+https://github.com/catppuccin/catppuccin/blob/a310b246a3cfcdadb6f5b174d879743e084e87ea/docs/style-guide.md
+
+Thanks to madeofbees for calling attention to Catppuccin semantic fidelity in
+Bessie's native chrome.
+
+Bessie also includes adapted terminal palette values from the official
+Catppuccin Ghostty port, pinned at commit
 `5a58926563ddacbde4a12b4a347464c2c6945393`:
 
 https://github.com/catppuccin/ghostty/tree/5a58926563ddacbde4a12b4a347464c2c6945393
 
-Bessie authors its own native application mappings around those palette values.
-No Ghostty theme package, editor extension, font, icon, or marketplace asset is
-included. Catppuccin does not endorse Bessie.
+Bessie authors its own native application mappings and bounded accessibility
+derivatives around the canonical palette. No Ghostty theme package, editor
+extension, font, icon, or marketplace asset is included. Catppuccin and its
+contributors do not endorse Bessie.
 
 MIT License
 

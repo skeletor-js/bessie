@@ -421,6 +421,99 @@ private struct NamedTopologyRequest: Identifiable, Equatable {
     }
 }
 
+private struct CatppuccinAcceptancePreview: View {
+    @FocusState private var insertionFocused: Bool
+    @State private var fieldValue = "Rosewater insertion point"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Catppuccin interaction acceptance")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(BessieDesign.strong)
+                Text("Deterministic installed-app semantic states")
+                    .foregroundStyle(BessieDesign.subtle)
+            }
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 12) {
+                    acceptanceRow("Hover treatment", detail: "Unselected row", fill: BessieDesign.hover)
+                    acceptanceRow(
+                        "Selected + active",
+                        detail: "Overlay fill with Lavender outline",
+                        fill: BessieDesign.selected,
+                        border: BessieDesign.activeBorder
+                    )
+                    GroupBox("Native controls and focus") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle("Blue control tint", isOn: .constant(true))
+                                .toggleStyle(.switch)
+                                .tint(BessieDesign.controlTint)
+                            Link("Blue semantic link", destination: URL(string: "https://bessie.dev")!)
+                                .foregroundStyle(BessieDesign.link)
+                            TextField("Insertion-point proof", text: $fieldValue)
+                                .textFieldStyle(.roundedBorder)
+                                .tint(BessieDesign.insertionPoint)
+                                .focused($insertionFocused)
+                        }
+                        .padding(8)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Diff and state semantics")
+                        .font(.headline)
+                        .foregroundStyle(BessieDesign.strong)
+                    semanticPlate("@@ focused hunk @@", foreground: BessieDesign.diffHunk, plate: BessieDesign.diffHunkPlate)
+                    semanticPlate("+ Added line", foreground: BessieDesign.diffAdded, plate: BessieDesign.diffAddedPlate)
+                    semanticPlate("− Removed line", foreground: BessieDesign.diffRemoved, plate: BessieDesign.diffRemovedPlate)
+                    Label("Destructive/error treatment", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(BessieDesign.destructive)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(BessieDesign.panel, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(BessieDesign.background)
+        .onAppear {
+            insertionFocused = true
+            BessieDiagnosticLog.append("Catppuccin interaction preview ready focus=insertion-point")
+        }
+    }
+
+    private func acceptanceRow(
+        _ title: String,
+        detail: String,
+        fill: BessieSemanticColor,
+        border: BessieSemanticColor = BessieDesign.border
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).fontWeight(.semibold).foregroundStyle(BessieDesign.strong)
+            Text(detail).font(.caption).foregroundStyle(BessieDesign.subtle)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(fill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay { RoundedRectangle(cornerRadius: 8).stroke(border, lineWidth: 2) }
+    }
+
+    private func semanticPlate(
+        _ text: String,
+        foreground: BessieSemanticColor,
+        plate: BessieSemanticColor
+    ) -> some View {
+        Text(text)
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(foreground)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(plate, in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 struct BessieProductShell: View {
     @ObservedObject var model: ConnectionViewModel
     @ObservedObject var fleet: ConnectionFleetViewModel
@@ -839,7 +932,6 @@ struct BessieProductShell: View {
         .padding(.bottom, density.shellBottomInset)
         .background(Color.clear)
         .foregroundStyle(BessieDesign.text)
-        .tint(BessieDesign.strong)
         .allowsHitTesting(!showCommandPalette)
         .accessibilityHidden(showCommandPalette)
         .overlay {
@@ -1010,6 +1102,7 @@ struct BessieProductShell: View {
                     self.shortcutClose = nil
                     shortcutCloseConnectionID = nil
                 }
+                .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { cancelShortcutClose() }
         } message: { Text(shortcutClose?.message(in: projection) ?? "") }
@@ -1023,6 +1116,7 @@ struct BessieProductShell: View {
         ) {
             if let item = topologyWorkspaceClose {
                 Button("Close \(item.summary.label)", role: .destructive) { closeTopologyWorkspace(item) }
+                    .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { topologyWorkspaceClose = nil }
         } message: {
@@ -1042,6 +1136,7 @@ struct BessieProductShell: View {
         ) {
             if let item = topologyPaneClose {
                 Button("Close \(item.pane.presentationTitle)", role: .destructive) { closeTopologyPane(item) }
+                    .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { topologyPaneClose = nil }
         } message: {
@@ -1060,6 +1155,7 @@ struct BessieProductShell: View {
                 topologyPaneController(topologyPaneTakeover)?.takeOver()
                 topologyPaneTakeover = nil
             }
+            .foregroundStyle(BessieDesign.destructive)
         } message: {
             Text("The other terminal client will lose control of this pane.")
         }
@@ -1118,7 +1214,10 @@ struct BessieProductShell: View {
     }
 
     @ViewBuilder private var productContent: some View {
-        switch destination {
+        if ProcessInfo.processInfo.environment["BESSIE_DESIGN_PREVIEW"]?.lowercased() == "catppuccin-acceptance" {
+            CatppuccinAcceptancePreview()
+        } else {
+            switch destination {
         case .herd:
             HerdSurface(
                 fleet: fleet,
@@ -1187,6 +1286,7 @@ struct BessieProductShell: View {
             )
         case .settings:
             BessieSettingsView(embedded: true, runtimeDiagnostic: model.runtimeDiagnostic)
+            }
         }
     }
 
@@ -1606,7 +1706,7 @@ struct BessieProductShell: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(minHeight: 42)
-                .background(selected ? BessieDesign.selected.opacity(0.62) : BessieSemanticColor.clear)
+                .background(selected ? BessieDesign.selected : BessieSemanticColor.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .contentShape(Rectangle())
             }
@@ -1617,6 +1717,7 @@ struct BessieProductShell: View {
                 Button("Rename") { renameWorkspace(item) }
                 Divider()
                 Button("Close session", role: .destructive) { topologyWorkspaceClose = item }
+                    .foregroundStyle(BessieDesign.destructive)
             }
 
             if selected {
@@ -1718,7 +1819,7 @@ struct BessieProductShell: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background(BessieDesign.selected.opacity(0.72))
+            .background(BessieDesign.accentSoft)
             .overlay {
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(BessieDesign.border, lineWidth: 1)
@@ -3737,6 +3838,7 @@ private struct BessieZenSurface: View {
                         }
                     } else {
                         ProgressView()
+                            .tint(BessieDesign.running)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(BessieDesign.code)
                     }
@@ -4072,12 +4174,13 @@ private struct AgentDetailSurface: View {
                                 controller.updateMouseCapture(agent: pane.agent, foregroundCWD: cwd)
                             }
                         } else {
-                            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
+                            ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
                         }
 
                         HStack(spacing: 8) {
                             TextField(pane.agent == nil ? "Send input" : "Send a prompt", text: $prompt)
                                 .textFieldStyle(.plain)
+                                .tint(BessieDesign.insertionPoint)
                                 .font(.system(size: 11.5, design: .monospaced))
                                 .padding(.horizontal, 10)
                                 .frame(height: 32)
@@ -4128,6 +4231,7 @@ private struct AgentDetailSurface: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .tint(BessieDesign.controlTint)
                 .frame(width: 180)
                 Spacer()
             }
@@ -4426,6 +4530,7 @@ private struct WorkspacesSurface: View {
                                     Button("Close workspace", role: .destructive) {
                                         closeWorkspace = projection.workspaces.first { $0.id == item.id }
                                     }
+                                    .foregroundStyle(BessieDesign.destructive)
                                 }
                                 .draggable(BessieDragPayload.workspace(id: item.id).encoded) {
                                     Text(item.label)
@@ -4451,7 +4556,10 @@ private struct WorkspacesSurface: View {
         }
         .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
         .confirmationDialog("Close workspace?", isPresented: Binding(get: { closeWorkspace != nil }, set: { if !$0 { closeWorkspace = nil } }), titleVisibility: .visible) {
-            if let item = closeWorkspace { Button("Close \(item.label)", role: .destructive) { model.perform(.workspaceClose(id: item.id), confirmDestructive: true); closeWorkspace = nil } }
+            if let item = closeWorkspace {
+                Button("Close \(item.label)", role: .destructive) { model.perform(.workspaceClose(id: item.id), confirmDestructive: true); closeWorkspace = nil }
+                    .foregroundStyle(BessieDesign.destructive)
+            }
             Button("Cancel", role: .cancel) { closeWorkspace = nil }
         } message: {
             Text(closeWorkspace.map { projection.confirmationForClosingWorkspace(id: $0.id).message } ?? "")
@@ -4707,6 +4815,7 @@ private struct NewProcessSheet: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
+                        .tint(BessieDesign.controlTint)
 
                         if agentMode {
                             BessieSectionLabel("AGENTS")
@@ -4720,6 +4829,7 @@ private struct NewProcessSheet: View {
                                     ProgressView("Loading agents…")
                                         .font(.system(size: 11))
                                         .controlSize(.small)
+                                        .tint(BessieDesign.running)
                                 }
                             } else {
                                 ScrollView {
@@ -4752,7 +4862,7 @@ private struct NewProcessSheet: View {
                                                 .background(selectedKind == item.kind ? BessieDesign.selected : BessieDesign.panel)
                                                 .overlay {
                                                     RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
-                                                        .stroke(selectedKind == item.kind ? BessieDesign.strong.opacity(0.55) : BessieDesign.border, lineWidth: 1)
+                                                        .stroke(selectedKind == item.kind ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1)
                                                 }
                                                 .contentShape(Rectangle())
                                             }
@@ -4806,6 +4916,7 @@ private struct NewProcessSheet: View {
                                 }
                                 .labelsHidden()
                                 .pickerStyle(.menu)
+                                .tint(BessieDesign.controlTint)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
@@ -5179,27 +5290,22 @@ private struct ProductPane: View {
                     controller.updateMouseCapture(agent: pane?.agent, foregroundCWD: cwd)
                 }
             } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
+                ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity).background(BessieDesign.code)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: BessieDesign.paneRadius))
         .overlay {
             RoundedRectangle(cornerRadius: BessieDesign.paneRadius)
                 .stroke(
-                    selected ? BessieDesign.accent : (semanticState == .blocked ? BessieDesign.blocked.opacity(0.55) : ProductPalette.border),
+                    selected ? BessieDesign.activeBorder : (semanticState == .blocked ? BessieDesign.blocked.opacity(0.55) : ProductPalette.border),
                     lineWidth: 1
                 )
-        }
-        .overlay {
-            if selected {
-                RoundedRectangle(cornerRadius: BessieDesign.paneRadius + 2)
-                    .stroke(BessieDesign.accentSoft, lineWidth: 3)
-            }
         }
         .contextMenu { paneMenu }
         .alert("Take over this pane?", isPresented: $confirmingTakeover) {
             Button("Cancel", role: .cancel) {}
             Button("Take over", role: .destructive) { controller?.takeOver() }
+                .foregroundStyle(BessieDesign.destructive)
         } message: {
             Text("The other terminal client will lose control of this pane.")
         }
@@ -5267,6 +5373,7 @@ struct PaneContextMenuContent: View {
         Button("Rename", action: rename)
         Divider()
         Button("Close pane", role: .destructive, action: close)
+            .foregroundStyle(BessieDesign.destructive)
     }
 }
 
@@ -5323,6 +5430,7 @@ private struct RecoverableTerminalSurface: View {
         .alert("Take over this pane?", isPresented: $confirmingTakeover) {
             Button("Cancel", role: .cancel) {}
             Button("Take over", role: .destructive) { controller.takeOver() }
+                .foregroundStyle(BessieDesign.destructive)
         } message: {
             Text("The other terminal client will lose control of this pane.")
         }
@@ -5402,6 +5510,7 @@ private struct TopologyNameSheet: View {
             Text(request.title).font(.system(size: 20, weight: .medium))
             TextField(request.fieldLabel, text: $name)
                 .textFieldStyle(.roundedBorder)
+                .tint(BessieDesign.insertionPoint)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -5416,6 +5525,7 @@ private struct TopologyNameSheet: View {
         }
         .padding(24)
         .frame(width: 430)
+        .tint(BessieDesign.controlTint)
     }
 }
 
@@ -5428,13 +5538,14 @@ private struct ProductEditorSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(title).font(.system(size: 20, weight: .medium))
             if case .createWorkspace = editor {
-                TextField("Optional label", text: $label).textFieldStyle(.roundedBorder)
+                TextField("Optional label", text: $label).textFieldStyle(.roundedBorder).tint(BessieDesign.insertionPoint)
             } else {
-                TextField("Name", text: $label).textFieldStyle(.roundedBorder)
+                TextField("Name", text: $label).textFieldStyle(.roundedBorder).tint(BessieDesign.insertionPoint)
             }
             HStack { Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button(editor.actionTitle) { submit(action); dismiss() }.keyboardShortcut(.defaultAction).disabled(editor.requiresLabel && label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
         }
         .padding(24).frame(width: 430)
+        .tint(BessieDesign.controlTint)
         .onAppear { label = editor.initialValue }
     }
     private var title: String { switch editor { case .createWorkspace: "Create workspace"; case .renameWorkspace: "Rename workspace"; case .renameTab: "Rename tab"; case .renamePane: "Rename pane" } }
@@ -5498,11 +5609,15 @@ struct BessiePopoverActionRow: View {
         Button(action: action) {
             Label(title, systemImage: symbol)
                 .font(.system(size: 11.5, weight: destructive ? .medium : .regular))
-                .foregroundStyle(destructive ? BessieSemanticColor.red : BessieDesign.text)
+                .foregroundStyle(destructive ? BessieDesign.destructive : BessieDesign.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8)
                 .frame(height: 28)
-                .background(hovering || focused ? BessieDesign.selected : BessieSemanticColor.clear)
+                .background(hovering ? BessieDesign.hover : BessieSemanticColor.clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
+                        .stroke(focused ? BessieDesign.activeBorder : BessieSemanticColor.clear, lineWidth: 1)
+                }
                 .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
                 .contentShape(Rectangle())
         }

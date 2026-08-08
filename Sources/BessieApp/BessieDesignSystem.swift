@@ -26,11 +26,16 @@ struct BessiePalette {
     let faint: Color
     let border: Color
     let borderStrong: Color
+    let activeBorder: Color
     let hover: Color
     let selected: Color
     let accent: Color
     let accentSoft: Color
     let accentForeground: Color
+    let destructive: Color
+    let link: Color
+    let controlTint: Color
+    let insertionPoint: Color
     let blocked: Color
     let running: Color
     let done: Color
@@ -76,16 +81,16 @@ struct BessieSemanticColor: @preconcurrency ShapeStyle, View, Sendable {
     }
 
     static let clear = BessieSemanticColor(.clear)
-    static let red = BessieSemanticColor(.red)
 
-    enum Role: Sendable {
+    enum Role: Hashable, Sendable {
         case desk, window, background, rail, panel, inset
         case code, codeText, codeSubtle, strong, text, subtle, faint
-        case border, borderStrong, hover, selected
+        case border, borderStrong, activeBorder, hover, selected
         case accent, accentSoft, accentForeground
+        case destructive, link, controlTint, insertionPoint
         case blocked, running, done, idle
         case diffAdded, diffAddedPlate, diffRemoved, diffRemovedPlate, diffHunk, diffHunkPlate
-        case clear, red
+        case clear
 
         @MainActor
         func color(in palette: BessiePalette) -> Color {
@@ -105,11 +110,16 @@ struct BessieSemanticColor: @preconcurrency ShapeStyle, View, Sendable {
             case .faint: palette.faint
             case .border: palette.border
             case .borderStrong: palette.borderStrong
+            case .activeBorder: palette.activeBorder
             case .hover: palette.hover
             case .selected: palette.selected
             case .accent: palette.accent
             case .accentSoft: palette.accentSoft
             case .accentForeground: palette.accentForeground
+            case .destructive: palette.destructive
+            case .link: palette.link
+            case .controlTint: palette.controlTint
+            case .insertionPoint: palette.insertionPoint
             case .blocked: palette.blocked
             case .running: palette.running
             case .done: palette.done
@@ -121,7 +131,6 @@ struct BessieSemanticColor: @preconcurrency ShapeStyle, View, Sendable {
             case .diffHunk: palette.diffHunk
             case .diffHunkPlate: palette.diffHunkPlate
             case .clear: .clear
-            case .red: .red
             }
         }
     }
@@ -145,8 +154,9 @@ enum BessieDesign {
                 code: gray(8),
                 codeText: gray(245), codeSubtle: gray(166),
                 strong: gray(245), text: gray(182), subtle: gray(138), faint: gray(95),
-                border: Color.white.opacity(0.10), borderStrong: Color.white.opacity(0.19), hover: Color.white.opacity(0.055), selected: Color.white.opacity(0.10),
+                border: Color.white.opacity(0.10), borderStrong: Color.white.opacity(0.19), activeBorder: Color.white.opacity(0.19), hover: Color.white.opacity(0.055), selected: Color.white.opacity(0.10),
                 accent: .white, accentSoft: Color.white.opacity(0.12), accentForeground: .black,
+                destructive: .red, link: gray(245), controlTint: gray(245), insertionPoint: gray(245),
                 blocked: .white, running: Color(white: 0.604), done: Color(white: 0.863), idle: Color(white: 0.373),
                 diffAdded: Color(red: 0.45, green: 0.82, blue: 0.52),
                 diffAddedPlate: Color(red: 0.18, green: 0.42, blue: 0.22).opacity(0.28),
@@ -168,9 +178,11 @@ enum BessieDesign {
                 strong: gray(12), text: gray(58), subtle: gray(107), faint: gray(154),
                 border: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.12),
                 borderStrong: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.20),
+                activeBorder: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.20),
                 hover: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.05),
                 selected: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.07),
                 accent: gray(12), accentSoft: Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255).opacity(0.10), accentForeground: .white,
+                destructive: .red, link: gray(12), controlTint: gray(12), insertionPoint: gray(12),
                 blocked: Color(white: 0.047), running: Color(white: 0.416), done: Color(white: 0.165), idle: Color(white: 0.541),
                 diffAdded: Color(red: 0.15, green: 0.48, blue: 0.22),
                 diffAddedPlate: Color(red: 0.78, green: 0.94, blue: 0.80).opacity(0.55),
@@ -199,11 +211,16 @@ enum BessieDesign {
     static let faint = BessieSemanticColor(.faint)
     static let border = BessieSemanticColor(.border)
     static let borderStrong = BessieSemanticColor(.borderStrong)
+    static let activeBorder = BessieSemanticColor(.activeBorder)
     static let hover = BessieSemanticColor(.hover)
     static let selected = BessieSemanticColor(.selected)
     static let accent = BessieSemanticColor(.accent)
     static let accentSoft = BessieSemanticColor(.accentSoft)
     static let accentForeground = BessieSemanticColor(.accentForeground)
+    static let destructive = BessieSemanticColor(.destructive)
+    static let link = BessieSemanticColor(.link)
+    static let controlTint = BessieSemanticColor(.controlTint)
+    static let insertionPoint = BessieSemanticColor(.insertionPoint)
     static let blocked = BessieSemanticColor(.blocked)
     static let running = BessieSemanticColor(.running)
     static let done = BessieSemanticColor(.done)
@@ -590,7 +607,6 @@ struct BessieWindowRoot<Content: View>: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             content
-                .tint(BessieDesign.strong)
                 .mask {
                     if onboardingTitle == nil {
                         Color.white
@@ -1203,7 +1219,7 @@ private struct BessieInputModifier: ViewModifier {
             .textFieldStyle(.plain)
             .font(.system(size: 11.5, design: .monospaced))
             .foregroundStyle(BessieDesign.codeText)
-            .tint(BessieDesign.codeText)
+            .tint(BessieDesign.insertionPoint)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
             .background(BessieDesign.code)

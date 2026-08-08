@@ -359,6 +359,7 @@ struct BessieCommandPalette: View {
             BessieIconView(icon: .magnifyingGlass, size: 17)
                 .foregroundStyle(BessieDesign.subtle)
             TextField("Search commands", text: $model.query)
+                .tint(BessieDesign.insertionPoint)
                 .textFieldStyle(.plain)
                 .font(.system(size: Self.inputFontSize))
                 .focused($searchFocused)
@@ -535,7 +536,7 @@ private struct BessieCommandPaletteRow: View {
             }
             .padding(.horizontal, horizontalPadding)
             .frame(minHeight: density.rowHeight)
-            .background(selected ? BessieDesign.accentSoft : BessieSemanticColor.clear)
+            .background(selected ? BessieDesign.selected : BessieSemanticColor.clear)
             .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
             .contentShape(Rectangle())
         }

@@ -13,8 +13,13 @@ if [[ ${1:-} == --print-package-configuration && $# == 1 ]]; then
   printf 'variant=production\nbundle_identifier=%s\n' "$bundle_identifier"
   exit 0
 fi
+install_only=0
+if [[ ${1:-} == --install-only ]]; then
+  install_only=1
+  shift
+fi
 if [[ ${1:-} == --print-package-configuration || $# -gt 1 ]]; then
-  echo "Usage: $0 [mac-directory|--print-package-configuration]" >&2
+  echo "Usage: $0 [mac-directory] | $0 --install-only [mac-directory] | $0 --print-package-configuration" >&2
   exit 1
 fi
 
@@ -101,16 +106,20 @@ installed_app_sha=$(shasum -a 256 "$installed_app/Contents/MacOS/BessieApp" | aw
 echo "installed BessieApp sha256=$installed_app_sha"
 echo "installed matches packaged: yes"
 
-echo "=== relaunch installed app (normal user session) ==="
-/usr/bin/open -n "$installed_app"
-installed_owner=''
-for _ in {1..80}; do
-  installed_owner=$(bessie_assert_single_installed_owner "$installed_executable" 2>/dev/null || true)
-  [[ -z "$installed_owner" ]] || break
-  sleep 0.25
-done
-[[ -n "$installed_owner" ]]
-printf 'installed owner %s\n' "$installed_owner"
-echo "RELAUNCH_OK"
+if [[ "$install_only" == 0 ]]; then
+  echo "=== relaunch installed app (normal user session) ==="
+  /usr/bin/open -n "$installed_app"
+  installed_owner=''
+  for _ in {1..80}; do
+    installed_owner=$(bessie_assert_single_installed_owner "$installed_executable" 2>/dev/null || true)
+    [[ -z "$installed_owner" ]] || break
+    sleep 0.25
+  done
+  [[ -n "$installed_owner" ]]
+  printf 'installed owner %s\n' "$installed_owner"
+  echo "RELAUNCH_OK"
+else
+  echo "INSTALL_ONLY_OK"
+fi
 
 echo "REBUILD_INSTALL_OK packaged=$packaged_app_sha installed=$installed_app_sha"

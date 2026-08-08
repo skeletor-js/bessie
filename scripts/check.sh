@@ -4,9 +4,12 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-shortcuts.sh scripts/run-hardening-probes.sh scripts/verify-app-install-lifecycle.sh
+bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-catppuccin-themes.sh scripts/rebuild-install-shortcuts.sh scripts/run-hardening-probes.sh scripts/verify-app-install-lifecycle.sh
 python3 scripts/check-herdr-runtime.py
 python3 scripts/check-intent-parity.py
+python3 scripts/check-theme-color-escapes.py
+python3 scripts/test-theme-contracts.py
+python3 scripts/verify-catppuccin-region-evidence.py --self-test
 python3 scripts/run-hardening-benchmarks.py --self-test
 python3 - <<'PY'
 import plistlib
@@ -51,6 +54,12 @@ rebuild_configuration=$(
     BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/rebuild-install-shortcuts.sh --print-package-configuration
 )
 [[ "$rebuild_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
+theme_configuration=$(
+    BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/rebuild-install-catppuccin-themes.sh --print-configuration
+)
+grep -Fq 'variant=production' <<<"$theme_configuration"
+grep -Fq 'bundle_identifier=dev.bessie.app' <<<"$theme_configuration"
+grep -Fq 'themes=bessie-dark,bessie-light,catppuccin-latte,catppuccin-frappe,catppuccin-macchiato,catppuccin-mocha' <<<"$theme_configuration"
 grep -Fq './scripts/dogfood-install-signed.sh' README.md
 
 grep -Fq 'exact: "1.3.2"' Package.swift
@@ -143,6 +152,15 @@ grep -Fq 'AgentPi' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'AgentOpenClaw' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'case "qodercli"' Sources/BessieCore/AgentLaunch.swift
 test -s Sources/BessieApp/Resources/ATTRIBUTION.md
+test -s Sources/BessieApp/CatppuccinPalette.swift
+test -x scripts/check-theme-color-escapes.py
+test -x scripts/rebuild-install-catppuccin-themes.sh
+grep -Fq 'Catppuccin palette v1.8.0' Sources/BessieApp/Resources/ATTRIBUTION.md
+grep -Fq 'a310b246a3cfcdadb6f5b174d879743e084e87ea' Sources/BessieApp/Resources/ATTRIBUTION.md
+grep -Fq '5a58926563ddacbde4a12b4a347464c2c6945393' Sources/BessieApp/Resources/ATTRIBUTION.md
+grep -Fq 'Copyright (c) 2021 Catppuccin' Sources/BessieApp/Resources/ATTRIBUTION.md
+grep -Fq 'do not endorse Bessie' Sources/BessieApp/Resources/ATTRIBUTION.md
+grep -Fq 'madeofbees' Sources/BessieApp/Resources/ATTRIBUTION.md
 for asset_id in \
     d4fadd6a-e121-4ced-85ae-4023a3f84a7f \
     a4d7865e-8453-4e93-9207-659294800903 \
