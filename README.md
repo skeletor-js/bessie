@@ -48,15 +48,15 @@ For an enabled local herd, Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`
 
 ## Install the release candidate
 
-The current candidate is source-built and ad hoc signed. It is not notarized yet.
+The current candidate is source-built and requires a stable Apple signing identity. It is not notarized yet.
 
 From a checkout on the Mac:
 
 ```bash
-./scripts/package-app.sh
-ditto dist/Bessie.app /Applications/Bessie.app
-open /Applications/Bessie.app
+./scripts/dogfood-install-signed.sh
 ```
+
+Run the installer from an interactive GUI login so `codesign` can use the private key. Verification-only packages use the separate `dev.bessie.app.verify` identity and are never production install candidates.
 
 The bundle reports version `0.1.0` with build number `3`. This branch is the `0.1.0-rc.3` acceptance candidate.
 

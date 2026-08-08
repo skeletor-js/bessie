@@ -749,10 +749,13 @@ struct BessieProductShell: View {
         return candidate
     }
     private var notificationSignature: String {
+        let connectionLabel = ConnectionDisplayLabel(connection: model.activeConnection).short
         let panes = surfaces.notificationPanes
-            .map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }
+            .map {
+                "\($0.paneID):\($0.terminalID):\($0.state.rawValue):\($0.revision):\($0.target.workspaceID):\($0.target.tabID):\($0.identity):\($0.location)"
+            }
             .joined(separator: "|")
-        return "\(notifications.authorizationLoaded)|\(model.activeConnection.id)|\(settings.preferences.notifications.rawValue)|\(settings.panePresentationLedger.revision)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
+        return "\(notifications.authorizationLoaded)|\(model.activeConnection.id)|\(connectionLabel)|\(settings.preferences.notifications.rawValue)|\(settings.panePresentationLedger.revision)|\(scenePhase)|\(activeNotificationPaneID ?? "-")|\(panes)"
     }
     private var notificationRouteSignature: String {
         let pending = notifications.pendingRoute.map {

@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-shortcuts.sh scripts/run-hardening-probes.sh scripts/verify-app-install-lifecycle.sh
+bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-shortcuts.sh scripts/run-hardening-probes.sh scripts/verify-app-install-lifecycle.sh
 python3 scripts/check-herdr-runtime.py
 python3 scripts/check-intent-parity.py
 python3 scripts/run-hardening-benchmarks.py --self-test
@@ -18,7 +18,40 @@ assert info.get("NSPrefersDisplaySafeAreaCompatibilityMode") is False, (
     "Bessie must opt out of macOS display-safe-area compatibility mode so "
     "native full screen can use the camera-housing region."
 )
+assert info.get("CFBundleIdentifier") == "__BESSIE_BUNDLE_IDENTIFIER__", (
+    "Info.plist.in must not claim a production or verification notification identity."
+)
 PY
+
+production_bundle_id=$(BESSIE_PACKAGE_VARIANT=production BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/package-app.sh --print-bundle-identifier)
+verify_bundle_id=$(BESSIE_PACKAGE_VARIANT=verify ./scripts/package-app.sh --print-bundle-identifier)
+[[ "$production_bundle_id" == dev.bessie.app ]]
+[[ "$verify_bundle_id" == dev.bessie.app.verify ]]
+[[ "$production_bundle_id" != "$verify_bundle_id" ]]
+if BESSIE_PACKAGE_VARIANT=invalid ./scripts/package-app.sh --print-bundle-identifier >/dev/null 2>&1; then
+    echo 'package-app.sh accepted an unsupported package variant.' >&2
+    exit 1
+fi
+if BESSIE_PACKAGE_VARIANT=production BESSIE_CODESIGN_IDENTITY=- ./scripts/package-app.sh --print-bundle-identifier >/dev/null 2>&1; then
+    echo 'package-app.sh accepted ad-hoc signing for production identity.' >&2
+    exit 1
+fi
+verify_configuration=$(BESSIE_SKIP_INSTALL=1 ./scripts/mac-verify.sh --print-package-configuration)
+[[ "$verify_configuration" == $'variant=verify\nbundle_identifier=dev.bessie.app.verify' ]]
+production_verify_configuration=$(
+    BESSIE_SKIP_INSTALL=0 BESSIE_CODESIGN_IDENTITY=identity-check \
+    ./scripts/mac-verify.sh --print-package-configuration
+)
+[[ "$production_verify_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
+dogfood_configuration=$(
+    BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/dogfood-install-signed.sh --print-package-configuration
+)
+[[ "$dogfood_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
+rebuild_configuration=$(
+    BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/rebuild-install-shortcuts.sh --print-package-configuration
+)
+[[ "$rebuild_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
+grep -Fq './scripts/dogfood-install-signed.sh' README.md
 
 grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift

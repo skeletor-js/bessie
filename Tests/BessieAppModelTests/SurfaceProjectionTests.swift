@@ -1321,6 +1321,37 @@ final class SurfaceProjectionTests: XCTestCase {
         XCTAssertTrue(planner.events(for: [blocked], policy: .blockedOnly, activePaneID: nil).isEmpty)
     }
 
+    func testNotificationPlannerSeedsReplacementTerminalBeforeEmittingTransitions() {
+        var planner = BessieNotificationPlanner()
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        func pane(terminalID: String, state: AgentSemanticState, revision: UInt64) -> BessieNotificationPane {
+            BessieNotificationPane(
+                paneID: "p1", terminalID: terminalID, state: state, revision: revision,
+                identity: "Codex", location: "alpha / tab / Codex", target: target
+            )
+        }
+
+        XCTAssertTrue(planner.events(
+            for: [pane(terminalID: "term-1", state: .working, revision: 1)],
+            policy: .blockedOnly, activePaneID: nil
+        ).isEmpty)
+        XCTAssertTrue(planner.events(
+            for: [pane(terminalID: "term-2", state: .blocked, revision: 1)],
+            policy: .blockedOnly, activePaneID: nil
+        ).isEmpty)
+        _ = planner.events(
+            for: [pane(terminalID: "term-2", state: .working, revision: 2)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+
+        let events = planner.events(
+            for: [pane(terminalID: "term-2", state: .blocked, revision: 3)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        XCTAssertEqual(events.count, 1)
+        XCTAssertTrue(events[0].id.contains("term-2"))
+    }
+
     func testNotificationDeepLinkRoundTripsFrozenFleetSchema() throws {
         let target = RoutedPaneTarget(
             connectionID: "remote",

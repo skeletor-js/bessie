@@ -26,6 +26,25 @@ case "$skip_install" in
     *) echo "BESSIE_SKIP_INSTALL must be 0 or 1." >&2; exit 1 ;;
 esac
 
+if [[ ${1:-} == --print-package-configuration && $# == 1 ]]; then
+    if [[ "$skip_install" == 1 ]]; then
+        package_variant=verify
+    else
+        package_variant=production
+    fi
+    package_bundle_identifier=$(
+        BESSIE_PACKAGE_VARIANT="$package_variant" \
+        BESSIE_CODESIGN_IDENTITY="$codesign_identity" \
+        "$repo_root/scripts/package-app.sh" --print-bundle-identifier
+    )
+    printf 'variant=%s\nbundle_identifier=%s\n' "$package_variant" "$package_bundle_identifier"
+    exit 0
+fi
+if [[ $# -ne 0 ]]; then
+    echo "Usage: $0 [--print-package-configuration]" >&2
+    exit 1
+fi
+
 if ! ssh "${ssh_options[@]}" "$mac_host" mkdir "$verification_lock"; then
     echo "Another Bessie Mac verification is already running: $verification_lock" >&2
     exit 1
@@ -77,10 +96,22 @@ requested_agent_kind=$2
 codesign_identity=$3
 skip_install=$4
 export BESSIE_CODESIGN_IDENTITY="$codesign_identity"
+if [[ "$skip_install" == 1 ]]; then
+    package_variant=verify
+    export BESSIE_PACKAGE_VARIANT=verify
+else
+    package_variant=production
+    if [[ "$codesign_identity" == - ]]; then
+        echo "mac-verify installation requires a stable BESSIE_CODESIGN_IDENTITY; use BESSIE_SKIP_INSTALL=1 for ad-hoc verification." >&2
+        exit 1
+    fi
+    export BESSIE_PACKAGE_VARIANT=production
+fi
 logical_mac_dir=${mac_dir%/}
 mac_dir=$(cd "$mac_dir" && pwd -P)
 cd "$mac_dir"
 source "$mac_dir/scripts/lib/bessie-app-lifecycle.sh"
+package_bundle_identifier=$(./scripts/package-app.sh --print-bundle-identifier)
 
 login_path=$(zsh -lic 'printf "%s\n" "$PATH"' 2>/dev/null | tail -n 1)
 [[ -n "$login_path" ]] || { echo "Could not resolve the Mac login PATH." >&2; exit 1; }
@@ -643,6 +674,11 @@ mkdir -p "$herdr_dir/runtime" "$herdr_xdg_config" "$herdr_xdg_state"
 # is built from the exact mirrored source rather than stale SwiftPM products.
 xcrun swift package clean
 ./scripts/package-app.sh
+packaged_bundle_identifier=$(plutil -extract CFBundleIdentifier raw dist/Bessie.app/Contents/Info.plist)
+if [[ "$packaged_bundle_identifier" != "$package_bundle_identifier" ]]; then
+    echo "Packaged bundle identifier mismatch: expected $package_bundle_identifier, got $packaged_bundle_identifier" >&2
+    exit 1
+fi
 
 packaged_runtime="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr"
 packaged_license="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/LICENSE"
@@ -1182,7 +1218,7 @@ rm -f "$terminal_performance_evidence_path" "$pane_switch_performance_evidence_p
     "$terminal_performance_resources_path" \
     "$terminal_performance_report_path" "$terminal_performance_profile_path"
 launch_app
-osascript -e 'tell application id "dev.bessie.app" to activate'
+osascript -e "tell application id \"$package_bundle_identifier\" to activate"
 for _ in {1..160}; do
     grep -Fq 'Performance pane switch probe complete transitions=20 tabs=2' "$state_log" && break
     kill -0 "$app_pid" 2>/dev/null || { cat "$app_log" >&2; exit 1; }
@@ -1197,7 +1233,7 @@ terminal_performance_probe=1
 terminal_performance_pane_id=$performance_tab_pane_id
 pane_switch_performance_probe=0
 launch_app
-osascript -e 'tell application id "dev.bessie.app" to activate'
+osascript -e "tell application id \"$package_bundle_identifier\" to activate"
 
 # Keep a native macOS stack sample from the measured packaged app. It is taken
 # after the scripted terminal workloads settle, so the trace diagnoses visible

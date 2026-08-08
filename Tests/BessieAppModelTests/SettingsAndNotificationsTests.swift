@@ -501,6 +501,551 @@ final class SettingsAndNotificationsTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(delivery.requests.isEmpty)
     }
+
+    func testBlockedNotificationIsCancelledWhenPaneReturnsToWorkingBeforeCommit() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = BessieNotificationCoordinator(delivery: delivery, refreshOnInit: false)
+        coordinator.refreshAuthorization()
+        for _ in 0..<50 where !coordinator.authorizationLoaded {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        func pane(_ state: AgentSemanticState, revision: UInt64) -> BessieNotificationPane {
+            BessieNotificationPane(
+                paneID: "p1", terminalID: "term-1", state: state, revision: revision,
+                identity: "Codex", location: "alpha / tab / Codex", target: target
+            )
+        }
+
+        coordinator.reconcile(
+            connection: connection, panes: [pane(.working, revision: 1)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [pane(.blocked, revision: 2)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [pane(.working, revision: 3)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(delivery.requests.isEmpty)
+    }
+
+    func testCommittedNotificationIsRemovedWhenItsConditionClears() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let working = notificationPane(state: .working, revision: 1, target: target)
+        let blocked = notificationPane(state: .blocked, revision: 2, target: target)
+
+        coordinator.reconcile(connection: connection, panes: [working], policy: .blockedOnly, activePaneID: nil)
+        coordinator.reconcile(connection: connection, panes: [blocked], policy: .blockedOnly, activePaneID: nil)
+        for _ in 0..<50 where delivery.requests.isEmpty { await Task.yield() }
+        let identifier = try XCTUnwrap(delivery.requests.first?.identifier)
+
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .working, revision: 3, target: target)],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+
+        XCTAssertTrue(delivery.removedPendingIdentifiers.contains(identifier))
+        XCTAssertTrue(delivery.removedDeliveredIdentifiers.contains(identifier))
+    }
+
+    func testInvalidationDuringInFlightAddRemovesLateNotification() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let addStarted = expectation(description: "notification add started")
+        delivery.addStarted = addStarted
+        delivery.suspendAdds = true
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .working, revision: 1, target: target)],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+        await fulfillment(of: [addStarted], timeout: 1)
+        let identifier = try XCTUnwrap(delivery.requests.first?.identifier)
+
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .working, revision: 3, target: target)],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+        delivery.resumeAdds()
+        for _ in 0..<50 where delivery.removedDeliveredIdentifiers.filter({ $0 == identifier }).count < 2 {
+            await Task.yield()
+        }
+
+        XCTAssertGreaterThanOrEqual(delivery.removedPendingIdentifiers.filter { $0 == identifier }.count, 2)
+        XCTAssertGreaterThanOrEqual(delivery.removedDeliveredIdentifiers.filter { $0 == identifier }.count, 2)
+    }
+
+    func testDisconnectedOffPolicyInvalidatesTrackedNotificationsWithoutResettingHistory() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let delegate = BessieAppDelegate()
+        let connection = BessieConnectionDefinition.localBessie
+        let blockedTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "blocked")
+        let settledTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "settled")
+        let working = [
+            notificationPane(state: .working, revision: 1, target: blockedTarget),
+            notificationPane(state: .working, revision: 1, target: settledTarget),
+        ]
+        let changed = [
+            notificationPane(state: .blocked, revision: 2, target: blockedTarget),
+            notificationPane(state: .done, revision: 2, target: settledTarget),
+        ]
+
+        coordinator.reconcile(connection: connection, panes: working, policy: .blockedAndDone, activePaneID: nil)
+        coordinator.reconcile(connection: connection, panes: changed, policy: .blockedAndDone, activePaneID: nil)
+        for _ in 0..<50 where delivery.requests.count < 2 { await Task.yield() }
+        let identifiers = try XCTUnwrap(delivery.requests.count == 2 ? delivery.requests.map(\.identifier) : nil)
+
+        delegate.reconcileFleetNotificationSources(
+            [], activeConnectionID: connection.id, mainWindowOpen: false, policy: .off,
+            snoozedIncarnations: [], notifications: coordinator
+        )
+
+        XCTAssertTrue(identifiers.allSatisfy(delivery.removedPendingIdentifiers.contains))
+        XCTAssertTrue(identifiers.allSatisfy(delivery.removedDeliveredIdentifiers.contains))
+
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: changed)],
+            activeConnectionID: connection.id, mainWindowOpen: false, policy: .blockedAndDone,
+            snoozedIncarnations: [], notifications: coordinator
+        )
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(delivery.requests.count, 2, "reconnect must not replay unchanged notification states")
+    }
+
+    func testDisconnectedBlockedOnlyPolicyInvalidatesOnlySettledNotification() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let delegate = BessieAppDelegate()
+        let connection = BessieConnectionDefinition.localBessie
+        let blockedTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "blocked")
+        let settledTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "settled")
+        coordinator.reconcile(
+            connection: connection,
+            panes: [
+                notificationPane(state: .working, revision: 1, target: blockedTarget),
+                notificationPane(state: .working, revision: 1, target: settledTarget),
+            ],
+            policy: .blockedAndDone,
+            activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection,
+            panes: [
+                notificationPane(state: .blocked, revision: 2, target: blockedTarget),
+                notificationPane(state: .done, revision: 2, target: settledTarget),
+            ],
+            policy: .blockedAndDone,
+            activePaneID: nil
+        )
+        for _ in 0..<50 where delivery.requests.count < 2 { await Task.yield() }
+        let blocked = try XCTUnwrap(delivery.requests.first { $0.content.title.contains("needs you") })
+        let settled = try XCTUnwrap(delivery.requests.first { $0.content.title.contains("is done") })
+
+        delegate.reconcileFleetNotificationSources(
+            [], activeConnectionID: connection.id, mainWindowOpen: false, policy: .blockedOnly,
+            snoozedIncarnations: [], notifications: coordinator
+        )
+
+        XCTAssertFalse(delivery.removedDeliveredIdentifiers.contains(blocked.identifier))
+        XCTAssertTrue(delivery.removedDeliveredIdentifiers.contains(settled.identifier))
+
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [
+                notificationPane(state: .blocked, revision: 2, target: blockedTarget),
+                notificationPane(state: .done, revision: 2, target: settledTarget),
+            ])],
+            activeConnectionID: connection.id, mainWindowOpen: false, policy: .blockedAndDone,
+            snoozedIncarnations: [], notifications: coordinator
+        )
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(delivery.requests.count, 2, "restoring settled policy must not replay an unchanged state")
+    }
+
+    func testQueuedNotificationIsInvalidatedWhenPaneMovesWithoutStateTransition() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = BessieNotificationCoordinator(delivery: delivery, refreshOnInit: false)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let oldTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let movedTarget = PaneOpenTarget(workspaceID: "w2", tabID: "t2", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: oldTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: oldTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: movedTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(delivery.requests.isEmpty, "a topology move must cancel rather than reroute an old transition")
+    }
+
+    func testCommittedNotificationIsInvalidatedWhenPaneMovesWithoutStateTransition() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let oldTarget = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let movedTarget = PaneOpenTarget(workspaceID: "w2", tabID: "t2", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: oldTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: oldTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where delivery.requests.isEmpty { await Task.yield() }
+        let identifier = try XCTUnwrap(delivery.requests.first?.identifier)
+
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: movedTarget)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertTrue(delivery.removedPendingIdentifiers.contains(identifier))
+        XCTAssertTrue(delivery.removedDeliveredIdentifiers.contains(identifier))
+        XCTAssertEqual(delivery.requests.count, 1, "a topology move must not synthesize a replacement transition")
+    }
+
+    func testQueuedNotificationIsInvalidatedWhenIdentityChangesWithoutStateTransition() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = BessieNotificationCoordinator(delivery: delivery, refreshOnInit: false)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .working, revision: 1, target: target, identity: "Codex")],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .blocked, revision: 2, target: target, identity: "Codex")],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+
+        coordinator.reconcile(
+            connection: connection,
+            panes: [notificationPane(state: .blocked, revision: 2, target: target, identity: "Claude")],
+            policy: .blockedOnly,
+            activePaneID: nil
+        )
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(delivery.requests.isEmpty)
+    }
+
+    func testCommittedNotificationIsInvalidatedWhenConnectionLabelChanges() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        var connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where delivery.requests.isEmpty { await Task.yield() }
+        let identifier = try XCTUnwrap(delivery.requests.first?.identifier)
+
+        connection.name = "Renamed Mac"
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+
+        XCTAssertTrue(delivery.removedPendingIdentifiers.contains(identifier))
+        XCTAssertTrue(delivery.removedDeliveredIdentifiers.contains(identifier))
+        XCTAssertEqual(delivery.requests.count, 1)
+    }
+
+    func testSupersededLateAddFailureDoesNotPublishStaleError() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let firstAddStarted = expectation(description: "first notification add started")
+        delivery.addStarted = firstAddStarted
+        delivery.suspendAdds = true
+        delivery.addErrors[0] = TestNotificationDeliveryError.failed
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        await fulfillment(of: [firstAddStarted], timeout: 1)
+
+        delivery.addStarted = nil
+        delivery.suspendAdds = false
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 3, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 4, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where delivery.requests.count < 2 { await Task.yield() }
+        delivery.resumeAdds()
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertNil(coordinator.operationError)
+    }
+
+    func testCurrentAddSuccessClearsEarlierDeliveryError() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        delivery.addErrors[0] = TestNotificationDeliveryError.failed
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where coordinator.operationError == nil { await Task.yield() }
+        XCTAssertNotNil(coordinator.operationError)
+
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 3, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 4, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where coordinator.operationError != nil { await Task.yield() }
+
+        XCTAssertNil(coordinator.operationError)
+    }
+
+    func testSupersededLateAddSuccessDoesNotClearCurrentFailure() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let firstAddStarted = expectation(description: "first notification add started")
+        delivery.addStarted = firstAddStarted
+        delivery.suspendAdds = true
+        delivery.addErrors[1] = TestNotificationDeliveryError.failed
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 1, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 2, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        await fulfillment(of: [firstAddStarted], timeout: 1)
+        let staleIdentifier = delivery.requests[0].identifier
+
+        delivery.addStarted = nil
+        delivery.suspendAdds = false
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .working, revision: 3, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        coordinator.reconcile(
+            connection: connection, panes: [notificationPane(state: .blocked, revision: 4, target: target)],
+            policy: .blockedOnly, activePaneID: nil
+        )
+        for _ in 0..<50 where coordinator.operationError == nil { await Task.yield() }
+        let currentError = coordinator.operationError
+
+        delivery.resumeAdds()
+        for _ in 0..<50 where delivery.removedDeliveredIdentifiers.filter({ $0 == staleIdentifier }).count < 2 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(coordinator.operationError, currentError)
+        XCTAssertGreaterThanOrEqual(
+            delivery.removedDeliveredIdentifiers.filter { $0 == staleIdentifier }.count,
+            2
+        )
+    }
+
+    func testDelegateTakesOverActiveConnectionAfterMainWindowClosesWithoutDuplicate() async {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let delegate = BessieAppDelegate()
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let working = notificationPane(state: .working, revision: 1, target: target)
+        let blocked = notificationPane(state: .blocked, revision: 2, target: target)
+
+        // Product shell owns and seeds the active connection while the window is visible.
+        coordinator.reconcile(connection: connection, panes: [working], policy: .blockedOnly, activePaneID: nil)
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [blocked])],
+            activeConnectionID: connection.id,
+            mainWindowOpen: true,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        XCTAssertTrue(delivery.requests.isEmpty)
+
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [blocked])],
+            activeConnectionID: connection.id,
+            mainWindowOpen: false,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        for _ in 0..<50 where delivery.requests.isEmpty { await Task.yield() }
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [blocked])],
+            activeConnectionID: connection.id,
+            mainWindowOpen: true,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+
+        XCTAssertEqual(delivery.requests.count, 1)
+    }
+
+    func testTransientSourceLossPreservesHistoryUntilConfiguredConnectionIsRemoved() async throws {
+        let delivery = TestNotificationDelivery(status: .authorized)
+        let coordinator = immediateCoordinator(delivery: delivery)
+        await loadAuthorization(coordinator)
+        let delegate = BessieAppDelegate()
+        let connection = BessieConnectionDefinition.localBessie
+        let target = PaneOpenTarget(workspaceID: "w1", tabID: "t1", paneID: "p1")
+        let working = notificationPane(state: .working, revision: 1, target: target)
+        let blocked = notificationPane(state: .blocked, revision: 2, target: target)
+
+        coordinator.retainConnections([connection.id])
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [working])],
+            activeConnectionID: connection.id,
+            mainWindowOpen: false,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        // Projection loss during reconnect produces no source but does not mean the
+        // configured connection or its authoritative pane history was deleted.
+        delegate.reconcileFleetNotificationSources(
+            [],
+            activeConnectionID: connection.id,
+            mainWindowOpen: false,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        delegate.reconcileFleetNotificationSources(
+            [FleetNotificationSource(connection: connection, panes: [blocked])],
+            activeConnectionID: connection.id,
+            mainWindowOpen: false,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        for _ in 0..<50 where delivery.requests.isEmpty { await Task.yield() }
+        let identifier = try XCTUnwrap(delivery.requests.first?.identifier)
+        let removalsBeforeTransientLoss = delivery.removedDeliveredIdentifiers.count
+
+        delegate.reconcileFleetNotificationSources(
+            [],
+            activeConnectionID: connection.id,
+            mainWindowOpen: false,
+            policy: .blockedOnly,
+            snoozedIncarnations: [],
+            notifications: coordinator
+        )
+        XCTAssertEqual(delivery.removedDeliveredIdentifiers.count, removalsBeforeTransientLoss)
+
+        coordinator.retainConnections([])
+        XCTAssertTrue(delivery.removedPendingIdentifiers.contains(identifier))
+        XCTAssertTrue(delivery.removedDeliveredIdentifiers.contains(identifier))
+    }
+
+    private func immediateCoordinator(delivery: TestNotificationDelivery) -> BessieNotificationCoordinator {
+        BessieNotificationCoordinator(
+            delivery: delivery,
+            settingsOpener: TestSystemSettingsOpener(results: []),
+            applicationBundleIdentifier: "dev.bessie.app.verify",
+            refreshOnInit: false,
+            deliveryDelay: {}
+        )
+    }
+
+    private func loadAuthorization(_ coordinator: BessieNotificationCoordinator) async {
+        coordinator.refreshAuthorization()
+        for _ in 0..<50 where !coordinator.authorizationLoaded { await Task.yield() }
+    }
+
+    private func notificationPane(
+        state: AgentSemanticState,
+        revision: UInt64,
+        target: PaneOpenTarget,
+        identity: String = "Codex",
+        location: String = "alpha / tab / Codex"
+    ) -> BessieNotificationPane {
+        BessieNotificationPane(
+            paneID: target.paneID,
+            terminalID: "term-1",
+            state: state,
+            revision: revision,
+            identity: identity,
+            location: location,
+            target: target
+        )
+    }
 }
 
 @MainActor
@@ -509,6 +1054,13 @@ private final class TestNotificationDelivery: BessieNotificationDelivering {
     let requestedStatus: UNAuthorizationStatus
     var requestCount = 0
     var requests: [UNNotificationRequest] = []
+    var removedPendingIdentifiers: [String] = []
+    var removedDeliveredIdentifiers: [String] = []
+    var addStarted: XCTestExpectation?
+    var suspendAdds = false
+    var addErrors: [Int: Error] = [:]
+    private var addOrdinal = 0
+    private var addContinuations: [CheckedContinuation<Void, Never>] = []
 
     init(status: UNAuthorizationStatus, requestedStatus: UNAuthorizationStatus = .authorized) {
         self.status = status
@@ -524,8 +1076,40 @@ private final class TestNotificationDelivery: BessieNotificationDelivering {
     }
 
     func add(_ request: UNNotificationRequest) async throws {
+        let ordinal = addOrdinal
+        addOrdinal += 1
         requests.append(request)
+        addStarted?.fulfill()
+        if suspendAdds {
+            await withCheckedContinuation { continuation in
+                addContinuations.append(continuation)
+            }
+        }
+        if let error = addErrors[ordinal] {
+            throw error
+        }
     }
+
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
+        removedPendingIdentifiers.append(contentsOf: identifiers)
+    }
+
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        removedDeliveredIdentifiers.append(contentsOf: identifiers)
+    }
+
+    func resumeAdds() {
+        suspendAdds = false
+        let continuations = addContinuations
+        addContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+}
+
+private enum TestNotificationDeliveryError: LocalizedError {
+    case failed
+
+    var errorDescription: String? { "delivery failed" }
 }
 
 @MainActor

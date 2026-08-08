@@ -13,16 +13,30 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-if [[ $(uname -s) != Darwin ]]; then
-  echo "dogfood-install-signed.sh requires macOS." >&2
-  exit 1
-fi
-
 default_identity='Developer ID Application: JORDAN JAMES STELLA (T4K7A3GPQ6)'
 identity=${BESSIE_CODESIGN_IDENTITY:-$default_identity}
 
 if [[ "$identity" == "-" ]]; then
   echo "Refusing ad-hoc dogfood install. Set BESSIE_CODESIGN_IDENTITY to a real identity." >&2
+  exit 1
+fi
+
+if [[ ${1:-} == --print-package-configuration && $# == 1 ]]; then
+  bundle_identifier=$(
+    BESSIE_PACKAGE_VARIANT=production \
+    BESSIE_CODESIGN_IDENTITY="$identity" \
+    ./scripts/package-app.sh --print-bundle-identifier
+  )
+  printf 'variant=production\nbundle_identifier=%s\n' "$bundle_identifier"
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--print-package-configuration]" >&2
+  exit 1
+fi
+
+if [[ $(uname -s) != Darwin ]]; then
+  echo "dogfood-install-signed.sh requires macOS." >&2
   exit 1
 fi
 
@@ -51,6 +65,7 @@ fi
 rm -f "$probe"
 
 export BESSIE_CODESIGN_IDENTITY="$identity"
+export BESSIE_PACKAGE_VARIANT=production
 ./scripts/package-app.sh
 
 pkg_app="$repo_root/dist/Bessie.app"
@@ -62,8 +77,7 @@ backup="/tmp/Bessie.app.backup-$$"
 
 test -x "$pkg_bin"
 codesign --verify --deep --strict "$pkg_app"
-codesign -dv --verbose=2 "$pkg_app" 2>&1 | grep -Fq "Authority=$identity" \
-  || codesign -dv --verbose=2 "$pkg_app" 2>&1 | grep -E "Authority=|TeamIdentifier=" || true
+codesign -dv --verbose=4 "$pkg_app" 2>&1 | grep -Fq "$identity"
 
 # Prefer not killing unrelated apps; only stop BessieApp.
 if pids=$(pgrep -f "^/Applications/Bessie.app/Contents/MacOS/BessieApp" || true); then

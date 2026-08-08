@@ -3,6 +3,21 @@
 # Does NOT run the full mac-verify acceptance suite.
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ${1:-} == --print-package-configuration && $# == 1 ]]; then
+  : "${BESSIE_CODESIGN_IDENTITY:?Set BESSIE_CODESIGN_IDENTITY to inspect the production package configuration.}"
+  bundle_identifier=$(
+    BESSIE_PACKAGE_VARIANT=production \
+    "$repo_root/scripts/package-app.sh" --print-bundle-identifier
+  )
+  printf 'variant=production\nbundle_identifier=%s\n' "$bundle_identifier"
+  exit 0
+fi
+if [[ ${1:-} == --print-package-configuration || $# -gt 1 ]]; then
+  echo "Usage: $0 [mac-directory|--print-package-configuration]" >&2
+  exit 1
+fi
+
 mac_dir=${1:-/Users/jordanstella/GitHub/bessie}
 cd "$mac_dir"
 source "$mac_dir/scripts/lib/bessie-app-lifecycle.sh"
@@ -24,7 +39,12 @@ echo "=== stop validated installed Bessie owners ==="
 bessie_terminate_installation_owners "$installed_executable"
 
 echo "=== swift package clean + package-app ==="
-export BESSIE_CODESIGN_IDENTITY=${BESSIE_CODESIGN_IDENTITY:--}
+: "${BESSIE_CODESIGN_IDENTITY:?Set BESSIE_CODESIGN_IDENTITY to a stable signing identity before installing production Bessie.}"
+if [[ "$BESSIE_CODESIGN_IDENTITY" == - ]]; then
+  echo "Refusing ad-hoc production install. Set BESSIE_CODESIGN_IDENTITY to a stable identity." >&2
+  exit 1
+fi
+export BESSIE_PACKAGE_VARIANT=production
 xcrun swift package clean
 ./scripts/package-app.sh
 

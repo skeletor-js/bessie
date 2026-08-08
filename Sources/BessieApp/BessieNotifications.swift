@@ -12,11 +12,6 @@ protocol BessieNotificationDelivering: AnyObject {
     func removeDeliveredNotifications(withIdentifiers identifiers: [String])
 }
 
-extension BessieNotificationDelivering {
-    func removePendingNotificationRequests(withIdentifiers _: [String]) {}
-    func removeDeliveredNotifications(withIdentifiers _: [String]) {}
-}
-
 @MainActor
 protocol BessieSystemSettingsOpening: AnyObject {
     func open(_ url: URL) -> Bool
@@ -92,6 +87,31 @@ struct NotificationRouteQueue: Equatable {
 
 @MainActor
 final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+    private enum NotificationCondition: Equatable {
+        case blocked
+        case settled
+    }
+
+    private struct PresentationFingerprint: Equatable {
+        let identity: String
+        let location: String
+        let connectionLabel: String
+    }
+
+    private struct CurrentNotification: Equatable {
+        let condition: NotificationCondition
+        let target: PaneOpenTarget
+        let presentationFingerprint: PresentationFingerprint
+    }
+
+    private struct TrackedNotification: Equatable {
+        let identifier: String
+        let token: UUID
+        let condition: NotificationCondition
+        let target: PaneOpenTarget
+        let presentationFingerprint: PresentationFingerprint
+    }
+
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published private(set) var authorizationLoaded = false
     @Published private(set) var authorizationError: String?
@@ -103,11 +123,11 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
     private let delivery: BessieNotificationDelivering
     private let settingsOpener: BessieSystemSettingsOpening
     private let applicationBundleIdentifier: String?
+    private let deliveryDelay: @MainActor () async -> Void
     private var planners: [String: BessieNotificationPlanner] = [:]
-    private var suppressionGenerations: [BessiePaneIncarnation: UInt64] = [:]
     private var suppressedIncarnations: Set<BessiePaneIncarnation> = []
     private var queuedDeliveries: [BessiePaneIncarnation: Task<Void, Never>] = [:]
-    private var committedNotificationIDs: [BessiePaneIncarnation: Set<String>] = [:]
+    private var trackedNotifications: [BessiePaneIncarnation: TrackedNotification] = [:]
     var activationHandler: (() -> Void)?
 
     var pendingRoute: PendingNotificationRoute? { routes.pending }
@@ -134,7 +154,10 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         delivery: BessieNotificationDelivering,
         settingsOpener: BessieSystemSettingsOpening,
         applicationBundleIdentifier: String?,
-        refreshOnInit: Bool
+        refreshOnInit: Bool,
+        deliveryDelay: @escaping @MainActor () async -> Void = {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
     ) {
         if let system = delivery as? SystemNotificationDelivery {
             center = system.center
@@ -144,6 +167,7 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         self.delivery = delivery
         self.settingsOpener = settingsOpener
         self.applicationBundleIdentifier = applicationBundleIdentifier
+        self.deliveryDelay = deliveryDelay
         super.init()
         center?.delegate = self
         if refreshOnInit { refreshAuthorization() }
@@ -246,13 +270,43 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         snoozedIncarnations: Set<BessiePaneIncarnation> = []
     ) {
         let connectionID = connection.id
+        let connectionLabel = ConnectionDisplayLabel(connection: connection).short
         let currentIncarnations = Dictionary(uniqueKeysWithValues: panes.map {
             ($0.paneID, BessiePaneIncarnation(connectionID: connectionID, paneID: $0.paneID, terminalID: $0.terminalID))
         })
         let currentSuppressed = Set(currentIncarnations.values.filter(snoozedIncarnations.contains))
         updateSuppressions(connectionID: connectionID, current: currentSuppressed)
+        let currentNotifications: [BessiePaneIncarnation: CurrentNotification] = Dictionary(
+            uniqueKeysWithValues: panes.compactMap { pane -> (BessiePaneIncarnation, CurrentNotification)? in
+                guard pane.paneID != activePaneID,
+                      let incarnation = currentIncarnations[pane.paneID],
+                      !currentSuppressed.contains(incarnation),
+                      let condition = Self.notificationCondition(for: pane.state, policy: policy)
+                else { return nil }
+                return (
+                    incarnation,
+                    CurrentNotification(
+                        condition: condition,
+                        target: pane.target,
+                        presentationFingerprint: PresentationFingerprint(
+                            identity: pane.identity,
+                            location: pane.location,
+                            connectionLabel: connectionLabel
+                        )
+                    )
+                )
+            }
+        )
+        let staleIncarnations = trackedNotifications.compactMap { incarnation, tracked -> BessiePaneIncarnation? in
+            guard incarnation.connectionID == connectionID else { return nil }
+            let current = currentNotifications[incarnation]
+            return current?.condition != tracked.condition
+                || current?.target != tracked.target
+                || current?.presentationFingerprint != tracked.presentationFingerprint
+                ? incarnation : nil
+        }
+        staleIncarnations.forEach(invalidate(_:))
         var planner = planners[connectionID] ?? BessieNotificationPlanner()
-        let connectionLabel = ConnectionDisplayLabel(connection: connection).short
         let events = planner.events(
             for: panes,
             policy: policy,
@@ -276,12 +330,35 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
                 paneID: event.target.paneID
             )
             content.userInfo = BessieNotificationDeepLink(target: routed).userInfo
-            guard let incarnation = currentIncarnations[event.target.paneID] else { continue }
+            guard let incarnation = currentIncarnations[event.target.paneID],
+                  incarnation.terminalID == event.terminalID,
+                  let condition = Self.notificationCondition(for: event.state, policy: policy),
+                  let current = currentNotifications[incarnation],
+                  current.condition == condition,
+                  current.target == event.target
+            else { continue }
             queue(
                 UNNotificationRequest(identifier: "\(connectionID):\(event.id)", content: content, trigger: nil),
-                incarnation: incarnation
+                incarnation: incarnation,
+                condition: condition,
+                target: current.target,
+                presentationFingerprint: current.presentationFingerprint
             )
         }
+    }
+
+    func reconcilePolicy(_ policy: BessieNotifications) {
+        let staleIncarnations = trackedNotifications.compactMap { incarnation, tracked in
+            Self.policy(policy, allows: tracked.condition) ? nil : incarnation
+        }
+        staleIncarnations.forEach(invalidate(_:))
+    }
+
+    func retainConnections(_ connectionIDs: Set<String>) {
+        let staleIncarnations = trackedNotifications.keys.filter { !connectionIDs.contains($0.connectionID) }
+        staleIncarnations.forEach(invalidate(_:))
+        planners = planners.filter { connectionIDs.contains($0.key) }
+        suppressedIncarnations = Set(suppressedIncarnations.filter { connectionIDs.contains($0.connectionID) })
     }
 
     private func updateSuppressions(connectionID: String, current: Set<BessiePaneIncarnation>) {
@@ -289,40 +366,81 @@ final class BessieNotificationCoordinator: NSObject, ObservableObject, UNUserNot
         suppressedIncarnations.subtract(previous)
         suppressedIncarnations.formUnion(current)
         for incarnation in current.subtracting(previous) {
-            suppressionGenerations[incarnation, default: 0] &+= 1
-            queuedDeliveries.removeValue(forKey: incarnation)?.cancel()
-            let identifiers = Array(committedNotificationIDs.removeValue(forKey: incarnation) ?? [])
-            delivery.removePendingNotificationRequests(withIdentifiers: identifiers)
-            delivery.removeDeliveredNotifications(withIdentifiers: identifiers)
+            invalidate(incarnation)
         }
     }
 
     func suppressImmediately(_ incarnation: BessiePaneIncarnation) {
         guard suppressedIncarnations.insert(incarnation).inserted else { return }
-        suppressionGenerations[incarnation, default: 0] &+= 1
-        queuedDeliveries.removeValue(forKey: incarnation)?.cancel()
-        let identifiers = Array(committedNotificationIDs.removeValue(forKey: incarnation) ?? [])
-        delivery.removePendingNotificationRequests(withIdentifiers: identifiers)
-        delivery.removeDeliveredNotifications(withIdentifiers: identifiers)
+        invalidate(incarnation)
     }
 
-    private func queue(_ request: UNNotificationRequest, incarnation: BessiePaneIncarnation) {
-        queuedDeliveries.removeValue(forKey: incarnation)?.cancel()
-        let generation = suppressionGenerations[incarnation, default: 0]
+    private func queue(
+        _ request: UNNotificationRequest,
+        incarnation: BessiePaneIncarnation,
+        condition: NotificationCondition,
+        target: PaneOpenTarget,
+        presentationFingerprint: PresentationFingerprint
+    ) {
+        invalidate(incarnation)
+        let token = UUID()
+        trackedNotifications[incarnation] = TrackedNotification(
+            identifier: request.identifier,
+            token: token,
+            condition: condition,
+            target: target,
+            presentationFingerprint: presentationFingerprint
+        )
         queuedDeliveries[incarnation] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled, let self,
-                  !self.suppressedIncarnations.contains(incarnation),
-                  self.suppressionGenerations[incarnation, default: 0] == generation
+            guard let self else { return }
+            await self.deliveryDelay()
+            guard !Task.isCancelled,
+                  self.trackedNotifications[incarnation]?.token == token
             else { return }
-            self.queuedDeliveries[incarnation] = nil
-            self.committedNotificationIDs[incarnation, default: []].insert(request.identifier)
             do {
                 try await self.delivery.add(request)
+                guard !Task.isCancelled, self.trackedNotifications[incarnation]?.token == token else {
+                    self.removeNotification(identifier: request.identifier)
+                    return
+                }
+                self.queuedDeliveries[incarnation] = nil
+                self.operationError = nil
             } catch {
+                guard self.trackedNotifications[incarnation]?.token == token else { return }
+                self.trackedNotifications[incarnation] = nil
+                self.queuedDeliveries[incarnation] = nil
                 self.operationError = "Bessie couldn't deliver a notification. \(error.localizedDescription)"
                 BessieDiagnosticLog.append("Notification delivery failed: \(String(reflecting: error))")
             }
+        }
+    }
+
+    private func invalidate(_ incarnation: BessiePaneIncarnation) {
+        queuedDeliveries.removeValue(forKey: incarnation)?.cancel()
+        guard let tracked = trackedNotifications.removeValue(forKey: incarnation) else { return }
+        removeNotification(identifier: tracked.identifier)
+    }
+
+    private func removeNotification(identifier: String) {
+        delivery.removePendingNotificationRequests(withIdentifiers: [identifier])
+        delivery.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    private static func notificationCondition(
+        for state: AgentSemanticState,
+        policy: BessieNotifications
+    ) -> NotificationCondition? {
+        switch (policy, state) {
+        case (.blockedOnly, .blocked), (.blockedAndDone, .blocked): .blocked
+        case (.blockedAndDone, .done), (.blockedAndDone, .idle): .settled
+        default: nil
+        }
+    }
+
+    private static func policy(_ policy: BessieNotifications, allows condition: NotificationCondition) -> Bool {
+        switch (policy, condition) {
+        case (.blockedOnly, .blocked), (.blockedAndDone, _): true
+        default: false
         }
     }
 

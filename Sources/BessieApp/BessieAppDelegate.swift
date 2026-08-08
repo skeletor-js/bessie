@@ -97,11 +97,35 @@ final class BessieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
     /// Reconcile notification transitions for connections the window shell may not own.
     func reconcileFleetNotifications() {
         guard let fleet, let settings, let notifications else { return }
+        // Snapshot availability is transient. Retain notification history for every
+        // configured connection so reconnects do not reseed or erase valid delivery.
+        notifications.retainConnections(Set(fleet.connectionDefinitions.map(\.id)))
         let mainWindowOpen = NSApp.windows.contains {
             $0.identifier?.rawValue == BessieWindowChromePolicy.mainWindowIdentifier && $0.isVisible
         }
-        for source in fleet.notificationSources {
-            let isActive = source.connection.id == fleet.activeConnectionID
+        reconcileFleetNotificationSources(
+            fleet.notificationSources,
+            activeConnectionID: fleet.activeConnectionID,
+            mainWindowOpen: mainWindowOpen,
+            policy: settings.preferences.notifications,
+            snoozedIncarnations: settings.snoozedPaneIncarnations(),
+            notifications: notifications
+        )
+    }
+
+    func reconcileFleetNotificationSources(
+        _ sources: [FleetNotificationSource],
+        activeConnectionID: String?,
+        mainWindowOpen: Bool,
+        policy: BessieNotifications,
+        snoozedIncarnations: Set<BessiePaneIncarnation>,
+        notifications: BessieNotificationCoordinator
+    ) {
+        // Policy applies to all tracked requests, including configured connections
+        // that are temporarily absent from the current fleet projection.
+        notifications.reconcilePolicy(policy)
+        for source in sources {
+            let isActive = source.connection.id == activeConnectionID
             if mainWindowOpen && isActive {
                 // Product shell owns active-connection reconcile while the window lives.
                 continue
@@ -109,9 +133,9 @@ final class BessieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
             notifications.reconcile(
                 connection: source.connection,
                 panes: source.panes,
-                policy: settings.preferences.notifications,
+                policy: policy,
                 activePaneID: nil,
-                snoozedIncarnations: settings.snoozedPaneIncarnations()
+                snoozedIncarnations: snoozedIncarnations
             )
         }
     }
