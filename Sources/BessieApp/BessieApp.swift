@@ -10,6 +10,31 @@ enum BessieWindowPolicy {
     static let maximumControllerWindowCount = 1
 }
 
+@MainActor
+struct BessieCheckForUpdatesCommand {
+    let coordinator: BessieUpdateCoordinator
+
+    var isEnabled: Bool { coordinator.canCheckForUpdates }
+
+    @discardableResult
+    func perform() -> Bool {
+        guard isEnabled else { return false }
+        return coordinator.checkForUpdates()
+    }
+}
+
+private struct BessieUpdateCommands: Commands {
+    @ObservedObject var coordinator: BessieUpdateCoordinator
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            let command = BessieCheckForUpdatesCommand(coordinator: coordinator)
+            Button("Check for Updates…") { command.perform() }
+                .disabled(!command.isEnabled)
+        }
+    }
+}
+
 enum BessiePerformance {
     static let recorder: BessiePerformanceRecorder = {
         let recorder = BessiePerformanceRecorder.configured()
@@ -77,6 +102,7 @@ struct BessieApp: App {
     @StateObject private var fleet: ConnectionFleetViewModel
     @StateObject private var terminalRegistry: TerminalControllerRegistry
     @StateObject private var themeCoordinator: BessieThemeCoordinator
+    @StateObject private var updates: BessieUpdateCoordinator
     @StateObject private var commandPaletteAvailability = BessieCommandPaletteAvailability()
     private let featureFlags: BessieFeatureFlags
 
@@ -91,10 +117,12 @@ struct BessieApp: App {
         }
         let terminalRegistry = TerminalControllerRegistry()
         let fleet = ConnectionFleetViewModel(performanceRecorder: recorder)
+        let updates = BessieUpdateCoordinator()
         _settings = StateObject(wrappedValue: settings)
         _notifications = StateObject(wrappedValue: notifications)
         _fleet = StateObject(wrappedValue: fleet)
         _terminalRegistry = StateObject(wrappedValue: terminalRegistry)
+        _updates = StateObject(wrappedValue: updates)
         _themeCoordinator = StateObject(wrappedValue: BessieThemeCoordinator(
             settings: settings,
             terminalRegistry: terminalRegistry,
@@ -104,6 +132,7 @@ struct BessieApp: App {
                 return fleet.applyTerminalTheme(theme, activeRegistry: terminalRegistry)
             }
         ))
+        updates.start()
     }
 
     var body: some Scene {
@@ -154,6 +183,7 @@ struct BessieApp: App {
                 .environmentObject(settings)
                 .environmentObject(themeCoordinator)
                 .environmentObject(notifications)
+                .environmentObject(updates)
                 .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .frame(
@@ -167,6 +197,7 @@ struct BessieApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 740)
         .commands {
+            BessieUpdateCommands(coordinator: updates)
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Bessie") { appDelegate.quitBessie() }
                     .keyboardShortcut("q", modifiers: .command)
@@ -218,6 +249,7 @@ struct BessieApp: App {
                 .environmentObject(settings)
                 .environmentObject(themeCoordinator)
                 .environmentObject(notifications)
+                .environmentObject(updates)
                 .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .environmentObject(fleet)
@@ -1535,7 +1567,8 @@ final class ConnectionFleetViewModel: ObservableObject {
                     connection: model.activeConnection,
                     agent: agent,
                     workspaceLabel: projection.workspaces.first { $0.id == agent.workspaceID }?.label,
-                    tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label
+                    tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label,
+                    pane: projection.panes.first { $0.id == agent.id }
                 )
             }
         }
@@ -1591,6 +1624,7 @@ struct ConnectView: View {
     @State private var navigationRequest: ProductNavigationRequest?
     @State private var zenState = BessieZenPresentationState.inactive
     @State private var onboardingPath = Self.designOnboardingPath
+    @State private var onboardingConnectionID: String?
     @State private var showingColdOpen: Bool
     @State private var splashEntryGeneration = -1
 
@@ -1662,32 +1696,7 @@ struct ConnectView: View {
                         model.markShellReady()
                     }
                     if !settings.onboarding.completed {
-                        OnboardingView(
-                            projects: projects,
-                            state: settings.onboarding,
-                            connected: true,
-                            completionAvailable: onboardingCoordinator.canSubmit,
-                            connectionError: nil,
-                            path: $onboardingPath,
-                            continueSetup: {
-                                settings.advanceSetup(runtimeReady: true, sessionReady: true,
-                                    workspaceReady: !projection.workspaces.isEmpty,
-                                    terminalControllerReady: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame }))
-                            },
-                            finishSetup: {
-                                onboardingCoordinator.submit(
-                                    connectionID: settings.selectedConnectionID,
-                                    path: onboardingPath
-                                )
-                            },
-                            cancelSetup: {
-                                guard !onboardingCoordinator.materializationStarted else { return }
-                                try? onboardingCoordinator.cancelBeforeMaterialization()
-                                settings.cancelSetupAgainBeforeMaterialization()
-                            }
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(BessieOnboardingSurface(base: BessieDesign.background))
+                        connectedOnboardingView(projection: projection)
                     } else if model.runtimeDiagnostic.finding == .terminalControlUnavailable {
                         TroubleView(diagnostic: model.runtimeDiagnostic) { model.retry() }
                             .frame(maxWidth: 760, maxHeight: 560)
@@ -1702,23 +1711,7 @@ struct ConnectView: View {
                 }
             } else {
                 if !settings.onboarding.completed {
-                    OnboardingView(
-                        projects: projects,
-                        state: settings.onboarding,
-                        connected: false,
-                        completionAvailable: false,
-                        connectionError: "\(presentation.title). \(presentation.detail)",
-                        path: $onboardingPath,
-                        continueSetup: {},
-                        finishSetup: {},
-                        cancelSetup: {
-                            guard !onboardingCoordinator.materializationStarted else { return }
-                            try? onboardingCoordinator.cancelBeforeMaterialization()
-                            settings.cancelSetupAgainBeforeMaterialization()
-                        }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(BessieOnboardingSurface(base: BessieDesign.background))
+                    disconnectedOnboardingView
                 } else if zenState.isActive {
                     BessieZenDisconnectedSurface(
                         connection: fleet.activeModel?.activeConnection
@@ -1754,18 +1747,7 @@ struct ConnectView: View {
             )
         }
         .onChange(of: settings.setupEntryGeneration) { _, _ in enterOnboardingIfNeeded() }
-        .onChange(of: onboardingCoordinator.stage) { _, stage in
-            guard stage == .waitingForFirstFrame,
-                  let attempt = onboardingCoordinator.attempt,
-                  let model = fleet.activate(connectionID: attempt.connectionID),
-                  let projection = model.projection,
-                  let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: attempt.paneID ?? "")
-            else { return }
-            navigationRequest = ProductNavigationRequest(connectionID: attempt.connectionID, workspaceID: target.workspaceID, tabID: target.tabID, paneID: target.paneID)
-            terminalRegistry.focusWhenPresented(paneID: target.paneID)
-            settings.advanceSetup(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: false)
-            resumeOnboardingCompletion(model: model, projection: projection)
-        }
+        .onChange(of: onboardingCoordinator.stage) { _, stage in handleOnboardingStage(stage) }
         .onChange(of: settings.connections) { _, connections in
             updateIntentConnectionContext()
             fleet.sync(
@@ -1840,6 +1822,60 @@ struct ConnectView: View {
         .background(BessieWindowSnapshotProbe())
     }
 
+    private func connectedOnboardingView(projection: HerdrSessionProjection) -> some View {
+        OnboardingView(
+            projects: projects,
+            state: settings.onboarding,
+            connected: true,
+            completionAvailable: onboardingCoordinator.canSubmit,
+            connectionError: nil,
+            path: $onboardingPath,
+            continueSetup: {
+                settings.advanceSetup(
+                    runtimeReady: true,
+                    sessionReady: true,
+                    workspaceReady: !projection.workspaces.isEmpty,
+                    terminalControllerReady: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame })
+                )
+            },
+            finishSetup: submitOnboarding,
+            cancelSetup: cancelOnboarding,
+            setupConnectionID: $onboardingConnectionID
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(BessieOnboardingSurface(base: BessieDesign.background))
+    }
+
+    private var disconnectedOnboardingView: some View {
+        OnboardingView(
+            projects: projects,
+            state: settings.onboarding,
+            connected: false,
+            completionAvailable: false,
+            connectionError: "\(presentation.title). \(presentation.detail)",
+            path: $onboardingPath,
+            continueSetup: {},
+            finishSetup: {},
+            cancelSetup: cancelOnboarding,
+            setupConnectionID: $onboardingConnectionID
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(BessieOnboardingSurface(base: BessieDesign.background))
+    }
+
+    private func submitOnboarding() {
+        onboardingCoordinator.submit(
+            connectionID: settings.selectedConnectionID,
+            path: onboardingPath
+        )
+    }
+
+    private func cancelOnboarding() {
+        guard !onboardingCoordinator.materializationStarted else { return }
+        try? onboardingCoordinator.cancelBeforeMaterialization()
+        settings.cancelSetupAgainBeforeMaterialization()
+    }
+
     private func shutdownForAppExit() {
         projects.updateConnection(nil, snapshot: nil)
         terminalRegistry.releaseAll()
@@ -1850,12 +1886,37 @@ struct ConnectView: View {
         guard !settings.onboarding.completed,
               splashEntryGeneration != settings.setupEntryGeneration else { return }
         splashEntryGeneration = settings.setupEntryGeneration
+        onboardingConnectionID = nil
+        onboardingPath = Self.designOnboardingPath
         if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
            (10...13).contains(Int(artboard) ?? 0) {
             showingColdOpen = false
             return
         }
         showingColdOpen = true
+    }
+
+    private func handleOnboardingStage(_ stage: OnboardingCompletionStage) {
+        guard stage == .waitingForFirstFrame,
+              let attempt = onboardingCoordinator.attempt,
+              let model = fleet.activate(connectionID: attempt.connectionID),
+              let projection = model.projection,
+              let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: attempt.paneID ?? "")
+        else { return }
+        navigationRequest = ProductNavigationRequest(
+            connectionID: attempt.connectionID,
+            workspaceID: target.workspaceID,
+            tabID: target.tabID,
+            paneID: target.paneID
+        )
+        terminalRegistry.focusWhenPresented(paneID: target.paneID)
+        settings.advanceSetup(
+            runtimeReady: true,
+            sessionReady: true,
+            workspaceReady: true,
+            terminalControllerReady: false
+        )
+        resumeOnboardingCompletion(model: model, projection: projection)
     }
 
     private static var designOnboardingPath: String {

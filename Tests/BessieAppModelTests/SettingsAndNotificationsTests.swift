@@ -19,6 +19,102 @@ final class SettingsAndNotificationsTests: XCTestCase {
         XCTAssertEqual(BessieSettingsLayout.switchHeight, 22)
     }
 
+    func testUpdateSettingsRoundTripThroughSparkleAdapterWithoutRewritingPresentation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let presentationURL = root.appendingPathComponent("presentation.json")
+        let settings = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        settings.preferences.startupBehavior = .workspaceChooser
+        let presentationBeforeUpdates = try Data(contentsOf: presentationURL)
+        let adapter = SettingsUpdaterAdapter()
+        let coordinator = BessieUpdateCoordinator(
+            launchContext: .eligibleForCoordinatorTests,
+            adapterFactory: { _ in adapter }
+        )
+        XCTAssertTrue(coordinator.start())
+
+        coordinator.setAutomaticallyChecksForUpdates(false)
+        coordinator.setAutomaticallyDownloadsAndInstallsUpdates(false)
+
+        XCTAssertFalse(adapter.automaticallyChecksForUpdates)
+        XCTAssertFalse(adapter.automaticallyDownloadsUpdates)
+        XCTAssertFalse(coordinator.state.preferences.automaticallyChecksForUpdates)
+        XCTAssertFalse(coordinator.state.preferences.automaticallyDownloadsAndInstallsUpdates)
+        XCTAssertEqual(try Data(contentsOf: presentationURL), presentationBeforeUpdates)
+
+        let reloaded = BessieSettingsModel(
+            presentationURL: presentationURL,
+            connectionsURL: root.appendingPathComponent("connections.json"),
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+        XCTAssertEqual(reloaded.preferences.startupBehavior, .workspaceChooser)
+    }
+
+    func testUpdateSettingsStatusIsBoundedAndContainsNoRawBackgroundFailure() {
+        let adapter = SettingsUpdaterAdapter()
+        let coordinator = BessieUpdateCoordinator(
+            launchContext: .eligibleForCoordinatorTests,
+            adapterFactory: { _ in adapter }
+        )
+        XCTAssertTrue(coordinator.start())
+        adapter.delegate?.updaterDidAbort(
+            NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorUserAuthenticationRequired,
+                userInfo: [NSLocalizedDescriptionKey: String(repeating: "secret /Users/jordan/appcast.xml ", count: 100)]
+            ),
+            checkKind: .background
+        )
+
+        let presentation = BessieUpdateSettingsPresentation(
+            state: coordinator.state,
+            canCheckForUpdates: coordinator.canCheckForUpdates,
+            infoDictionary: [
+                "CFBundleShortVersionString": "1.2.3",
+                "CFBundleVersion": "123",
+            ]
+        )
+
+        XCTAssertEqual(presentation.currentVersion, "1.2.3")
+        XCTAssertEqual(presentation.currentBuild, "123")
+        XCTAssertLessThanOrEqual(presentation.status?.count ?? 0, BessieUpdateSettingsPresentation.maximumStatusLength)
+        XCTAssertFalse(presentation.status?.localizedCaseInsensitiveContains("secret") == true)
+        XCTAssertFalse(presentation.status?.contains("/Users/") == true)
+        XCTAssertFalse(presentation.status?.contains("appcast.xml") == true)
+
+        let boundedPresentation = BessieUpdateSettingsPresentation(
+            state: BessieUpdateState(
+                phase: .idle,
+                preferences: .unavailable,
+                status: String(repeating: "x", count: BessieUpdateSettingsPresentation.maximumStatusLength + 100)
+            ),
+            canCheckForUpdates: false
+        )
+        XCTAssertEqual(boundedPresentation.status?.count, BessieUpdateSettingsPresentation.maximumStatusLength)
+    }
+
+    func testUpdateSettingsManualActionIsDisabledWhenSparkleCannotCheck() {
+        let adapter = SettingsUpdaterAdapter()
+        adapter.canCheckForUpdates = false
+        let coordinator = BessieUpdateCoordinator(
+            launchContext: .eligibleForCoordinatorTests,
+            adapterFactory: { _ in adapter }
+        )
+        XCTAssertTrue(coordinator.start())
+
+        let presentation = BessieUpdateSettingsPresentation(
+            state: coordinator.state,
+            canCheckForUpdates: coordinator.canCheckForUpdates
+        )
+
+        XCTAssertFalse(presentation.canCheckForUpdates)
+        XCTAssertFalse(coordinator.checkForUpdates())
+    }
+
     func testSettingsConnectAtLaunchPersistsPerHerd() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -68,6 +164,40 @@ final class SettingsAndNotificationsTests: XCTestCase {
         XCTAssertEqual(model.defaultProjectConnectionID, remoteID)
         XCTAssertEqual(try BessieConnectionStore(url: connectionsURL).load().selectedConnectionID, remoteID)
         XCTAssertEqual(try BessieConnectionStore(url: connectionsURL).load().defaultProjectConnectionID, remoteID)
+    }
+
+    func testSetupSelectionReenablesAndSelectsDisabledLocalWithoutChangingProjectDefault() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectionsURL = root.appendingPathComponent("connections.json")
+        var local = BessieConnectionDefinition.localBessie
+        local.enabled = false
+        let remote = BessieConnectionDefinition(
+            id: "remote-only",
+            name: "Remote",
+            kind: .ssh,
+            sshHost: "hermes"
+        )
+        try BessieConnectionStore(url: connectionsURL).save(try BessieConnectionState.validated(
+            selectedConnectionID: remote.id,
+            defaultProjectConnectionID: remote.id,
+            connections: [local, remote]
+        ))
+        let model = BessieSettingsModel(
+            presentationURL: root.appendingPathComponent("presentation.json"),
+            connectionsURL: connectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("runtime.json")
+        )
+
+        XCTAssertTrue(model.selectConnectionForSetup(BessieConnectionDefinition.localBessie.id))
+
+        XCTAssertTrue(model.connections.first(where: { $0.id == local.id })?.enabled == true)
+        XCTAssertEqual(model.selectedConnectionID, local.id)
+        XCTAssertEqual(model.defaultProjectConnectionID, remote.id)
+        let persisted = try BessieConnectionStore(url: connectionsURL).load()
+        XCTAssertTrue(persisted.connections.first(where: { $0.id == local.id })?.enabled == true)
+        XCTAssertEqual(persisted.selectedConnectionID, local.id)
+        XCTAssertEqual(persisted.defaultProjectConnectionID, remote.id)
     }
 
     func testSettingsRejectsDisablingOrRemovingFinalEnabledHerdWithoutMutation() throws {
@@ -1134,6 +1264,18 @@ private enum TestNotificationDeliveryError: LocalizedError {
     case failed
 
     var errorDescription: String? { "delivery failed" }
+}
+
+@MainActor
+private final class SettingsUpdaterAdapter: BessieUpdaterAdapter {
+    weak var delegate: BessieUpdaterAdapterDelegate?
+    var canCheckForUpdates = true
+    var automaticallyChecksForUpdates = true
+    var automaticallyDownloadsUpdates = true
+    var allowsAutomaticUpdates = true
+
+    func start() throws {}
+    func checkForUpdates() {}
 }
 
 @MainActor

@@ -6,10 +6,27 @@ artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
 execution: code
-branch: feat/v1-k-self-updates
+branch: feat/v1-l-brand-chrome
 ---
 
 # Bessie secure self-updating releases - Plan
+
+## Frozen execution corrections (post-BES-46, 2026-08-09)
+
+The architecture and unit order below remain valid, but these corrections supersede stale implementation details elsewhere in this plan:
+
+1. **Resolved artifact discovery:** pin `https://github.com/sparkle-project/Sparkle` exactly to `2.9.5` and attach `Sparkle` only to `BessieApp`. Deterministically locate exactly one resolved `Sparkle.xcframework` through repository-local SwiftPM artifact/build metadata; do not assume it sits beside the executable or search a developer-global cache.
+2. **Intact framework layout:** copy the macOS `Sparkle.framework` to `Contents/Frameworks` without dereferencing symlinks. Preserve its real `Versions/B` structure, reject flattened copies, and do not embed release tools, `BinaryDelta`, old DSA scripts, or dSYMs. Verify the executable links `@rpath/Sparkle.framework/Versions/B/Sparkle` and has an app-relative Frameworks runpath.
+3. **Inside-out signing:** enumerate the actual Sparkle 2.9.5 nested code subjects and sign inside-out while preserving required entitlements and designated requirements, then sign the framework, bundled Herdr, and outer app. `codesign --deep` may verify but must never be the signing algorithm. Keep local/ad-hoc structural proof distinct from Developer ID, notarization, Gatekeeper, and live-update evidence. Bessie remains non-sandboxed; do not add sandbox-only Sparkle host keys or entitlements.
+4. **Fail-closed signed feeds:** production packages require approved values for `SUPublicEDKey` and HTTPS `SUFeedURL`, plus `SURequireSignedFeed = true`, `SUVerifyUpdateBeforeExtraction = true`, and `SUSignedFeedFailureExpirationInterval = 0`. Reject missing, malformed, test, or placeholder key material and omit `SUAllowsInsecureUpdates`. Never generate, log, bundle, or commit the private key.
+5. **Sparkle-owned preferences:** distinguish automatic checks, automatic updates, automatic download/staging, and visible manual checks using Sparkle 2.9.5's actual plist keys and `SPUUpdater` properties. Disabling automatic checks must not disable **Check for Updates…**. Bessie does not add another scheduler, downloader, or updater preference store.
+6. **Throwing startup:** construct `SPUStandardUpdaterController` with `startingUpdater: false` when delegates must be installed first, retain it for app lifetime, and call Sparkle's real throwing start API. Surface startup failures and compile against the generated 2.9.5 declarations rather than pseudocode.
+7. **One-shot restart readiness:** only `updater(_:willInstallUpdateOnQuit:immediateInstallationBlock:)` establishes ready-to-restart state. Retain the associated version and closure on the main actor, expose the action only while the closure exists, clear it when invoked, and let Sparkle perform normal installation. Do not infer readiness from files, use private APIs, hard-exit, or replace Bessie's existing shutdown hooks. Herdr remains alive.
+8. **Current UI ownership:** U3/U4 integrate with the post-BES-46 `BessieApp` object graph and command menus, current General settings composition, current `HerdRail` footer, and current termination hooks. U1 does not touch updater lifecycle or UI surfaces.
+9. **Release-byte order:** build → embed → nested Developer ID sign → verify → notarization archive → require Accepted → staple and validate the app → recreate the final downloadable ZIP with symlinks preserved → compute hash/length → Ed25519-sign those exact bytes → generate the appcast → perform external and real old-to-new update verification. A ZIP is not stapled; recreating it invalidates prior signature, length, hash, and enclosure metadata.
+10. **Proof boundary:** U1 proves dependency resolution, deterministic embedding, plist validation, runtime linkage, local signing structure, launch, and unchanged Herdr packaging. Production key custody, Developer ID, notarization, Gatekeeper, public feed infrastructure, and real old-to-new replacement remain later operator-gated evidence.
+
+The exact Sparkle 2.9.5 SwiftPM archive checksum observed during contract freeze is `34b9b2071f3de0012eca3faa3a9290bb94e62131e9a74f6dc91514a000097a6c`.
 
 ## Goal Capsule
 

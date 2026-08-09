@@ -103,7 +103,7 @@ public struct HerdRailPresentation: Equatable, Sendable {
         snoozedRows = snoozed
         awakeAttentionCount = attention
         navigationRows = pinned.filter { !$0.isSnoozed }
-            + HerdRailGroup.allCases.prefix(4).flatMap { ordinary[$0, default: []] }
+            + HerdRailGroup.statusCases.flatMap { ordinary[$0, default: []] }
             + shells
     }
 
@@ -113,7 +113,7 @@ public struct HerdRailPresentation: Equatable, Sendable {
 
     public var allRows: [HerdRailPresentedRow] {
         pinnedRows
-            + HerdRailGroup.allCases.prefix(4).flatMap { rows(in: $0) }
+            + HerdRailGroup.statusCases.flatMap { rows(in: $0) }
             + shellRows
             + snoozedRows
     }

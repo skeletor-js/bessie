@@ -4,7 +4,7 @@
 **Status:** Locked with Jordan after vision-quest + occam-loop
 **Governs:** remaining V1 work in docs/plans and docs/roadmap
 
-> **2026-08-04 amendment:** The Pre-v1 UI redesign plan supersedes this document's shell/onboarding visual direction and explicitly unparks the native menu-bar companion and entity-aware palette. Needs you / Working / Settled / Unknown is the canonical visible model; elapsed-age UI is intentionally absent.
+> **Status amendment:** The Pre-v1 UI redesign plan supersedes this document's shell/onboarding visual direction and explicitly unparks the native menu-bar companion and entity-aware palette. Needs you / Working / Done / Idle is the canonical always-visible model; Unknown appears only while its scoped count is nonzero, and elapsed-age UI is intentionally absent.
 
 ## Governing vision
 

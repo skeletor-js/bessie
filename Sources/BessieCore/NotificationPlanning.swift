@@ -155,8 +155,7 @@ public struct BessieNotificationPlanner: Sendable {
             case .done:
                 title = "\(pane.identity) is done"
             case .idle:
-                // Settled completion for agents (e.g. Hermes) that land on idle, not done.
-                title = "\(pane.identity) is settled"
+                title = "\(pane.identity) is idle"
             default:
                 return nil
             }
@@ -174,9 +173,8 @@ public struct BessieNotificationPlanner: Sendable {
 }
 
 private extension BessieNotifications {
-    /// `blockedAndDone` ("Needs me and settled") treats UI Settled as `done` **or** `idle`.
-    /// Settled toasts only fire when leaving an active state (`working` / `blocked`), so
-    /// idle↔done churn inside Settled does not spam.
+    /// Preserve the existing `blockedAndDone` trigger contract: blocked, plus done or idle
+    /// when leaving an active state. Idle↔done churn does not emit another notification.
     func shouldNotify(transitioningTo state: AgentSemanticState, from previous: AgentSemanticState?) -> Bool {
         switch self {
         case .off:

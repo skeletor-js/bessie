@@ -213,6 +213,386 @@ final class SurfaceProjectionTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandCWithNoSelectionIsConsumedWithoutTerminalInput() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        defer { controller.release() }
+
+        XCTAssertTrue(controller.terminalView.performBessieShortcut(.copy))
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    @MainActor
+    func testControlCRequiresExactModifiersAndModifiedChordsKeepTheirRouting() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        defer { controller.release() }
+
+        for (flags, expected) in [
+            (NSEvent.ModifierFlags.control, TerminalInputOperation.raw(Data([0x03]))),
+            ([.control, .shift], .keys(["ctrl+shift+c"])),
+            ([.control, .option], .keys(["ctrl+alt+c"])),
+        ] {
+            operations.removeAll()
+            controller.terminalView.keyDown(with: try keyEvent(modifierFlags: flags, characters: "c"))
+            XCTAssertEqual(operations, [expected], "Unexpected routing for modifiers \(flags)")
+        }
+
+        operations.removeAll()
+        controller.terminalView.keyDown(with: try keyEvent(modifierFlags: [.control, .command], characters: "c"))
+        XCTAssertTrue(operations.isEmpty, "Command-modified Ctrl-C must remain app-owned")
+    }
+
+    @MainActor
+    func testResponderPasteRoutesExactUnicodeAndNewlinesThroughHerdrPaste() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        let text = "alpha\nβeta 👩🏽‍💻\r\n"
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            controller.release()
+        }
+
+        XCTAssertTrue(controller.terminalView.tryToPerform(#selector(NSText.paste(_:)), with: nil))
+        XCTAssertEqual(operations, [.paste(text)])
+    }
+
+    @MainActor
+    func testEditMenuPasteUsesFocusedTerminalResponderAfterReattachment() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        let text = "retained\n日本語"
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        let firstHost = TerminalSurfaceHostView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        firstHost.attach(controller: controller, fontSize: 13, requestFocus: {}, responderChanged: { _ in })
+        firstHost.detach()
+        let retainedTerminal = controller.terminalView
+        let secondHost = TerminalSurfaceHostView(frame: firstHost.frame)
+        secondHost.attach(controller: controller, fontSize: 13, requestFocus: {}, responderChanged: { _ in })
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            secondHost.detach()
+            controller.release()
+        }
+
+        XCTAssertTrue(controller.terminalView === retainedTerminal)
+        XCTAssertTrue(controller.terminalView.tryToPerform(#selector(NSText.paste(_:)), with: nil))
+        XCTAssertEqual(operations, [.paste(text)])
+    }
+
+    @MainActor
+    func testNilTargetPasteTraversesActualWindowResponderChain() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        let text = "responder-chain\nλ"
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        let host = TerminalSurfaceHostView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let window = NSWindow(
+            contentRect: host.bounds,
+            styleMask: .titled,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        host.attach(controller: controller, fontSize: 13, requestFocus: {}, responderChanged: { _ in })
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(controller.terminalView))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            host.detach()
+            window.orderOut(nil)
+            controller.release()
+        }
+
+        guard window.isKeyWindow else {
+            throw XCTSkip("The headless XCTest host cannot establish an AppKit key window for nil-target action routing")
+        }
+        XCTAssertTrue(NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil))
+        XCTAssertEqual(operations, [.paste(text)])
+    }
+
+    @MainActor
+    func testTerminalContextMenuAndValidationExposeHonestCopyPasteStates() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            controller.release()
+        }
+        pasteboard.clearContents()
+
+        let menu = controller.terminalView.selectionContextMenu()
+
+        XCTAssertEqual(menu.items.map(\.title), ["Copy", "Paste"])
+        XCTAssertTrue(controller.terminalView.validateUserInterfaceItem(menu.items[0]))
+        XCTAssertFalse(controller.terminalView.validateUserInterfaceItem(menu.items[1]))
+        pasteboard.setString("paste", forType: .string)
+        XCTAssertTrue(controller.terminalView.validateUserInterfaceItem(menu.items[1]))
+    }
+
+    @MainActor
+    func testSelectAllCopyUsesPublicGhosttySelectionAndExactPasteboardContent() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        let marker = "BESSIE_PUBLIC_SELECTION_λ"
+        let host = TerminalSurfaceHostView(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
+        let window = NSWindow(
+            contentRect: host.bounds,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.attach(controller: controller, fontSize: 13, requestFocus: {}, responderChanged: { _ in })
+        host.layoutSubtreeIfNeeded()
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            host.detach()
+            window.orderOut(nil)
+            controller.release()
+        }
+        controller.session.receive(Data(marker.utf8))
+        for _ in 0..<20 where controller.session.readViewportText()?.contains(marker) != true {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(controller.session.readViewportText()?.contains(marker) == true)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(controller.terminalView.performBessieShortcut(.selectAll))
+        let editMenuCopy = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        XCTAssertTrue(controller.terminalView.validateUserInterfaceItem(editMenuCopy))
+        XCTAssertTrue(controller.terminalView.copySelectedTextToPasteboard())
+        XCTAssertTrue(pasteboard.string(forType: .string)?.contains(marker) == true)
+    }
+
+    @MainActor
+    func testTerminalRightMouseGestureIgnoresShiftAddedAfterTerminalDown() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        controller.terminalView.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+        controller.terminalView.setMouseCaptureCapability(.full)
+        defer { controller.release() }
+
+        controller.terminalView.rightMouseDown(with: try rightMouseEvent(.rightMouseDown))
+        controller.terminalView.rightMouseDragged(with: try rightMouseEvent(.rightMouseDragged, modifiers: .shift))
+        controller.terminalView.rightMouseUp(with: try rightMouseEvent(.rightMouseUp, modifiers: .shift))
+
+        XCTAssertEqual(operations.count, 3)
+        XCTAssertTrue(operations.allSatisfy { if case .raw = $0 { true } else { false } })
+    }
+
+    @MainActor
+    func testContextRightMouseGestureIgnoresShiftRemovedAfterDown() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        controller.terminalView.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+        controller.terminalView.setMouseCaptureCapability(.full)
+        defer { controller.release() }
+
+        controller.terminalView.rightMouseDown(with: try rightMouseEvent(.rightMouseDown, modifiers: .shift))
+        controller.terminalView.rightMouseDragged(with: try rightMouseEvent(.rightMouseDragged))
+        controller.terminalView.rightMouseUp(with: try rightMouseEvent(.rightMouseUp))
+
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    @MainActor
+    func testTerminalContextMenuOffersPasteWithoutASelection() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        defer { controller.release() }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        XCTAssertEqual(controller.terminalView.menu(for: event)?.items.map(\.title), ["Copy", "Paste"])
+    }
+
+    @MainActor
+    func testEmptyAndNonStringPasteboardsAreDisabledAndSendNothing() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            controller.release()
+        }
+
+        pasteboard.clearContents()
+        XCTAssertFalse(controller.terminalView.canPasteFromPasteboard())
+        XCTAssertFalse(controller.terminalView.performBessieShortcut(.paste))
+        XCTAssertFalse(controller.terminalView.tryToPerform(#selector(NSText.paste(_:)), with: nil))
+        pasteboard.setData(Data([0x89, 0x50]), forType: .png)
+        XCTAssertFalse(controller.terminalView.canPasteFromPasteboard())
+        XCTAssertFalse(controller.terminalView.performBessieShortcut(.paste))
+        pasteboard.clearContents()
+        pasteboard.setString("", forType: .string)
+        XCTAssertFalse(controller.terminalView.canPasteFromPasteboard())
+        XCTAssertFalse(controller.terminalView.performBessieShortcut(.paste))
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    @MainActor
+    func testCommandPasteAndResponderPastePreserveOperationOrder() {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        let pasteboard = NSPasteboard.general
+        let prior = pasteboard.string(forType: .string)
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        defer {
+            pasteboard.clearContents()
+            if let prior { pasteboard.setString(prior, forType: .string) }
+            controller.release()
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString("first\n", forType: .string)
+        XCTAssertTrue(controller.terminalView.performBessieShortcut(.paste))
+        pasteboard.clearContents()
+        pasteboard.setString("第二 👋", forType: .string)
+        controller.terminalView.bessiePaste(nil)
+
+        XCTAssertEqual(operations, [.paste("first\n"), .paste("第二 👋")])
+    }
+
+    @MainActor
+    func testCommandModifiedTextNeverReachesTerminalInput() throws {
+        let controller = PaneTerminalController(
+            paneID: "p1",
+            endpoint: .init(connectionID: "test", executablePath: "/usr/bin/false", socketPath: "/tmp/missing")
+        )
+        var operations: [TerminalInputOperation] = []
+        controller.terminalView.sendOperation = { operations.append($0) }
+        defer { controller.release() }
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: "x",
+            charactersIgnoringModifiers: "x",
+            isARepeat: false,
+            keyCode: 7
+        ))
+
+        controller.terminalView.keyDown(with: event)
+
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    @MainActor
+    private func keyEvent(
+        modifierFlags: NSEvent.ModifierFlags,
+        characters: String
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: 8
+        ))
+    }
+
+    @MainActor
+    private func rightMouseEvent(
+        _ type: NSEvent.EventType,
+        modifiers: NSEvent.ModifierFlags = []
+    ) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+            with: type,
+            location: NSPoint(x: 50, y: 50),
+            modifierFlags: modifiers,
+            timestamp: 1,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+    }
+
+    @MainActor
     func testWarmTerminalStoreRetainsControllerIdentityAcrossSwitches() {
         let store = makeWarmStore(capacity: 1)
 
@@ -1251,7 +1631,7 @@ final class SurfaceProjectionTests: XCTestCase {
         )
         let settledEvents = planner.events(for: [idle, working], policy: .blockedAndDone, activePaneID: nil)
         XCTAssertEqual(settledEvents.count, 1)
-        XCTAssertEqual(settledEvents.first?.title, "Claude is settled")
+        XCTAssertEqual(settledEvents.first?.title, "Claude is idle")
         XCTAssertEqual(settledEvents.first?.target, blocked.target)
 
         let blockedAgain = BessieNotificationPane(

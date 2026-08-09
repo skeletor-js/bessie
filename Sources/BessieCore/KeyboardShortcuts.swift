@@ -70,7 +70,7 @@ public enum BessieShortcutCommand: Equatable, Sendable {
 
 public enum BessieTerminalShortcutAction: Equatable, Sendable {
     case sendBytes(Data)
-    case copyOrSendInterrupt
+    case copy
     case paste
     case clearScrollback
     case selectAll
@@ -168,7 +168,7 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
         if case .character(let raw) = stroke.key, !stroke.option {
             switch (raw.lowercased(), stroke.shift) {
             case ("b", false): return .sendBytes(Data([0x02]))
-            case ("c", false): return .copyOrSendInterrupt
+            case ("c", false): return .copy
             case ("v", false): return .paste
             case ("k", false): return .clearScrollback
             case ("a", false): return .selectAll

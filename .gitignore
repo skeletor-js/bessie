@@ -10,3 +10,8 @@ DerivedData/
 __pycache__/
 *.pyc
 .env
+site/node_modules/
+site/proof/
+site/.wrangler/
+site/.staged/
+site/public/appcast.xml

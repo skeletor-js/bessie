@@ -51,6 +51,7 @@ forbidden_copy=(
     '"INCLUDED"'
     'BessieActionPopover(label: "Pane actions")'
     'Open The Herd'
+    'Enable TUI Mouse Clicks (Experimental)'
 )
 
 for phrase in "${forbidden_copy[@]}"; do
@@ -75,7 +76,7 @@ required_copy=(
     'Select your herd'
     'joining the herd'
     'Bessie is a window onto Herdr'
-    'Four states, and where they live'
+    'Five states, and where they live'
     'How should agents reach you?'
     'Finish and open terminal'
 )

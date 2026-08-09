@@ -288,7 +288,6 @@ final class BessieCommandPaletteModel: ObservableObject {
 
 struct BessieCommandPalette: View {
     @ObservedObject var model: BessieCommandPaletteModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.bessieDensity) private var density
     @FocusState private var searchFocused: Bool
     let maxListHeight: CGFloat
@@ -416,11 +415,7 @@ struct BessieCommandPalette: View {
             }
             .onChange(of: model.selection) { _, _ in
                 guard let id = model.selectedScrollID else { return }
-                if reduceMotion {
-                    proxy.scrollTo(id, anchor: .center)
-                } else {
-                    withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(id, anchor: .center) }
-                }
+                proxy.scrollTo(id, anchor: .center)
             }
         }
     }

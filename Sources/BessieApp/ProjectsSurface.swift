@@ -7,7 +7,7 @@ struct ProjectsSurface: View {
     @State private var deleteCandidate: BessieStoredProject?
 
     var body: some View {
-        Group {
+        ProjectModeRegion(mode: model.draft != nil) {
             if model.draft != nil {
                 ProjectEditorView(model: model)
             } else {
@@ -305,7 +305,11 @@ private struct ProjectLaunchPresentationModifier: ViewModifier {
         content
             .overlay(alignment: .bottomTrailing) {
                 if let opening = model.opening {
-                    ProjectLaunchProgressCard(model: model, opening: opening).padding(18)
+                    ProjectLaunchEntrance(initialOffset: 10) {
+                        ProjectLaunchProgressCard(model: model, opening: opening)
+                    }
+                    .id(opening.projectID)
+                    .padding(18)
                 }
             }
             .sheet(item: reviewBinding) { review in
@@ -450,7 +454,108 @@ private struct ProjectLaunchProgressCard: View {
         .background(BessieDesign.panel)
         .overlay { Rectangle().stroke(BessieDesign.borderStrong, lineWidth: 1) }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("Opening \(opening.projectName)")
+        .accessibilityValue(model.progress.map { projectStageName($0.stage) } ?? "Preparing launch")
+        .onAppear {
+            announceProjectLaunch("Opening \(opening.projectName)")
+        }
+        .onChange(of: model.progress?.stage) { _, stage in
+            guard let stage else { return }
+            announceProjectLaunch(projectStageName(stage))
+        }
     }
+}
+
+private struct ProjectModeRegion<Content: View>: View {
+    let mode: Bool
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 1.0
+
+    init(mode: Bool, @ViewBuilder content: () -> Content) {
+        self.mode = mode
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .id(mode)
+            .opacity(reduceMotion ? 1 : opacity)
+            .onChange(of: mode) { _, _ in
+                guard !reduceMotion else {
+                    opacity = 1
+                    return
+                }
+                opacity = 0
+                Task { @MainActor in
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    withAnimation(BessieDesign.motionStrongEaseOut) {
+                        opacity = 1
+                    }
+                }
+            }
+            .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                if shouldReduceMotion {
+                    opacity = 1
+                }
+            }
+    }
+}
+
+private struct ProjectLaunchEntrance<Content: View>: View {
+    let initialOffset: CGFloat
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 0.0
+    @State private var verticalOffset: CGFloat
+
+    init(initialOffset: CGFloat, @ViewBuilder content: () -> Content) {
+        self.initialOffset = initialOffset
+        self.content = content()
+        _verticalOffset = State(initialValue: initialOffset)
+    }
+
+    var body: some View {
+        content
+            .opacity(reduceMotion ? 1 : opacity)
+            .offset(y: reduceMotion ? 0 : verticalOffset)
+            .task {
+                guard !reduceMotion else {
+                    opacity = 1
+                    verticalOffset = 0
+                    return
+                }
+                opacity = 0
+                verticalOffset = initialOffset
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                withAnimation(BessieDesign.motionStrongEaseOut) {
+                    opacity = 1
+                    verticalOffset = 0
+                }
+            }
+            .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                if shouldReduceMotion {
+                    opacity = 1
+                    verticalOffset = 0
+                }
+            }
+    }
+}
+
+@MainActor
+private func announceProjectLaunch(_ message: String) {
+    NSAccessibility.post(
+        element: NSApplication.shared,
+        notification: .announcementRequested,
+        userInfo: [
+            .announcement: message,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ]
+    )
 }
 
 private struct ProjectLaunchFailureView: View {

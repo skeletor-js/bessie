@@ -243,9 +243,10 @@ enum BessieDesign {
     static let controlRadius: CGFloat = 3
     static let popoverInnerRadius: CGFloat = 4
 
-    static let hoverDuration: TimeInterval = 0.12
-    static let popoverDuration: TimeInterval = 0.15
-    static let panelDuration: TimeInterval = 0.28
+    static let motionFastDuration: TimeInterval = 0.16
+    static let motionExplanatoryDuration: TimeInterval = 0.20
+    static let motionStrongEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionFastDuration)
+    static let motionExplanatoryEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionExplanatoryDuration)
 
     static let systemTypeDesign: Font.Design = .default
     static let monoTypeDesign: Font.Design = .monospaced
@@ -259,18 +260,20 @@ enum BessieDesign {
 enum BessieStateGeometry: String, CaseIterable {
     case needsYouFilledCircle
     case workingSpinnerRing
-    case settledHollowRing
+    case doneCheckmarkRing
+    case idleHorizontalLine
     case unknownHollowDiamond
 }
 
 enum BessieStatusPresentation: Equatable {
-    case needsYou, working, settled, unknown
+    case needsYou, working, done, idle, unknown
 
     init(state: AgentSemanticState) {
         switch state {
         case .blocked: self = .needsYou
         case .working: self = .working
-        case .done, .idle: self = .settled
+        case .done: self = .done
+        case .idle: self = .idle
         case .unknown: self = .unknown
         }
     }
@@ -279,7 +282,8 @@ enum BessieStatusPresentation: Equatable {
         switch self {
         case .needsYou: "Needs you, filled circle"
         case .working: "Working, ring"
-        case .settled: "Settled, hollow ring"
+        case .done: "Done, checkmark ring"
+        case .idle: "Idle, horizontal line"
         case .unknown: "Unknown, hollow diamond"
         }
     }
@@ -292,8 +296,9 @@ enum BessieStatusGeometry {
     static let workingDiameter: CGFloat = 10
     static let workingLineWidth: CGFloat = 1.6
     static let workingRotationDuration: TimeInterval = 0.8
-    static let settledDiameter: CGFloat = 9
-    static let settledLineWidth: CGFloat = 1.5
+    static let doneDiameter: CGFloat = 10
+    static let idleWidth: CGFloat = 10
+    static let idleHeight: CGFloat = 2
     static let unknownDiameter: CGFloat = 8
     static let unknownLineWidth: CGFloat = 1.5
 }
@@ -324,10 +329,14 @@ struct BessieStatusGlyph: View {
                     reduceMotion: reduceMotion
                 )
                 .frame(width: BessieStatusGeometry.workingDiameter, height: BessieStatusGeometry.workingDiameter)
-            case .settled:
-                Circle()
-                    .stroke(BessieDesign.borderStrong, lineWidth: BessieStatusGeometry.settledLineWidth)
-                    .frame(width: BessieStatusGeometry.settledDiameter, height: BessieStatusGeometry.settledDiameter)
+            case .done:
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: BessieStatusGeometry.doneDiameter, weight: .medium))
+                    .foregroundStyle(BessieDesign.borderStrong)
+            case .idle:
+                Capsule()
+                    .fill(BessieDesign.borderStrong)
+                    .frame(width: BessieStatusGeometry.idleWidth, height: BessieStatusGeometry.idleHeight)
             case .unknown:
                 Rectangle()
                     .stroke(BessieDesign.borderStrong, lineWidth: BessieStatusGeometry.unknownLineWidth)
@@ -423,6 +432,17 @@ final class BessieWorkingSpinnerNSView: NSView {
         contentLayer.animation(forKey: Self.animationKey) != nil
     }
 
+    var spinTimingFunctionControlPoints: [CGPoint]? {
+        guard let timingFunction = (contentLayer.animation(forKey: Self.animationKey) as? CABasicAnimation)?.timingFunction else {
+            return nil
+        }
+        return [1, 2].map { index in
+            var values = [Float](repeating: 0, count: 2)
+            timingFunction.getControlPoint(at: index, values: &values)
+            return CGPoint(x: CGFloat(values[0]), y: CGFloat(values[1]))
+        }
+    }
+
     private func rebuildPaths() {
         let side = min(bounds.width, bounds.height)
         let size = side > 0 ? side : diameter
@@ -466,6 +486,7 @@ final class BessieWorkingSpinnerNSView: NSView {
             spin.fromValue = -Double.pi / 2
             spin.toValue = -Double.pi / 2 + (2 * Double.pi)
             spin.duration = max(0.05, duration)
+            spin.timingFunction = CAMediaTimingFunction(name: .linear)
             spin.repeatCount = .infinity
             spin.isRemovedOnCompletion = false
             contentLayer.removeAnimation(forKey: Self.animationKey)
@@ -991,13 +1012,9 @@ struct BessieProviderMark: View {
 
 struct BessieBrandMark: View {
     var body: some View {
-        HStack(spacing: 8) {
-            BessiePhosphorCow(size: 19)
-            Text("Bessie")
-                .font(.system(size: 14, weight: .semibold))
-                .tracking(-0.14)
-        }
+        BessiePhosphorCow(size: 19)
         .foregroundStyle(BessieDesign.strong)
+        .accessibilityLabel("Bessie")
     }
 }
 

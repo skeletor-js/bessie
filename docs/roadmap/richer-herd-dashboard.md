@@ -5,7 +5,7 @@
 **Product area:** The Herd
 **Implementation approval:** Granted (Occam-locked 2026-08-02)
 
-**Acceptance correction:** The Herd is the complete operational roster and the sole needs-you surface. Standalone Attention is removed. Its presentation buckets are Needs you (`blocked`), Working (`working`), Settled (`done` or `idle`), and Unknown (unknown or unrecognized); raw Herdr state remains intact for protocol, notification, and diagnostic behavior. Visual implementation must return to the retained native Herd mockup; see [`../plans/2026-08-03-v1-acceptance-remediation.md`](../plans/2026-08-03-v1-acceptance-remediation.md) §7.
+**Acceptance correction:** The Herd is the complete operational roster and the sole needs-you surface. Standalone Attention is removed. It presents Needs you (`blocked`), Working (`working`), Done (`done`), and Idle (`idle`) distinctly. Unknown (unknown or unrecognized) remains counted but its controls and sections appear only while the scoped live count is nonzero. Raw Herdr state remains intact for protocol, notification, and diagnostic behavior. Visual implementation must return to the retained native Herd mockup; see [`../plans/2026-08-03-v1-acceptance-remediation.md`](../plans/2026-08-03-v1-acceptance-remediation.md) §7.
 
 ## Outcome
 
@@ -17,7 +17,7 @@ The current Herd has blocked-first ordering and state filters, but the design ex
 
 ## First useful slice
 
-- Show counted Needs you, Working, Settled, and Unknown filters, with All retained as the aggregate roster.
+- Show counted Needs you, Working, Done, and Idle filters, with All retained as the aggregate roster. Show Unknown only while its scoped count is nonzero and normalize a disappearing selected Unknown filter to All.
 - Add workspace/runtime filters and selectable sorting.
 - Keep Needs you blocked-only with a scoped count, blocked-first All ordering, Open pane, and next-needs-you routing.
 - Remove the standalone Attention destination and duplicate list model.

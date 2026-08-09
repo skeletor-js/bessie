@@ -552,10 +552,10 @@ struct BessieProductShell: View {
     @EnvironmentObject private var settings: BessieSettingsModel
     @EnvironmentObject private var themeCoordinator: BessieThemeCoordinator
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
+    @EnvironmentObject private var updates: BessieUpdateCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.bessieDensity) private var density
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var destination: ProductDestination = .herd
     @State private var selectedTopologyConnectionID: String?
     /// Workspace open in the main surface.
@@ -980,11 +980,9 @@ struct BessieProductShell: View {
                         .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
                     }
                 }
-                .transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.985)))
                 .zIndex(20)
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: showCommandPalette)
     }
 
     private var shellStateLifecycle: some View {
@@ -1327,8 +1325,13 @@ struct BessieProductShell: View {
             healthMessages: fleet.connectionIssues.map { "\($0.label): \($0.title)" },
             selectedPane: selectedPaneID.map { HerdPaneIdentity(connectionID: selectedTopologyConnectionID ?? model.activeConnection.id, paneID: $0) },
             hierarchy: workspaceHierarchyRail,
+            update: HerdRailUpdatePresentation(
+                phase: updates.state.phase,
+                canRestartToUpdate: updates.canRestartToUpdate
+            ),
             collapsed: railCollapsedBinding,
             appearance: themeCoordinator.binding(),
+            restartToUpdate: { _ = updates.restartToUpdate() },
             openSearch: { openCommandPalette() },
             selectDestination: { target in
                 if zenState.isActive { exitZen() }
@@ -1837,7 +1840,7 @@ struct BessieProductShell: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(BessieDesign.strong)
                         .lineLimit(1)
-                    Text(card.location)
+                    Text([card.secondaryIdentity, card.location].compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 9.5))
                         .foregroundStyle(BessieDesign.subtle)
                         .lineLimit(1)
@@ -1860,7 +1863,7 @@ struct BessieProductShell: View {
         }
         .buttonStyle(.plain)
         .padding(.bottom, 3)
-        .accessibilityLabel("Open \(card.identity), needs you, \(card.location)")
+        .accessibilityLabel("Open \(card.announcedIdentity), needs you, \(card.location)")
     }
 
     private func sidebarEmptyRow(_ title: String, action: @escaping () -> Void) -> some View {
@@ -3815,8 +3818,8 @@ private struct BessieZenSurface: View {
                                 }
                             }
                             .buttonStyle(.plain)
-                            .help("Open \(card.identity)")
-                            .accessibilityLabel("Open \(card.identity), \(card.state.title), \(card.location)")
+                            .help("Open \(card.announcedIdentity)")
+                            .accessibilityLabel("Open \(card.announcedIdentity), \(card.state.title), \(card.location)")
                             .accessibilityValue(isSelected(card) ? "Selected" : "Not selected")
                         }
                     }
@@ -3933,7 +3936,7 @@ private struct HerdSurface: View {
             agents: fleet.agents,
             connectedConnectionIDs: fleet.connectedConnectionIDs,
             scope: fleet.herdScope,
-            filter: filter
+            filter: filter.normalized(unknownCount: unknownCount)
         )
     }
 
@@ -3944,6 +3947,8 @@ private struct HerdSurface: View {
             scope: fleet.herdScope
         )
     }
+
+    private var unknownCount: Int { counts[.unknown, default: 0] }
 
     private var connectionIssues: [FleetConnectionIssue] {
         fleet.connectionIssues.filter { issue in
@@ -4010,12 +4015,14 @@ private struct HerdSurface: View {
                 .padding(.bottom, 50)
             }
         }
-
+        .onChange(of: unknownCount) { _, count in
+            filter = filter.normalized(unknownCount: count)
+        }
     }
 
     private var herdFilters: some View {
         HStack(spacing: 0) {
-            ForEach(HerdListFilter.allCases, id: \.self) { item in
+            ForEach(HerdListFilter.visibleCases(unknownCount: unknownCount), id: \.self) { item in
                 Button { filter = item } label: {
                     HStack(spacing: 5) {
                         Text(item.rawValue)
@@ -4064,8 +4071,7 @@ private struct HerdSurface: View {
     private func herdCard(_ card: HerdCardModel) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                AgentStateGlyph(state: herdGlyphState(card.presentationStatus), size: 7)
-                    .accessibilityLabel(card.presentationStatus.rawValue)
+                AgentStateGlyph(state: card.state, size: 7)
                 Text(card.identity)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BessieDesign.strong)
@@ -4081,6 +4087,12 @@ private struct HerdSurface: View {
             Rectangle().fill(BessieDesign.border).frame(height: 1)
 
             VStack(alignment: .leading, spacing: 9) {
+                if let secondaryIdentity = card.secondaryIdentity {
+                    Text(secondaryIdentity)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(BessieDesign.subtle)
+                        .lineLimit(1)
+                }
                 HStack(spacing: 7) {
                     Text(card.connectionLabel)
                         .padding(.horizontal, 6)
@@ -4128,17 +4140,9 @@ private struct HerdSurface: View {
         switch status {
         case .needsYou: BessieDesign.strong
         case .working: BessieDesign.running
-        case .settled: BessieDesign.done
+        case .done: BessieDesign.done
+        case .idle: BessieDesign.idle
         case .unknown: BessieDesign.idle
-        }
-    }
-
-    private func herdGlyphState(_ status: HerdPresentationStatus) -> AgentSemanticState {
-        switch status {
-        case .needsYou: .blocked
-        case .working: .working
-        case .settled: .done
-        case .unknown: .unknown
         }
     }
 }
@@ -4177,7 +4181,7 @@ private struct AgentDetailSurface: View {
         VStack(spacing: 0) {
             BessieTopBar(
                 crumbs: [ConnectionDisplayLabel(connection: model.activeConnection).short, workspace?.label, tab?.label].compactMap { $0 },
-                title: pane?.agent ?? pane?.label ?? pane?.title ?? "Pane"
+                title: pane?.presentationTitle ?? "Pane"
             ) {
                 if let pane {
                     Button("Rename") { editor = .renamePane(id: pane.id, value: pane.label ?? "") }
@@ -5394,6 +5398,36 @@ struct PaneContextMenuContent: View {
     let requestTakeover: () -> Void
     let rename: () -> Void
     let close: () -> Void
+
+    init(
+        paneID: String,
+        primaryTitle: String,
+        primaryAction: @escaping () -> Void,
+        zenTitle: String,
+        enterZen: @escaping () -> Void,
+        action: @escaping (HerdrAction) -> Void,
+        requestSplit: @escaping (SplitDirection) -> Void,
+        moveChoices: PaneMoveChoices?,
+        requestMoveToNewTab: @escaping (String) -> Void,
+        canTakeOver: Bool,
+        requestTakeover: @escaping () -> Void,
+        rename: @escaping () -> Void,
+        close: @escaping () -> Void
+    ) {
+        self.paneID = paneID
+        self.primaryTitle = primaryTitle
+        self.primaryAction = primaryAction
+        self.zenTitle = zenTitle
+        self.enterZen = enterZen
+        self.action = action
+        self.requestSplit = requestSplit
+        self.moveChoices = moveChoices
+        self.requestMoveToNewTab = requestMoveToNewTab
+        self.canTakeOver = canTakeOver
+        self.requestTakeover = requestTakeover
+        self.rename = rename
+        self.close = close
+    }
 
     var body: some View {
         Button(primaryTitle, action: primaryAction)

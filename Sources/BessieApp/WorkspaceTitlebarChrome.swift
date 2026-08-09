@@ -120,7 +120,6 @@ struct WorkspaceHierarchyRail: View {
 
     @State private var openSection: WorkspaceHierarchySection? = .tab
     @State private var hoveredRowID: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if collapsed {
@@ -139,7 +138,9 @@ struct WorkspaceHierarchyRail: View {
                     Button("Add a herd", action: addHerd)
                     Button("Manage herds…", action: manageHerds)
                 }
-                if openSection == .herd { herdOptions.transition(optionTransition) }
+                WorkspaceHierarchyOptionRegion(isPresented: openSection == .herd) {
+                    herdOptions
+                }
 
                 selectorRow(
                     section: .workspace,
@@ -154,7 +155,9 @@ struct WorkspaceHierarchyRail: View {
                         .disabled(mutationsDisabled)
                     if presentation.globalSection == nil { currentWorkspaceContextMenu }
                 }
-                if openSection == .workspace { workspaceOptions.transition(optionTransition) }
+                WorkspaceHierarchyOptionRegion(isPresented: openSection == .workspace) {
+                    workspaceOptions
+                }
 
                 selectorRow(
                     section: .tab,
@@ -174,7 +177,9 @@ struct WorkspaceHierarchyRail: View {
                         tabContextMenu(row: selected)
                     }
                 }
-                if openSection == .tab { tabOptions.transition(optionTransition) }
+                WorkspaceHierarchyOptionRegion(isPresented: openSection == .tab) {
+                    tabOptions
+                }
 
                 Rectangle()
                     .fill(BessieDesign.border)
@@ -182,7 +187,6 @@ struct WorkspaceHierarchyRail: View {
                     .padding(.top, 9)
                     .padding(.horizontal, 1)
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: openSection)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Current herd, workspace, and tab")
         }
@@ -475,11 +479,44 @@ struct WorkspaceHierarchyRail: View {
             .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
     }
 
-    private var optionTransition: AnyTransition {
-        reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top))
-    }
-
     private func toggle(_ section: WorkspaceHierarchySection) {
         openSection = openSection == section ? nil : section
+    }
+}
+
+private struct WorkspaceHierarchyOptionRegion<Content: View>: View {
+    let isPresented: Bool
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 0.0
+
+    init(isPresented: Bool, @ViewBuilder content: () -> Content) {
+        self.isPresented = isPresented
+        self.content = content()
+    }
+
+    var body: some View {
+        if isPresented {
+            content
+                .opacity(reduceMotion ? 1 : opacity)
+                .task {
+                    guard !reduceMotion else {
+                        opacity = 1
+                        return
+                    }
+                    opacity = 0
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    withAnimation(BessieDesign.motionStrongEaseOut) {
+                        opacity = 1
+                    }
+                }
+                .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                    if shouldReduceMotion {
+                        opacity = 1
+                    }
+                }
+        }
     }
 }

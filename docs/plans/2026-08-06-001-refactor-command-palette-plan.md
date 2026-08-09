@@ -33,7 +33,7 @@ The refactor keeps what is genuinely good — the five-tier fuzzy scorer and its
 
 The palette technically works — it opens, filters, and routes — but functions poorly. Blunt diagnosis, grounded in code at `d08d1a1`:
 
-1. **The most important signal renders wrong.** `paletteState(_:)` (`Sources/BessieApp/ProductSurfaces.swift:1874-1881`) emits presentation strings ("Needs you", "Settled"), but `BessieCommandPaletteRow` re-parses them with `AgentSemanticState(herdrValue:)` (`Sources/BessieApp/KeyboardShortcutCoordinator.swift:394-396`), which only knows raw lowercase Herdr values (`Sources/BessieCore/SurfaceProjection.swift:6-8`). Result: blocked and settled panes both render the Unknown diamond, and VoiceOver announces "Unknown" (`KeyboardShortcutCoordinator.swift:443-447`). Only "Working" survives by lucky case-folding. The palette cannot show who needs you.
+1. **The most important signal renders wrong.** `paletteState(_:)` (`Sources/BessieApp/ProductSurfaces.swift:1874-1881`) emits presentation strings, but `BessieCommandPaletteRow` re-parses them with `AgentSemanticState(herdrValue:)` (`Sources/BessieApp/KeyboardShortcutCoordinator.swift:394-396`), which only knows raw lowercase Herdr values (`Sources/BessieCore/SurfaceProjection.swift:6-8`). Result: known panes can render the Unknown diamond and VoiceOver can announce "Unknown" (`KeyboardShortcutCoordinator.swift:443-447`). The palette must preserve typed Needs you, Working, Done, Idle, and Unknown states.
 2. **Connection rows are visually wrong.** They carry `state: "Connected"/"Disconnected"` (`ProductSurfaces.swift:603`), so the row always renders an agent-state glyph (Unknown diamond) instead of the mock's hard-drives icon; the icon branch (`KeyboardShortcutCoordinator.swift:403`) is dead for connections.
 3. **The footer advertises a lie.** "⌘↵ open in a new tab" renders unconditionally (`KeyboardShortcutCoordinator.swift:238`), but zero command definitions set `alternateCommand` (`Sources/BessieCore/KeyboardShortcuts.swift:261-304`), and the gate refuses alternates without one (`Sources/BessieCore/CommandPalette.swift:157`). ⌘↩ does nothing, everywhere, always — a direct U6 violation ("hide the footer hint").
 4. **Empty query is a wall of noise.** `CommandPaletteSearch.results` returns insertion order for empty queries (`CommandPalette.swift:77`), and insertion order is every pane, then every workspace, project, connection, and ~42 commands (`ProductSurfaces.swift:615`). No attention ordering, no grouping, no recency, no caps. The roadmap's named risk — "a universal palette can become noisy without ranking and scope" — shipped as the default state.
@@ -95,7 +95,7 @@ History context: the palette began as a static ⌘B command list (2026-07-31), w
 - R23. Connection rows render the hard-drives icon plus health text and never the agent-state glyph. Provider marks come from the typed provider field, not `keywords.first`.
 - R24. Browse sections render quiet section headers; query results render flat (matching the artboard). Spacing adopts `BessieDensityMetrics` (comfortable/compact) instead of hard-coded paddings.
 - R25. States are all reachable and honest: a no-herds-connected notice renders in browse (commands still listed) whenever zero connections are fresh; no-results renders for unmatched queries with the footer reduced to the kind legend; an inline refreshing/failed notice renders during R14 recovery; a retrying herd row shows a transient in-progress state and a repeated failure updates its health text distinguishably from the first; Reduce Motion removes scale/scroll animation; the surface stays opaque under Reduce Transparency (existing CI-pinned material).
-- R26. VoiceOver announces kind, title, presentation status (correct four-state vocabulary), location, and health per row, plus selection state and honest action hints; every notice state (no connections, no results, recovery refreshing, recovery failed) posts an announcement when it appears; browse section headers are exposed as accessibility headers; the open palette is accessibility-modal (background content not traversable) and the scrim exposes an accessible dismiss action; keyboard-only operation covers open, browse, search, activate, recover, and dismiss.
+- R26. VoiceOver announces kind, title, presentation status (correct five-state vocabulary), location, and health per row, plus selection state and honest action hints; every notice state (no connections, no results, recovery refreshing, recovery failed) posts an announcement when it appears; browse section headers are exposed as accessibility headers; the open palette is accessibility-modal (background content not traversable) and the scrim exposes an accessible dismiss action; keyboard-only operation covers open, browse, search, activate, recover, and dismiss.
 
 **Quality, evidence, compatibility**
 
@@ -256,7 +256,7 @@ flowchart TB
   - Commands: registry order.
 - Section volume is a decision, not an accident: panes are the only capped kind in browse (they appear solely under Needs you and Recent); Workspaces, Projects, Herds, and Commands render complete — each is bounded by real fleet or registry size, one line per row, and completeness beats a second ranking policy. A multi-herd fixture test pins section order and completeness.
 - Browse applies no active-herd proximity boost — section-internal connection-definition order already groups herds deterministically; the proximity boost belongs to query ranking only.
-- Searchable text also includes the presentation status word ("needs you", "settled") so state-term queries keep working — sourced from the typed state, not a stored string.
+- Searchable text also includes the presentation status word ("needs you", "working", "done", "idle", or "unknown") so state-term queries keep working — sourced from the typed state, not a stored string.
 - Determinism (AE8) is over identical inputs, and the inputs include the Projects list order and connection definition order; the permutation tests vary entity arrival order while holding those input orders fixed.
 
 ### Keep, replace, delete
@@ -296,9 +296,9 @@ flowchart TB
 
 **Test scenarios:**
 
-- Blocked pane maps to `.blocked` typed state and Needs-you presentation; done/idle map to settled; unknown stays unknown (Covers AE1 at model level).
+- Blocked pane maps to `.blocked` typed state and Needs-you presentation; done and idle retain distinct typed/presentation states; unknown stays unknown (Covers AE1 at model level).
 - Browse: sections appear in fixed order; empty sections omitted; panes absent outside Needs you/Recent; deterministic across input permutations (Covers AE8).
-- Query: tier tests unchanged; equal-score tie between blocked and settled pane ranks blocked first; active-connection entity outranks other-herd twin; kind order then ID close ties (Covers AE7).
+- Query: tier tests unchanged; equal-score tie between blocked and done/idle panes ranks blocked first; active-connection entity outranks other-herd twin; kind order then ID close ties (Covers AE7).
 - Cross-herd: same-titled panes from two herds both survive dedup with distinct IDs/locations (Covers AE6).
 - Identity: a pane input whose workspace/tab changed between builds keeps the same entity ID; the identity test pins the connection + pane ID component scheme (Covers AE11 at model level).
 - Freshness: disconnected herd contributes no pane/workspace entities but exactly one connection entity flagged disconnected.

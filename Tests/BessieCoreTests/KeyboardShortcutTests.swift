@@ -36,10 +36,21 @@ final class KeyboardShortcutTests: XCTestCase {
         )
     }
 
+    func testCommandCIsCopyOnlyAndControlCRemainsTerminalInput() {
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("c"), command: true)),
+            .terminalShortcut(.copy)
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("c"), control: true)),
+            .passthrough
+        )
+    }
+
     func testGhosttyMacOSTerminalShortcutMatrix() {
         let cases: [(BessieShortcutStroke, BessieTerminalShortcutAction)] = [
             (.init(key: .character("b"), command: true), .sendBytes(Data([0x02]))),
-            (.init(key: .character("c"), command: true), .copyOrSendInterrupt),
+            (.init(key: .character("c"), command: true), .copy),
             (.init(key: .character("v"), command: true), .paste),
             (.init(key: .character("k"), command: true), .clearScrollback),
             (.init(key: .character("a"), command: true), .selectAll),

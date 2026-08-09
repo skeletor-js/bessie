@@ -4,7 +4,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-catppuccin-themes.sh scripts/rebuild-install-shortcuts.sh scripts/run-hardening-probes.sh scripts/verify-app-install-lifecycle.sh
+bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/lib/sparkle-packaging.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-catppuccin-themes.sh scripts/rebuild-install-shortcuts.sh scripts/release-app.sh scripts/run-hardening-probes.sh scripts/test-release-app.sh scripts/test-sparkle-packaging.sh scripts/verify-app-install-lifecycle.sh
+python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("scripts/release-metadata.py").read_text())'
+./scripts/test-sparkle-packaging.sh
+./scripts/test-release-app.sh
 python3 scripts/check-herdr-runtime.py
 python3 scripts/check-intent-parity.py
 python3 scripts/check-theme-color-escapes.py
@@ -91,9 +94,15 @@ grep -Fq 'struct BessieSurfaceProjection' Sources/BessieCore/SurfaceProjection.s
 grep -Fq 'struct HerdSurface' Sources/BessieApp/ProductSurfaces.swift
 grep -Fq 'public enum HerdListBuilder' Sources/BessieCore/HerdList.swift
 grep -Fq 'case .needsYou: state == .blocked' Sources/BessieCore/HerdList.swift
-grep -Fq 'case .settled: state == .done || state == .idle' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .done: state == .done' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .idle: state == .idle' Sources/BessieCore/HerdList.swift
 grep -Fq 'case .unknown: state == .unknown' Sources/BessieCore/HerdList.swift
-grep -Fq 'case .done, .idle: self = .settled' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .done: self = .done' Sources/BessieCore/HerdList.swift
+grep -Fq 'case .idle: self = .idle' Sources/BessieCore/HerdList.swift
+if grep -Fq 'case settled = "Settled"' Sources/BessieCore/HerdList.swift; then
+    echo 'Synthetic user-facing Settled status remains.' >&2
+    exit 1
+fi
 grep -Fq '.sendBytes(Data([0x02]))' Sources/BessieCore/KeyboardShortcuts.swift
 grep -Fq 'builder.withCustom("macos-option-as-alt", "left")' Sources/BessieApp/TerminalPaneController.swift
 grep -Fq '.keyboardShortcut("p", modifiers: [.command, .shift])' Sources/BessieApp/BessieApp.swift
@@ -209,7 +218,10 @@ grep -Fq 'static let collapsedRailWidth: CGFloat = 52' Sources/BessieApp/BessieD
 grep -Fq 'static let topbarHeight: CGFloat = 46' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'static let cardGap: CGFloat = 9' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'static let paneGap: CGFloat = 7' Sources/BessieApp/BessieDesignSystem.swift
-grep -Fq 'static let hoverDuration: TimeInterval = 0.12' Sources/BessieApp/BessieDesignSystem.swift
+grep -Fq 'static let motionFastDuration: TimeInterval = 0.16' Sources/BessieApp/BessieDesignSystem.swift
+grep -Fq 'static let motionExplanatoryDuration: TimeInterval = 0.20' Sources/BessieApp/BessieDesignSystem.swift
+grep -Fq 'static let motionStrongEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionFastDuration)' Sources/BessieApp/BessieDesignSystem.swift
+grep -Fq 'static let motionExplanatoryEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionExplanatoryDuration)' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'struct BessieOnboardingSurface: View' Sources/BessieApp/BessieDesignSystem.swift
 test -s docs/reports/mac-v1-alpha.md
 grep -Fq './scripts/mac-verify.sh' README.md

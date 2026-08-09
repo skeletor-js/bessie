@@ -1,0 +1,11 @@
+name = "bessie-dev"
+account_id = "6f03cccab9f19bc53ea7d259167a7024"
+main = "worker.js"
+compatibility_date = "2026-08-04"
+workers_dev = true
+preview_urls = true
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/appcast.xml", "/install"]

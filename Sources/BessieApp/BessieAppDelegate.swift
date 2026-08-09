@@ -34,7 +34,7 @@ enum BessieWindowChromePolicy {
     static func apply(to window: NSWindow) {
         window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
         window.toolbar = nil
-        window.title = "Bessie"
+        window.title = ""
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none

@@ -16,7 +16,8 @@ public enum HerdListFilter: String, CaseIterable, Sendable {
     case all = "All"
     case needsYou = "Needs you"
     case working = "Working"
-    case settled = "Settled"
+    case done = "Done"
+    case idle = "Idle"
     case unknown = "Unknown"
 
     public func includes(_ state: AgentSemanticState) -> Bool {
@@ -24,23 +25,34 @@ public enum HerdListFilter: String, CaseIterable, Sendable {
         case .all: true
         case .needsYou: state == .blocked
         case .working: state == .working
-        case .settled: state == .done || state == .idle
+        case .done: state == .done
+        case .idle: state == .idle
         case .unknown: state == .unknown
         }
+    }
+
+    public static func visibleCases(unknownCount: Int) -> [Self] {
+        unknownCount > 0 ? allCases : allCases.filter { $0 != .unknown }
+    }
+
+    public func normalized(unknownCount: Int) -> Self {
+        self == .unknown && unknownCount == 0 ? .all : self
     }
 }
 
 public enum HerdPresentationStatus: String, Equatable, Sendable {
     case needsYou = "Needs you"
     case working = "Working"
-    case settled = "Settled"
+    case done = "Done"
+    case idle = "Idle"
     case unknown = "Unknown"
 
     public init(state: AgentSemanticState) {
         switch state {
         case .blocked: self = .needsYou
         case .working: self = .working
-        case .done, .idle: self = .settled
+        case .done: self = .done
+        case .idle: self = .idle
         case .unknown: self = .unknown
         }
     }
@@ -49,8 +61,9 @@ public enum HerdPresentationStatus: String, Equatable, Sendable {
         switch self {
         case .needsYou: 0
         case .working: 1
-        case .settled: 2
-        case .unknown: 3
+        case .done: 2
+        case .idle: 3
+        case .unknown: 4
         }
     }
 }
@@ -68,22 +81,51 @@ public struct HerdPaneIdentity: Hashable, Codable, Sendable {
 public enum HerdRailGroup: String, CaseIterable, Equatable, Sendable {
     case needsYou = "Needs you"
     case working = "Working"
-    case settled = "Settled"
+    case done = "Done"
+    case idle = "Idle"
     case unknown = "Unknown"
     case shells = "Shells"
+
+    public static let statusCases: [Self] = [.needsYou, .working, .done, .idle, .unknown]
 }
 
 public struct HerdRailPaneRow: Identifiable, Equatable, Sendable {
     public let id: HerdPaneIdentity
     public let terminalID: String
     public let title: String
+    public let secondaryIdentity: String?
     public let location: String
     public let group: HerdRailGroup
     public let rawState: AgentSemanticState
     public let agentKind: String?
     public let target: RoutedPaneTarget
 
-    public var accessibilityDescription: String { "\(title), \(group.rawValue), \(location)" }
+    public init(
+        id: HerdPaneIdentity,
+        terminalID: String,
+        title: String,
+        secondaryIdentity: String? = nil,
+        location: String,
+        group: HerdRailGroup,
+        rawState: AgentSemanticState,
+        agentKind: String?,
+        target: RoutedPaneTarget
+    ) {
+        self.id = id
+        self.terminalID = terminalID
+        self.title = title
+        self.secondaryIdentity = secondaryIdentity == title ? nil : secondaryIdentity
+        self.location = location
+        self.group = group
+        self.rawState = rawState
+        self.agentKind = agentKind
+        self.target = target
+    }
+
+    public var announcedTitle: String {
+        [title, secondaryIdentity].compactMap { $0 }.joined(separator: ", ")
+    }
+    public var accessibilityDescription: String { "\(announcedTitle), \(group.rawValue), \(location)" }
 }
 
 public struct HerdRailConnectionInput: Sendable {
@@ -148,18 +190,21 @@ public struct HerdRailProjection: Equatable, Sendable {
                 switch HerdPresentationStatus(state: state) {
                 case .needsYou: group = .needsYou
                 case .working: group = .working
-                case .settled: group = .settled
+                case .done: group = .done
+                case .idle: group = .idle
                 case .unknown: group = .unknown
                 }
             }
-            let title = agent?.identity ?? pane.presentationTitle
+            let title = pane.presentationTitle
+            let secondaryIdentity = agent?.identity == title ? nil : agent?.identity
             let location = [ConnectionDisplayLabel(connection: input.connection).short,
                             workspaces[pane.workspaceID], tabs[pane.tabID]]
                 .compactMap { $0 }.joined(separator: " · ")
             return HerdRailPaneRow(
                 id: HerdPaneIdentity(connectionID: input.connection.id, paneID: pane.id),
                 terminalID: pane.terminalID,
-                title: title, location: location, group: group, rawState: state,
+                title: title, secondaryIdentity: secondaryIdentity,
+                location: location, group: group, rawState: state,
                 agentKind: agent?.agent ?? agent?.displayAgent,
                 target: RoutedPaneTarget(connectionID: input.connection.id, workspaceID: pane.workspaceID,
                                          tabID: pane.tabID, paneID: pane.id)
@@ -204,6 +249,7 @@ public struct HerdCardModel: Equatable, Identifiable, Sendable {
     public let connectionLabel: String
     public let connectionDetail: String
     public let identity: String
+    public let secondaryIdentity: String?
     public let agentKind: String?
     public let state: AgentSemanticState
     public let location: String
@@ -216,6 +262,7 @@ public struct HerdCardModel: Equatable, Identifiable, Sendable {
         connectionLabel: String,
         connectionDetail: String,
         identity: String,
+        secondaryIdentity: String? = nil,
         agentKind: String?,
         state: AgentSemanticState,
         location: String,
@@ -227,6 +274,7 @@ public struct HerdCardModel: Equatable, Identifiable, Sendable {
         self.connectionLabel = connectionLabel
         self.connectionDetail = connectionDetail
         self.identity = identity
+        self.secondaryIdentity = secondaryIdentity == identity ? nil : secondaryIdentity
         self.agentKind = agentKind
         self.state = state
         self.location = location
@@ -235,6 +283,9 @@ public struct HerdCardModel: Equatable, Identifiable, Sendable {
     }
 
     public var presentationStatus: HerdPresentationStatus { HerdPresentationStatus(state: state) }
+    public var announcedIdentity: String {
+        [identity, secondaryIdentity].compactMap { $0 }.joined(separator: ", ")
+    }
 }
 
 public enum HerdListBuilder {
@@ -258,7 +309,8 @@ public enum HerdListBuilder {
                 connectionID: connected.connectionID,
                 connectionLabel: label.short,
                 connectionDetail: label.detail,
-                identity: connected.agent.identity,
+                identity: connected.primaryTitle,
+                secondaryIdentity: connected.secondaryIdentity,
                 agentKind: connected.agent.displayAgent ?? connected.agent.agent,
                 state: state,
                 location: connected.presentationLocation,

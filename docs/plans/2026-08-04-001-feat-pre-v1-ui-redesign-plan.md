@@ -32,7 +32,7 @@ This is not a loose restyling pass. It replaces the current information architec
 
 Implementation must be native SwiftUI/AppKit. Do not ship the HTML, JavaScript, canvas wrapper, or a web view. The redesign may supersede older Bessie UI plans, but it may not violate the ownership and terminal constraints in `AGENTS.md`.
 
-This user-approved plan is the newer V1 release-boundary amendment: the entity palette and native menu-bar companion are unparked into Pre-v1, the visible herd model is Needs you/Working/Settled/Unknown rather than blocked-only, and any older PROJECT/V1 WebGL cowprint direction is superseded by an equivalent native SwiftUI/Core Graphics treatment. U1 updates the governing V1 documents before feature work; U12 verifies that reconciliation rather than deferring the authority decision until release.
+This user-approved plan is the newer V1 release-boundary amendment: the entity palette and native menu-bar companion are unparked into Pre-v1, the visible herd model is Needs you/Working/Done/Idle with conditional Unknown rather than blocked-only, and any older PROJECT/V1 WebGL cowprint direction is superseded by an equivalent native SwiftUI/Core Graphics treatment. U1 updates the governing V1 documents before feature work; U12 verifies that reconciliation rather than deferring the authority decision until release.
 
 Execution order is binding: first reproduce the Ghostty/performance baseline in U1, then implement U2–U11, then make U12's packaged-app, visual, accessibility, and performance proof a prerequisite for any V1 release candidate. Older V1 plan gates continue only after this plan's U12 passes.
 
@@ -51,7 +51,7 @@ Bessie's current native surfaces do not yet express the supplied herd-centric in
 **State, routing, and ownership**
 
 - R4. Keep Herdr as the sole durable owner of connections, sessions, workspaces, tabs, panes, terminals, and processes; Bessie owns only presentation, recipes, routing, preferences, and transient projections.
-- R5. Present Needs you, Working, Settled, and Unknown while preserving raw `done` and `idle` internally and excluding stale/disconnected rows from authoritative live counts.
+- R5. Present Needs you, Working, Done, and Idle as distinct raw Herdr states while excluding stale/disconnected rows from authoritative live counts. Keep Unknown counted and reveal its controls, sections, menu totals, and accessibility summaries only while its scoped count is nonzero; normalize a disappearing selected Unknown filter to All.
 - R6. Route Bessie-owned Mac shortcuts directly through semantic Bessie, Herdr, or libghostty actions with focus/modal guards; include wrapping `Cmd+Shift+J` and `Cmd+Shift+K` pane traversal.
 
 **Product flows**
@@ -135,16 +135,17 @@ When these sources conflict:
 
 #### Status vocabulary
 
-The Herd presents exactly four states:
+The Herd presents the raw Herdr states distinctly:
 
 | Presentation state | Raw Herdr state | Meaning |
 | --- | --- | --- |
 | Needs you | `blocked` | Waiting for human action; the only interrupting state |
 | Working | `working` | Thinking, tools, or active progress |
-| Settled | `done` or `idle` | Nothing is being asked of the user |
-| Unknown | `unknown` or unrecognized | Unclassified; never attention |
+| Done | `done` | Herdr reports that the work finished |
+| Idle | `idle` | Not currently working or asking for input |
+| Unknown | `unknown` or unrecognized | Unclassified; never attention; hidden at scoped count zero |
 
-Keep raw `done` and `idle` internally for event and notification semantics, but render and filter both as Settled.
+Keep `done` and `idle` separate in labels, filters, groups, glyph geometry, command-palette search, menu totals, and accessibility speech.
 
 #### Binding direct-shortcut contract
 
@@ -194,7 +195,7 @@ These commands operate directly—there is no Bessie `Cmd+B` prefix state. Prese
 - KTD2. **Implement the redesign as drawn unless a public capability is absent.** (session-settled: user-directed — chosen over reinterpretation or incremental visual adaptation: Jordan designated the supplied redesign as the intended UI/UX.)
 - KTD3. **Remove elapsed-age labels.** Do not show fixture ages, “oldest” summaries, or synthesized timers. (session-settled: user-directed — chosen over local approximation or an upstream dependency: Jordan removed timestamps from the design.)
 - KTD4. **Keep onboarding fully opaque.** Draw cowprint and layered content over an opaque base rather than transparent material. (session-settled: user-directed — chosen over translucent onboarding: Jordan requested removal of onboarding transparency without unrelated redesign.)
-- KTD5. **Keep status aggregation lossless.** Reuse the existing `HerdPresentationStatus`; preserve raw `done` and `idle` and map both to `.settled` only at presentation boundaries so notification semantics remain exact. Do not introduce a parallel status enum.
+- KTD5. **Keep status presentation lossless.** Reuse the existing `HerdPresentationStatus`; map raw `done` and `idle` to distinct `.done` and `.idle` presentation cases so notification semantics and visible status remain exact. Do not introduce a parallel status enum.
 - KTD6. **Use direct Mac shortcuts rather than a Bessie prefix.** Route Bessie commands semantically through public Herdr or libghostty actions, retain literal Control input, and guard text/modal focus. Preserve `Cmd+B → 0x02` and empty-selection `Cmd+C → 0x03` only as accepted one-shot terminal actions; neither arms a Bessie command state. (session-settled: user-directed — chosen over a mandatory Bessie prefix router: direct native actions are clearer and avoid fragile topology-prefix injection.)
 - KTD7. **Treat Herdr events as invalidation hints.** New surfaces consume `ConnectionFleetViewModel` and authoritative resnapshots instead of inferring durable topology or agent truth from event order.
 - KTD8. **Share one fleet and routing substrate with the menu bar.** The status item may keep Bessie alive without a main window, but it creates no shadow polling/session model and quitting Bessie never terminates Herdr.
@@ -309,7 +310,7 @@ Add versioned preferences for:
 Migration rules:
 
 - Existing users retain current settings where values map directly.
-- `blockedAndDone` notification policy migrates to the visible label `Needs me and settled`, but its raw trigger set remains `{blocked, done}`; `idle` never emits a notification.
+- Keep the persisted notification case named `blockedAndDone`. Its visible label is `Needs me, Done, and Idle`, and its existing trigger behavior remains blocked plus done/idle when leaving an active state.
 - Existing onboarding-completed users stay completed. Every incomplete legacy step starts a new onboarding entry at the cold-open splash and then Connect; no legacy raw integer is reinterpreted and no incomplete user is auto-completed. Run Setup Again follows the same splash-to-Connect entry without mutating existing sessions.
 - Unknown newer preference schemas fail honestly rather than being rewritten.
 
@@ -331,9 +332,9 @@ Migration rules:
 | --- | --- |
 | Off | none |
 | When work needs me | `blocked` only |
-| Needs me and settled | `blocked` and unseen `done` only |
+| Needs me, Done, and Idle | `blocked`, plus `done` or `idle` when leaving an active state |
 
-Raw `idle` never notifies. Settled is a presentation bucket, not a notification trigger expansion.
+The persisted policy remains named `blockedAndDone`; changing status presentation does not rename or expand that stored contract.
 
 ### High-Level Technical Design Confidence Check
 
@@ -421,7 +422,7 @@ Raw `idle` never notifies. Settled is a presentation bucket, not a notification 
 **Approach:**
 
 1. Render top trigger/search, Herd/Workspaces/Shells sections, Settings footer, theme control, selection bar, state and agent marks. The magnifier opens the entity palette. The theme control opens the existing System/Dark/Light appearance picker rather than silently cycling an undocumented state.
-2. Map done/idle to Settled; include explicit Unknown filter/state; order Needs you → Working → Settled → Unknown.
+2. Map done and idle separately; order Needs you → Working → Done → Idle → Unknown.
 3. Keep disconnected/freshness state separate from semantic state and exclude stale agent cards from authoritative live counts.
 4. Implement 244→52 collapse with persisted presentation preference, keyboard action, drag/edge affordance, and stable terminal identity.
    Comfortable/Compact density may change row spacing and typography only; both use the binding 244 pt expanded and 52 pt collapsed rail widths. This explicitly replaces the current 220 pt compact and 64 pt collapsed geometry.
@@ -429,11 +430,11 @@ Raw `idle` never notifies. Settled is a presentation bucket, not a notification 
 5. Match the active rail to the HTML and remove obsolete duplicate rail entries. Keep existing feature-flagged Files/Follow substrate compiled and reachable through its existing non-rail route/menu when enabled; do not delete or expand those features in this plan.
 6. Project every fresh live Herdr pane exactly once from authoritative snapshot topology, not from `fleet.agents` alone. Join recognized-agent metadata by pane ID; rows with a recognized agent render in their semantic group, and the remaining shell/process panes render under Shells. Keep Shells collapsed by default with a count; clicking a row focuses that real pane. Hide the group at zero and never synthesize fixture rows.
 7. Build and unit-test one pure deterministic pane-navigation sequence from currently rendered rail pane rows. It returns the next/previous available pane ID with wrap semantics while skipping headers and disconnected/stale/unavailable targets; zero panes returns no target and one pane returns the current ID. U2 owns projection/order only. U4 owns keyboard registration, routing, menu/tooltips, and terminal-focus restoration.
-8. Always render Needs you, Working, Settled, and Unknown headers in fixed order with honest zero counts. Collapsed pane rows expose title and location in hover and keyboard-focus help plus matching accessibility labels, with no elapsed-age text.
+8. Always render Needs you, Working, Done, and Idle headers in fixed order with honest zero counts. Render Unknown only while its scoped count is nonzero. Collapsed pane rows expose title and location in hover and keyboard-focus help plus matching accessibility labels, with no elapsed-age text.
 
 **Dependencies:** U1.
 
-**Test Scenarios:** Raw `done` and `idle` both render Settled while remaining distinguishable internally; stale/disconnected rows are visible as health but excluded from live totals and pane traversal; zero/one/many-pane sequence calculation handles no target/current target/bidirectional wrap; every fresh pane appears exactly once as recognized-agent or Shells and disconnected panes appear in neither live set; collapsing and theme changes preserve terminal-controller identity.
+**Test Scenarios:** Raw `done` and `idle` render as distinct Done and Idle states; Unknown hides at zero and a selected Unknown filter normalizes immediately to All; stale/disconnected rows are visible as health but excluded from live totals and pane traversal; zero/one/many-pane sequence calculation handles no target/current target/bidirectional wrap; every fresh pane appears exactly once as recognized-agent or Shells and disconnected panes appear in neither live set; all five raw-state groups remain in traversal; collapsing and theme changes preserve terminal-controller identity.
 
 **Verification:** Projection and rail-presentation tests pass for every raw/status/freshness combination and pane classification; sequence-order and VoiceOver checks cover expanded/collapsed modes; screenshots 01/02 match in both appearances.
 
@@ -567,7 +568,7 @@ Raw `idle` never notifies. Settled is a presentation bucket, not a notification 
 1. Match sections and controls exactly: General, Herds, Terminal, Notifications, Menu bar, Appearance, Advanced & diagnostics.
 2. Preserve supported values: startup behavior; connection health/actions; font 10–24; pane spacing 0–16; notification policies; System/Dark/Light; Comfortable/Compact; Dark/Light icon; cowprint.
 3. Add menu-bar visibility, badge policy, and row-click behavior.
-4. Render the binding notification matrix above exactly: Off; When work needs me (`blocked`); Needs me and settled (`blocked` plus unseen `done`, never `idle`).
+4. Render the binding notification matrix above exactly: Off; When work needs me (`blocked`); Needs me, Done, and Idle (the existing `blockedAndDone` behavior).
 5. Keep actual bundled/runtime versions dynamic—never ship fixture versions from the HTML.
 6. Keep Reset to defaults, System Settings, test notification, Run setup again, and Copy diagnostics functional.
 7. Package both exact Dark/Light app-icon assets. Persist the selection and apply it to the running app/Dock through public `NSApplication.applicationIconImage` at launch and change time; verify the built bundle contains both variants. The signed Finder bundle icon remains the package default—do not use private APIs or claim runtime Finder mutation.
@@ -604,7 +605,7 @@ Raw `idle` never notifies. Settled is a presentation bucket, not a notification 
 4. Keep both video and fallback fully opaque over a Coals/Paper base; Reduce Transparency must never expose content behind the onboarding window.
 5. Replace five steps with Connect, How it works, Read the rail, Notifications.
 6. Connect selects a local or remote herd and a required start location. For local Herdr, use a native folder picker and persist the standardized absolute folder. For SSH, select an existing configured `BessieConnectionDefinition` or invoke the same Add herd flow as Settings, whose persisted fields are display name, safe SSH config target/user@host, and optional safe session name; authentication remains owned by OpenSSH/Keychain and is never collected or stored by Bessie. Show validation/health/retry errors inline. Collect and validate an absolute remote path rather than pretending the native Mac picker can browse the remote filesystem. Continue stays disabled until the connection is live and the absolute start path validates.
-7. Explain ownership and four states with exact source hierarchy/copy.
+7. Explain ownership and five states with exact source hierarchy/copy.
 8. Notifications supports policy selection, permission request, Finish, and Skip. Finish applies the selected notification policy; Skip leaves notification setup unchanged. Both are explicit final completion actions and start the selected session/workspace launch exactly once.
 9. Version the onboarding schema. Preserve only `completed == true`; start every incomplete legacy state and Run Setup Again as a fresh onboarding entry at the cold-open splash, never reinterpret a legacy raw integer, and proceed to Connect after the splash/bootstrap gate.
 10. `OnboardingCompletionCoordinator` owns `idle → validating → startingSession → connecting → creatingWorkspace → waitingForFirstFrame → completed/failed`. It disables duplicate submission, carries one attempt ID, and serializes Finish/Skip into one completion operation.
@@ -663,7 +664,7 @@ Raw `idle` never notifies. Settled is a presentation bucket, not a notification 
 
 1. Implement the binding menu-bar lifecycle matrix above using one strongly held `NSStatusItem`, one shared fleet, and a regular Dock application. `BessieAppDelegate.applicationShouldTerminateAfterLastWindowClosed` returns `false`; main-window close orders out/releases only that window and its terminal controllers; `applicationShouldHandleReopen` delegates to one idempotent `BessieWindowCoordinator.showOrCreateMainWindow()` and returns `true`.
 2. Draw cow mark and optional badge from Needs-you or Needs-you+Unknown policy.
-3. Popover shows Needs-you rows, Working/Settled/Unknown totals across fresh snapshots from all configured connections, plus Open Bessie and Settings using exact source hierarchy. Disconnected connections remain visible as health but contribute no semantic-state counts; do not invent an enable/disable field.
+3. Popover shows Needs-you rows and separate Working/Done/Idle totals across fresh snapshots from all configured connections, plus an Unknown total only above zero, Open Bessie, and Settings using exact source hierarchy. Disconnected connections remain visible as health but contribute no semantic-state counts; do not invent an enable/disable field.
    With zero Needs-you rows, show an honest zero header, omit the row section, retain the other fresh totals and connection health, and keep Open Bessie and Settings. An all-zero fresh fleet remains a complete non-blank popover.
 4. Render no “oldest” or per-row elapsed-age elements or reserved gaps.
 5. Row click obeys the configured focus-pane/open-Bessie behavior, activates the correct connection, and resolves stale targets honestly.
@@ -850,7 +851,7 @@ A unit is complete only when its listed files/approach are implemented, its Test
 
 1. All 15 unique screens exist as native interactive surfaces in both Dark and Light, with evidence for all 30 appearance paths; the screen-09 video remains the same authored dark asset in both paths and hands off to the selected native appearance.
 2. The visual hierarchy, dimensions, density, copy, state geometry, iconography, and controls match the HTML after removing its superseded elapsed-age fixtures.
-3. Needs you / Working / Settled / Unknown is the only user-facing state vocabulary in the redesigned surfaces.
+3. Needs you / Working / Done / Idle is the always-available user-facing state vocabulary in the redesigned surfaces; Unknown reappears live only above zero.
 4. No elapsed-age, “oldest,” timer source, or timer-reserved gap exists in the redesigned UI.
 5. Onboarding plays `bessie-cold-open.mp4` once only on first-run or explicit Run Setup Again, otherwise uses the normal native Joining the herd fallback, has four subsequent steps, requires an initial folder/path, remains fully opaque, and completes only after a fresh Herdr session/workspace opens its first live terminal. Completed users never see the video during ordinary launch/reopen/reconnect.
 6. Every visible terminal is `GhosttyTerminal`; terminal identity survives rail/palette/popover/status updates.
@@ -887,7 +888,7 @@ After implementation, update the affected roadmap and old plan documents so ther
 
 - the menu-bar companion and entity-aware palette are explicitly unparked;
 - old shell/onboarding visuals are superseded by this plan;
-- the four-state model and Settled vocabulary are canonical;
+- Done and Idle are distinct visible states, and Unknown is conditional at zero;
 - elapsed-age labels are intentionally absent and have no upstream dependency;
 - the HTML remains retained source material in the workstream rather than copied into the shipping app.
 

@@ -1325,12 +1325,18 @@ final class BessieTerminalView: TerminalView {
     private var sgrGestureArmed = false
     private var lastMotionCell: (column: Int, row: Int)?
     private var mouseMonitor: Any?
+    private enum RightMouseGestureRoute {
+        case terminal
+        case contextMenu
+    }
+    private var rightMouseGestureRoute: RightMouseGestureRoute?
 
     func setMouseCaptureCapability(_ capability: TerminalMouseCaptureCapability) {
         guard mouseCaptureCapability != capability else { return }
         mouseCaptureCapability = capability
         sgrGestureArmed = false
         lastMotionCell = nil
+        rightMouseGestureRoute = nil
         BessieDiagnosticLog.append("Terminal pane=\(paneID) mouse capture=\(capability)")
         updateTrackingAreas()
     }
@@ -1389,6 +1395,9 @@ final class BessieTerminalView: TerminalView {
             guard self.bounds.contains(local), self.bounds.width > 1, self.bounds.height > 1 else {
                 return event
             }
+            if self.rightMouseRoute(for: event) == .contextMenu {
+                return event
+            }
             self.handleMonitoredMouse(event)
             switch event.type {
             case .leftMouseDown, .leftMouseUp, .leftMouseDragged,
@@ -1441,19 +1450,20 @@ final class BessieTerminalView: TerminalView {
         case .rightMouseDown:
             recordLocalUse()
             heldButton = .right
-            handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event) {
+            handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event, forceLocal: false) {
                 super.rightMouseDown(with: event)
             }
         case .rightMouseDragged:
-            handlePointer(kind: .drag, button: .right, pressed: true, event: event) {
+            handlePointer(kind: .drag, button: .right, pressed: true, event: event, forceLocal: false) {
                 super.rightMouseDragged(with: event)
             }
         case .rightMouseUp:
-            handlePointer(kind: .buttonUp, button: .right, pressed: false, event: event) {
+            handlePointer(kind: .buttonUp, button: .right, pressed: false, event: event, forceLocal: false) {
                 super.rightMouseUp(with: event)
             }
             heldButton = nil
             sgrGestureArmed = false
+            rightMouseGestureRoute = nil
         case .otherMouseDown:
             recordLocalUse()
             heldButton = .middle
@@ -1511,6 +1521,7 @@ final class BessieTerminalView: TerminalView {
             sgrGestureArmed = false
             heldButton = nil
             lastMotionCell = nil
+            rightMouseGestureRoute = nil
             responderChanged(false)
         }
         return accepted
@@ -1526,6 +1537,11 @@ final class BessieTerminalView: TerminalView {
         // (⌘Q quit, ⌘H hide, ⌘M minimize, …) and Bessie terminal Command shortcuts
         // are owned by performKeyEquivalent / the local shortcut monitor.
         if flags.contains(.command) {
+            return
+        }
+        if flags == .control,
+           event.charactersIgnoringModifiers?.lowercased() == "c" {
+            sendOperation?(.raw(Data([0x03])))
             return
         }
         // Plain backspace/enter/tab/arrows must stay on the libghostty → raw write
@@ -1554,19 +1570,62 @@ final class BessieTerminalView: TerminalView {
         }
     }
 
+    @IBAction override func copy(_ sender: Any?) {
+        _ = copySelectedTextToPasteboard()
+    }
+
+    @objc func bessiePaste(_ sender: Any?) {
+        _ = pasteFromPasteboard()
+    }
+
+    override func selectionContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.isEnabled = validateUserInterfaceItem(copyItem)
+        menu.addItem(copyItem)
+        let pasteItem = NSMenuItem(title: "Paste", action: #selector(bessiePaste(_:)), keyEquivalent: "")
+        pasteItem.target = self
+        pasteItem.isEnabled = validateUserInterfaceItem(pasteItem)
+        menu.addItem(pasteItem)
+        return menu
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        if rightMouseRoute(for: event) == .contextMenu {
+            return selectionContextMenu()
+        }
+        return super.menu(for: event)
+    }
+
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        // libghostty-spm 1.3.2 exposes Copy as a safe no-op but has no public,
+        // location-free selection query. Validate the action capability rather
+        // than pretending its context-menu point hit test is general state.
+        if item.action == #selector(copy(_:)) { return true }
+        if item.action == #selector(bessiePaste(_:)) || item.action == #selector(NSText.paste(_:)) {
+            return canPasteFromPasteboard()
+        }
+        return false
+    }
+
+    override func tryToPerform(_ action: Selector, with object: Any?) -> Bool {
+        if action == #selector(NSText.paste(_:)) {
+            return pasteFromPasteboard()
+        }
+        return super.tryToPerform(action, with: object)
+    }
+
     @discardableResult
     func performBessieShortcut(_ action: BessieTerminalShortcutAction) -> Bool {
         switch action {
         case .sendBytes(let data):
             guard sendOperation != nil else { return false }
             sendOperation?(.raw(data))
-        case .copyOrSendInterrupt:
-            if copySelectedTextToPasteboard() { return true }
-            guard sendOperation != nil else { return false }
-            sendOperation?(.raw(Data([0x03])))
+        case .copy:
+            _ = copySelectedTextToPasteboard()
         case .paste:
-            guard let text = NSPasteboard.general.string(forType: .string), sendOperation != nil else { return false }
-            sendOperation?(.paste(text))
+            return pasteFromPasteboard()
         case .clearScrollback:
             return performBindingAction("clear_screen")
         case .selectAll:
@@ -1580,6 +1639,18 @@ final class BessieTerminalView: TerminalView {
             return jumpToPrompt(by: value)
         }
         return true
+    }
+
+    private func pasteFromPasteboard() -> Bool {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty, sendOperation != nil else {
+            return false
+        }
+        sendOperation?(.paste(text))
+        return true
+    }
+
+    func canPasteFromPasteboard() -> Bool {
+        sendOperation != nil && !(NSPasteboard.general.string(forType: .string)?.isEmpty ?? true)
     }
 
     // MARK: - Mouse
@@ -1612,24 +1683,33 @@ final class BessieTerminalView: TerminalView {
 
     override func rightMouseDown(with event: NSEvent) {
         recordLocalUse()
+        if rightMouseRoute(for: event) == .contextMenu {
+            ensureKeyFocus()
+            super.rightMouseDown(with: event)
+            return
+        }
         heldButton = .right
-        handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event) {
+        handlePointer(kind: .buttonDown, button: .right, pressed: true, event: event, forceLocal: false) {
             super.rightMouseDown(with: event)
         }
     }
 
     override func rightMouseDragged(with event: NSEvent) {
-        handlePointer(kind: .drag, button: .right, pressed: true, event: event) {
+        if rightMouseRoute(for: event) == .contextMenu { return }
+        handlePointer(kind: .drag, button: .right, pressed: true, event: event, forceLocal: false) {
             super.rightMouseDragged(with: event)
         }
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        handlePointer(kind: .buttonUp, button: .right, pressed: false, event: event) {
-            super.rightMouseUp(with: event)
+        if rightMouseRoute(for: event) == .terminal {
+            handlePointer(kind: .buttonUp, button: .right, pressed: false, event: event, forceLocal: false) {
+                super.rightMouseUp(with: event)
+            }
         }
         heldButton = nil
         sgrGestureArmed = false
+        rightMouseGestureRoute = nil
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -1671,9 +1751,10 @@ final class BessieTerminalView: TerminalView {
         button: TerminalSGRMouse.Button?,
         pressed: Bool,
         event: NSEvent,
+        forceLocal: Bool? = nil,
         localSelection: () -> Void
     ) {
-        let forceLocal = event.modifierFlags.contains(.shift)
+        let forceLocal = forceLocal ?? event.modifierFlags.contains(.shift)
         let currentCell = cell(from: event)
 
         // Shift always forces local selection.
@@ -1768,6 +1849,22 @@ final class BessieTerminalView: TerminalView {
             sendHerdrScroll(event)
         case .motion:
             break
+        }
+    }
+
+    private func rightMouseRoute(for event: NSEvent) -> RightMouseGestureRoute? {
+        switch event.type {
+        case .rightMouseDown:
+            let route: RightMouseGestureRoute =
+                mouseCaptureCapability == .unavailable || event.modifierFlags.contains(.shift)
+                ? .contextMenu
+                : .terminal
+            rightMouseGestureRoute = route
+            return route
+        case .rightMouseUp, .rightMouseDragged:
+            return rightMouseGestureRoute
+        default:
+            return nil
         }
     }
 

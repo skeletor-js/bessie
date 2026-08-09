@@ -4,19 +4,40 @@ import SwiftUI
 struct BessieMenuBarPresentation: Equatable {
     struct Row: Identifiable, Equatable {
         let title: String
+        let secondaryIdentity: String?
         let location: String
         let provider: String?
         let target: RoutedPaneTarget
         var id: String { "\(target.connectionID)::\(target.paneID)" }
+
+        init(
+            title: String,
+            secondaryIdentity: String? = nil,
+            location: String,
+            provider: String?,
+            target: RoutedPaneTarget
+        ) {
+            self.title = title
+            self.secondaryIdentity = secondaryIdentity == title ? nil : secondaryIdentity
+            self.location = location
+            self.provider = provider
+            self.target = target
+        }
+
+        var announcedTitle: String {
+            [title, secondaryIdentity].compactMap { $0 }.joined(separator: ", ")
+        }
     }
 
     let needsYou: [Row]
     let workingRows: [Row]
     let working: Int
-    let settled: Int
+    let done: Int
+    let idle: Int
     let unknown: Int
 
     var needsYouCount: Int { needsYou.count }
+    var showsUnknownSummary: Bool { unknown > 0 }
 
     static let captureFixture = BessieMenuBarPresentation(
         needsYou: [
@@ -48,15 +69,17 @@ struct BessieMenuBarPresentation: Equatable {
             ),
         ],
         working: 2,
-        settled: 7,
+        done: 4,
+        idle: 3,
         unknown: 1,
     )
 
-    private init(needsYou: [Row], workingRows: [Row], working: Int, settled: Int, unknown: Int) {
+    private init(needsYou: [Row], workingRows: [Row], working: Int, done: Int, idle: Int, unknown: Int) {
         self.needsYou = needsYou
         self.workingRows = workingRows
         self.working = working
-        self.settled = settled
+        self.done = done
+        self.idle = idle
         self.unknown = unknown
     }
 
@@ -77,7 +100,8 @@ struct BessieMenuBarPresentation: Equatable {
             (
                 state: AgentSemanticState(herdrValue: item.agent.agentStatus),
                 row: Row(
-                    title: item.agent.title ?? item.agent.identity,
+                    title: item.primaryTitle,
+                    secondaryIdentity: item.secondaryIdentity,
                     location: [ConnectionDisplayLabel(connection: item.connection).short, item.workspaceLabel, item.tabLabel]
                         .compactMap { $0 }.joined(separator: " · "),
                     provider: item.agent.displayAgent ?? item.agent.agent,
@@ -91,10 +115,8 @@ struct BessieMenuBarPresentation: Equatable {
         workingRows = rows.filter { $0.state == .working }.map { $0.row }
             .sorted { $0.location.localizedCaseInsensitiveCompare($1.location) == .orderedAscending }
         working = workingRows.count
-        settled = fresh.count {
-            let state = AgentSemanticState(herdrValue: $0.agent.agentStatus)
-            return state == .done || state == .idle
-        }
+        done = rows.count { $0.state == .done }
+        idle = rows.count { $0.state == .idle }
         unknown = fresh.count { AgentSemanticState(herdrValue: $0.agent.agentStatus) == .unknown }
     }
 
@@ -111,7 +133,9 @@ struct BessieMenuBarPresentation: Equatable {
         case .needsYou:
             "Bessie, \(needsYouCount) agents need you"
         case .needsYouAndUnknown:
-            "Bessie, \(needsYouCount) agents need you, \(unknown) unknown"
+            unknown > 0
+                ? "Bessie, \(needsYouCount) agents need you, \(unknown) unknown"
+                : "Bessie, \(needsYouCount) agents need you"
         case .nothing:
             "Bessie"
         }
@@ -172,8 +196,11 @@ struct BessieMenuBarPopover: View {
             }
 
             VStack(spacing: 0) {
-                total("Settled", presentation.settled, color: BessieDesign.done, symbol: .ring)
-                total("Unknown", presentation.unknown, color: BessieDesign.idle, symbol: .diamond)
+                total("Done", presentation.done, state: .done)
+                total("Idle", presentation.idle, state: .idle)
+                if presentation.showsUnknownSummary {
+                    total("Unknown", presentation.unknown, state: .unknown)
+                }
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 4)
@@ -208,8 +235,6 @@ struct BessieMenuBarPopover: View {
         .background(BessieWindowSnapshotProbe(role: "menu-bar"))
     }
 
-    private enum SummarySymbol { case ring, diamond }
-
     private func paneRow(
         _ row: BessieMenuBarPresentation.Row,
         state: AgentSemanticState,
@@ -225,7 +250,7 @@ struct BessieMenuBarPopover: View {
                         .foregroundStyle(BessieDesign.strong)
                         .lineLimit(1)
                     HStack(spacing: 5) {
-                        Text(row.location).lineLimit(1)
+                        Text([row.secondaryIdentity, row.location].compactMap { $0 }.joined(separator: " · ")).lineLimit(1)
                         Spacer(minLength: 2)
                         if let provider = row.provider {
                             BessieProviderMark(provider: provider)
@@ -241,12 +266,12 @@ struct BessieMenuBarPopover: View {
                         in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open \(row.title), \(label), \(row.location)")
+        .accessibilityLabel("Open \(row.announcedTitle), \(label), \(row.location)")
     }
 
-    private func total(_ label: String, _ count: Int, color: BessieSemanticColor, symbol: SummarySymbol) -> some View {
+    private func total(_ label: String, _ count: Int, state: AgentSemanticState) -> some View {
         HStack(spacing: 8) {
-            BessieStatusGlyph(state: symbol == .diamond ? .unknown : (label == "Working" ? .working : .done))
+            BessieStatusGlyph(state: state)
             Text(label).foregroundStyle(BessieDesign.subtle)
             Spacer()
             Text("\(count)").monospacedDigit().foregroundStyle(BessieDesign.faint)

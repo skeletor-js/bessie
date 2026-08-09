@@ -139,8 +139,8 @@ final class MenuBarPresentationTests: XCTestCase {
         let local = BessieConnectionDefinition.localBessie
         let stale = BessieConnectionDefinition(name: "Remote", kind: .ssh, sshHost: "remote", session: nil)
         let agents = [
-            agent("blocked", pane: "p1", connection: local),
-            agent("working", pane: "p2", connection: local),
+            agent("blocked", pane: "p1", connection: local, identity: "blocked-agent", paneLabel: "Blocked pane"),
+            agent("working", pane: "p2", connection: local, identity: "Working pane", paneLabel: "Working pane"),
             agent("done", pane: "p3", connection: local),
             agent("idle", pane: "p4", connection: local),
             agent("unknown", pane: "p5", connection: local),
@@ -152,12 +152,18 @@ final class MenuBarPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.needsYou.map(\.target.paneID), ["p1"])
-        XCTAssertEqual(presentation.needsYou.first?.title, "p1")
+        XCTAssertEqual(presentation.needsYou.first?.title, "Blocked pane")
+        XCTAssertEqual(presentation.needsYou.first?.secondaryIdentity, "blocked-agent")
+        XCTAssertEqual(presentation.needsYou.first?.announcedTitle, "Blocked pane, blocked-agent")
         XCTAssertEqual(presentation.needsYou.first?.location, "This Mac · Workspace · Tab")
         XCTAssertEqual(presentation.needsYou.first?.provider, "codex")
         XCTAssertEqual(presentation.workingRows.map(\.target.paneID), ["p2"])
+        XCTAssertEqual(presentation.workingRows.first?.title, "Working pane")
+        XCTAssertNil(presentation.workingRows.first?.secondaryIdentity)
+        XCTAssertEqual(presentation.workingRows.first?.announcedTitle, "Working pane")
         XCTAssertEqual(presentation.working, 1)
-        XCTAssertEqual(presentation.settled, 2)
+        XCTAssertEqual(presentation.done, 1)
+        XCTAssertEqual(presentation.idle, 1)
         XCTAssertEqual(presentation.unknown, 1)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 1)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYouAndUnknown), 2)
@@ -173,9 +179,11 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.needsYou.isEmpty)
         XCTAssertTrue(presentation.workingRows.isEmpty)
         XCTAssertEqual(presentation.working, 0)
-        XCTAssertEqual(presentation.settled, 0)
+        XCTAssertEqual(presentation.done, 0)
+        XCTAssertEqual(presentation.idle, 0)
         XCTAssertEqual(presentation.unknown, 0)
         XCTAssertEqual(presentation.badgeCount(policy: .needsYou), 0)
+        XCTAssertFalse(presentation.showsUnknownSummary)
     }
 
     func testSnoozedIncarnationIsExcludedFromAttentionAndStatusCounts() {
@@ -208,6 +216,11 @@ final class MenuBarPresentationTests: XCTestCase {
             presentation.badgeAccessibilityLabel(policy: .needsYouAndUnknown),
             "Bessie, 2 agents need you, 1 unknown"
         )
+        let noUnknown = BessieMenuBarPresentation(agents: [], freshConnectionIDs: [])
+        XCTAssertEqual(
+            noUnknown.badgeAccessibilityLabel(policy: .needsYouAndUnknown),
+            "Bessie, 0 agents need you"
+        )
         XCTAssertEqual(presentation.badgeAccessibilityLabel(policy: .nothing), "Bessie")
     }
 
@@ -238,6 +251,21 @@ final class MenuBarPresentationTests: XCTestCase {
             identifier: BessieWindowChromePolicy.mainWindowIdentifier,
             title: "Settings"
         ))
+    }
+
+    func testMainWindowChromeKeepsTheSemanticIdentityWithoutADrawnTitle() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Bessie"
+
+        BessieWindowChromePolicy.apply(to: window)
+
+        XCTAssertEqual(window.title, "")
+        XCTAssertEqual(window.titleVisibility, .hidden)
     }
 
     func testMainWindowFullScreenStateCanBeRecoveredAfterMissingTheTransitionNotification() {
@@ -404,17 +432,26 @@ final class MenuBarPresentationTests: XCTestCase {
     private func agent(
         _ state: String,
         pane: String,
-        connection: BessieConnectionDefinition
+        connection: BessieConnectionDefinition,
+        identity: String? = nil,
+        paneLabel: String? = nil
     ) -> ConnectedAgentProjection {
         ConnectedAgentProjection(
             connection: connection,
             agent: AgentProjection(
                 id: pane, terminalID: "t-\(pane)", workspaceID: "w", tabID: "t", focused: false,
-                label: nil, agent: "codex", displayAgent: nil, name: pane, title: nil,
+                label: nil, agent: "codex", displayAgent: nil, name: identity ?? pane, title: nil,
                 agentStatus: state, revision: 1, launchPending: false
             ),
             workspaceLabel: "Workspace",
-            tabLabel: "Tab"
+            tabLabel: "Tab",
+            pane: paneLabel.map {
+                PaneProjection(
+                    id: pane, terminalID: "t-\(pane)", workspaceID: "w", tabID: "t", focused: false,
+                    label: $0, cwd: nil, foregroundCWD: nil, agent: "codex", title: nil,
+                    agentStatus: state, revision: 1
+                )
+            }
         )
     }
 }

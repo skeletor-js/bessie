@@ -21,9 +21,11 @@ final class CommandPaletteIndexTests: XCTestCase {
             index.results(query: "needs").filter { $0.kind == .pane }.map(\.id),
             [paneID("local", "blocked")]
         )
-        XCTAssertEqual(HerdPresentationStatus(state: .done), .settled)
-        XCTAssertEqual(HerdPresentationStatus(state: .idle), .settled)
+        XCTAssertEqual(HerdPresentationStatus(state: .done), .done)
+        XCTAssertEqual(HerdPresentationStatus(state: .idle), .idle)
         XCTAssertEqual(HerdPresentationStatus(state: .unknown), .unknown)
+        XCTAssertEqual(index.results(query: "done").filter { $0.kind == .pane }.map(\.id), [paneID("local", "done")])
+        XCTAssertEqual(index.results(query: "idle").filter { $0.kind == .pane }.map(\.id), [paneID("local", "idle")])
     }
 
     func testBrowseSectionsAreCuratedCompleteAndDeterministic() {

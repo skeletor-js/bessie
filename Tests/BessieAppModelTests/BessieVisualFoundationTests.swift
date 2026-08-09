@@ -19,10 +19,9 @@ final class BessieVisualFoundationTests: XCTestCase {
         XCTAssertEqual(BessieDesign.controlRadius, 3)
     }
 
-    func testBindingMotionDurationsAreExact() {
-        XCTAssertEqual(BessieDesign.hoverDuration, 0.12)
-        XCTAssertEqual(BessieDesign.popoverDuration, 0.15)
-        XCTAssertEqual(BessieDesign.panelDuration, 0.28)
+    func testProductionMotionVocabularyIsExact() {
+        XCTAssertEqual(BessieDesign.motionFastDuration, 0.16)
+        XCTAssertEqual(BessieDesign.motionExplanatoryDuration, 0.20)
     }
 
     func testSemanticDesignFacadeExposesIntentSpecificThemeRoles() {
@@ -105,11 +104,13 @@ final class BessieVisualFoundationTests: XCTestCase {
 
     func testStateGeometryVocabularyIsComplete() {
         XCTAssertEqual(Set(BessieStateGeometry.allCases), [
-            .needsYouFilledCircle, .workingSpinnerRing, .settledHollowRing, .unknownHollowDiamond,
+            .needsYouFilledCircle, .workingSpinnerRing, .doneCheckmarkRing, .idleHorizontalLine,
+            .unknownHollowDiamond,
         ])
         XCTAssertEqual(BessieStatusPresentation.needsYou.accessibilityLabel, "Needs you, filled circle")
         XCTAssertEqual(BessieStatusPresentation.working.accessibilityLabel, "Working, ring")
-        XCTAssertEqual(BessieStatusPresentation.settled.accessibilityLabel, "Settled, hollow ring")
+        XCTAssertEqual(BessieStatusPresentation.done.accessibilityLabel, "Done, checkmark ring")
+        XCTAssertEqual(BessieStatusPresentation.idle.accessibilityLabel, "Idle, horizontal line")
         XCTAssertEqual(BessieStatusPresentation.unknown.accessibilityLabel, "Unknown, hollow diamond")
     }
 
@@ -202,12 +203,13 @@ final class BessieVisualFoundationTests: XCTestCase {
         XCTAssertEqual(BessieStatusGeometry.workingDiameter, 10)
         XCTAssertEqual(BessieStatusGeometry.workingLineWidth, 1.6)
         XCTAssertEqual(BessieStatusGeometry.workingRotationDuration, 0.8)
-        XCTAssertEqual(BessieStatusGeometry.settledDiameter, 9)
-        XCTAssertEqual(BessieStatusGeometry.settledLineWidth, 1.5)
+        XCTAssertEqual(BessieStatusGeometry.doneDiameter, 10)
+        XCTAssertEqual(BessieStatusGeometry.idleWidth, 10)
+        XCTAssertEqual(BessieStatusGeometry.idleHeight, 2)
         XCTAssertEqual(BessieStatusGeometry.unknownDiameter, 8)
         XCTAssertEqual(BessieStatusGeometry.unknownLineWidth, 1.5)
-        XCTAssertEqual(BessieStatusPresentation(state: .done), .settled)
-        XCTAssertEqual(BessieStatusPresentation(state: .idle), .settled)
+        XCTAssertEqual(BessieStatusPresentation(state: .done), .done)
+        XCTAssertEqual(BessieStatusPresentation(state: .idle), .idle)
     }
 
     @MainActor
@@ -235,6 +237,11 @@ final class BessieVisualFoundationTests: XCTestCase {
             reduceMotion: false
         )
         XCTAssertTrue(spinner.isSpinning, "Working ring should spin via Core Animation when motion is allowed")
+        XCTAssertEqual(
+            spinner.spinTimingFunctionControlPoints,
+            [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)],
+            "Working ring should rotate at constant linear velocity"
+        )
 
         spinner.configure(
             diameter: BessieStatusGeometry.workingDiameter,
@@ -434,6 +441,28 @@ final class BessieVisualFoundationTests: XCTestCase {
             mainWindowIsKey: true,
             hasAttachedSheet: true
         ))
+    }
+
+    func testFrequentCommandPaletteInteractionsDoNotAnimate() throws {
+        let palette = try appSource("BessieCommandPalette.swift")
+        let product = try appSource("ProductSurfaces.swift")
+
+        XCTAssertTrue(palette.contains("proxy.scrollTo(id, anchor: .center)"))
+        XCTAssertFalse(palette.contains("withAnimation(.easeOut(duration: 0.1))"))
+        XCTAssertFalse(product.contains(".transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.985)))"))
+        XCTAssertFalse(product.contains(".animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: showCommandPalette)"))
+    }
+
+    func testProjectsMotionPreservesImmediateNavigationAndFocusPolicy() throws {
+        let source = try appSource("ProjectsSurface.swift")
+
+        XCTAssertTrue(source.contains("ProjectModeRegion"))
+        XCTAssertTrue(source.contains("ProjectLaunchEntrance"))
+        XCTAssertTrue(source.contains("initialOffset: 10"))
+        XCTAssertTrue(source.contains("withAnimation(BessieDesign.motionStrongEaseOut)"))
+        XCTAssertTrue(source.contains("navigate(handoff)\n                model.consumeNavigationHandoff()"))
+        XCTAssertFalse(source.contains("Task.sleep"))
+        XCTAssertFalse(source.contains("@FocusState"))
     }
 
     func testLogoContrastExceedsAccessibleTextContrastInBothAppearances() {

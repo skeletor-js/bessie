@@ -16,6 +16,11 @@ struct OnboardingView: View {
     let finishSetup: () -> Void
     let cancelSetup: () -> Void
     @State private var selectedPolicy: BessieNotifications = .blockedOnly
+    @Binding var setupConnectionID: String?
+    @State private var showAddRemote = false
+    @State private var remoteName = ""
+    @State private var remoteHost = ""
+    @State private var remoteSession = ""
     @FocusState private var pathFocused: Bool
 
     var body: some View {
@@ -24,35 +29,38 @@ struct OnboardingView: View {
             ScrollView {
                 VStack {
                     Spacer(minLength: 44)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(heading)
-                            .font(.system(size: 22, weight: .medium))
-                            .tracking(-0.44)
-                            .foregroundStyle(BessieDesign.strong)
-                            .accessibilityAddTraits(.isHeader)
-                        Text(lead)
-                            .font(.system(size: 14))
-                            .lineSpacing(4)
-                            .foregroundStyle(BessieDesign.subtle)
-                            .padding(.top, 9)
-                            .padding(.bottom, 26)
-                        content
-                        if let error = settings.onboardingCompletionError {
-                            Text(error)
-                                .font(.system(size: 11.5))
+                    OnboardingStepRegion(initialOffset: 12) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(heading)
+                                .font(.system(size: 22, weight: .medium))
+                                .tracking(-0.44)
                                 .foregroundStyle(BessieDesign.strong)
-                                .padding(.top, 12)
-                                .accessibilityLabel("Setup error, \(error)")
-                        } else if let connectionError {
-                            Text(connectionError)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(BessieDesign.strong)
-                                .padding(.top, 12)
-                                .accessibilityLabel("Connection error, \(connectionError)")
+                                .accessibilityAddTraits(.isHeader)
+                            Text(lead)
+                                .font(.system(size: 14))
+                                .lineSpacing(4)
+                                .foregroundStyle(BessieDesign.subtle)
+                                .padding(.top, 9)
+                                .padding(.bottom, 26)
+                            content
+                            if let error = settings.onboardingCompletionError {
+                                Text(error)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(BessieDesign.strong)
+                                    .padding(.top, 12)
+                                    .accessibilityLabel("Setup error, \(error)")
+                            } else if let connectionError {
+                                Text(connectionError)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(BessieDesign.strong)
+                                    .padding(.top, 12)
+                                    .accessibilityLabel("Connection error, \(connectionError)")
+                            }
+                            actions
                         }
-                        actions
+                        .frame(width: 540, alignment: .leading)
                     }
-                    .frame(width: 540, alignment: .leading)
+                    .id(state.step)
                     Spacer(minLength: 44)
                 }
                 .frame(maxWidth: .infinity, minHeight: 726)
@@ -67,8 +75,24 @@ struct OnboardingView: View {
             projects.load()
             notifications.refreshAuthorization()
             selectedPolicy = settings.preferences.notifications
+            if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] != nil,
+               setupConnectionID == nil {
+                setupConnectionID = settings.selectedConnectionID
+            }
             pathFocused = state.step == .connect
         }
+        .onChange(of: state.step) { _, step in
+            pathFocused = step == .connect
+            NSAccessibility.post(
+                element: NSApplication.shared,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: stepAccessibilityLabel(step),
+                    .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+                ]
+            )
+        }
+        .sheet(isPresented: $showAddRemote) { addRemoteSheet }
         .onExitCommand(perform: cancelSetup)
     }
 
@@ -85,12 +109,9 @@ struct OnboardingView: View {
 
     private var stepRail: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 9) {
-                BessieIconView(icon: .cow, size: 16)
-                    .foregroundStyle(BessieDesign.accent)
-                Text("Bessie").font(.system(size: 16, weight: .semibold))
-            }
-            .foregroundStyle(BessieDesign.strong)
+            BessiePhosphorCow(size: 19)
+                .foregroundStyle(BessieDesign.strong)
+                .accessibilityLabel("Bessie")
             VStack(spacing: 3) {
                 ForEach(OnboardingState.Step.allCases, id: \.rawValue) { step in
                     HStack(spacing: 12) {
@@ -153,38 +174,87 @@ struct OnboardingView: View {
     }
 
     private var connectContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let local = settings.enabledConnections.first(where: { $0.kind == .local }) {
-                connectionCard(connection: local, icon: .desktop, title: "Local herd")
+        VStack(alignment: .leading, spacing: 12) {
+            if let local = settings.connections.first(where: { $0.kind == .local }) {
+                connectionCard(
+                    connection: local,
+                    icon: .desktop,
+                    title: "This Mac",
+                    subtitle: "Use the Herdr runtime on this Mac"
+                )
             }
             remoteConnectionCard
-            if settings.selectedConnection.kind == .ssh {
+            if selectedSetupConnection?.kind == .local {
+                localFolderSelection
+            } else if selectedSetupConnection?.kind == .ssh {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Workspace folder").font(.system(size: 11.5, weight: .medium)).foregroundStyle(BessieDesign.strong)
+                    Text("Remote workspace folder").font(.system(size: 11.5, weight: .medium)).foregroundStyle(BessieDesign.strong)
                     TextField("/absolute/remote/folder", text: $path)
                         .focused($pathFocused)
                         .textFieldStyle(.roundedBorder)
                         .tint(BessieDesign.insertionPoint)
-                        .accessibilityLabel("Initial workspace folder")
+                        .accessibilityLabel("Initial remote workspace folder")
                 }
                 .padding(.top, 4)
             }
         }
     }
 
-    private func connectionCard(connection: BessieConnectionDefinition, icon: BessieIcon, title: String) -> some View {
-        let selected = settings.selectedConnectionID == connection.id
+    private var selectedSetupConnection: BessieConnectionDefinition? {
+        setupConnectionID.flatMap { id in settings.connections.first(where: { $0.id == id }) }
+    }
+
+    private var localFolderSelection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Workspace folder")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(BessieDesign.strong)
+            HStack(spacing: 10) {
+                BessieIconView(icon: .folderOpen, size: 15)
+                    .foregroundStyle(BessieDesign.subtle)
+                Text(path.isEmpty ? "No folder selected" : path)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(path.isEmpty ? BessieDesign.faint : BessieDesign.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Button(path.isEmpty ? "Choose Folder…" : "Change…") { chooseFolder() }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 48)
+            .background(BessieDesign.inset)
+            .overlay { RoundedRectangle(cornerRadius: 4).stroke(BessieDesign.border, lineWidth: 1) }
+        }
+        .padding(.top, 4)
+    }
+
+    private func connectionCard(
+        connection: BessieConnectionDefinition,
+        icon: BessieIcon,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        let selected = setupConnectionID == connection.id
         return Button {
-            settings.selectConnection(connection.id)
-            if connection.kind == .local { chooseFolder() }
+            chooseConnection(connection)
         } label: {
             HStack(spacing: 13) {
                 cardIcon(icon)
-                Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(BessieDesign.strong)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(BessieDesign.strong)
+                    Text(subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(BessieDesign.subtle)
+                }
                 Spacer()
                 if selected { BessieIconView(icon: .check, size: 18).foregroundStyle(BessieDesign.accent) }
             }
-            .padding(.horizontal, 15).frame(height: 70)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .frame(height: 76)
             .background(BessieDesign.panel)
             .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1) }
         }
@@ -194,15 +264,19 @@ struct OnboardingView: View {
     }
 
     private var remoteConnectionCard: some View {
-        let remotes = settings.enabledConnections.filter { $0.kind == .ssh }
-        let selected = settings.selectedConnection.kind == .ssh
+        let remotes = settings.connections.filter { $0.kind == .ssh }
+        let selected = selectedSetupConnection?.kind == .ssh
         return Group {
             if remotes.isEmpty {
-                Button { settings.requestAddConnection() } label: { remoteConnectionLabel(selected: false) }
+                Button { prepareAddRemote() } label: { remoteConnectionLabel(selected: false) }
                     .buttonStyle(.plain)
             } else {
                 Menu {
-                    ForEach(remotes) { connection in Button(connection.name) { settings.selectConnection(connection.id) } }
+                    ForEach(remotes) { connection in
+                        Button(connection.name) { chooseConnection(connection) }
+                    }
+                    Divider()
+                    Button("Add Remote Herd…") { prepareAddRemote() }
                 } label: {
                     remoteConnectionLabel(selected: selected)
                         .contentShape(Rectangle())
@@ -211,24 +285,31 @@ struct OnboardingView: View {
                 .menuIndicator(.hidden)
             }
         }
-        .frame(height: 66)
+        .frame(height: 76)
         .background(BessieDesign.panel)
         .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1) }
-        .accessibilityLabel(selected ? "Remote herd, \(settings.selectedConnection.name)" : "Join a remote herd")
+        .accessibilityLabel(selected ? "Remote herd, \(selectedSetupConnection?.name ?? "selected")" : "Remote over SSH")
         .accessibilityValue(selected ? "Selected" : "Not selected")
     }
 
     private func remoteConnectionLabel(selected: Bool) -> some View {
         HStack(spacing: 13) {
             cardIcon(.cloud)
-            Text(selected ? settings.selectedConnection.name : "Join a remote herd")
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Remote over SSH")
+                if selected, let selectedSetupConnection {
+                    Text(selectedSetupConnection.name)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(BessieDesign.subtle)
+                }
+            }
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(BessieDesign.strong)
             Spacer()
             BessieIconView(icon: selected ? .check : .plus, size: selected ? 18 : 13)
                 .foregroundStyle(selected ? BessieDesign.accent : BessieDesign.subtle)
         }
-        .padding(.horizontal, 15)
+        .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -282,7 +363,8 @@ struct OnboardingView: View {
         VStack(spacing: 13) {
             legendRow(.needsYou, "Needs you", "waiting on a human · the only thing that interrupts")
             legendRow(.working, "Working", "thinking, running tools, making progress")
-            legendRow(.settled, "Settled", "done or idle — nothing moving, nothing asked")
+            legendRow(.done, "Done", "finished work reported by Herdr")
+            legendRow(.idle, "Idle", "not currently working or asking for input")
             legendRow(.unknown, "Unknown", "Herdr cannot classify it · never read as attention")
         }
         .padding(.horizontal, 18).padding(.vertical, 18.5).background(BessieDesign.panel)
@@ -372,7 +454,10 @@ struct OnboardingView: View {
 
     private var canContinue: Bool {
         guard state.step == .connect else { return true }
-        guard connected else { return false }
+        guard setupConnectionID != nil,
+              setupConnectionID == settings.selectedConnectionID,
+              connected
+        else { return false }
         do { _ = try OnboardingPathValidator.absolute(path); return true } catch { return false }
     }
 
@@ -386,16 +471,16 @@ struct OnboardingView: View {
         switch state.step {
         case .connect: "Select your herd"
         case .howItWorks: "Bessie is a window onto Herdr"
-        case .readTheRail: "Four states, and where they live"
+        case .readTheRail: "Five states, and where they live"
         case .notifications: "How should agents reach you?"
         }
     }
 
     private var lead: String {
         switch state.step {
-        case .connect: "Bessie ships with its own Herdr — the local herd is already running. Herdr keeps your workspaces, panes and processes alive whether or not Bessie is open."
+        case .connect: "Choose where Herdr runs, then choose the workspace Bessie should open first. You can use the bundled Herdr on this Mac or connect to a remote host over SSH."
         case .howItWorks: "Herdr runs the terminals. Bessie draws them, watches them and tells you who needs a human — it never owns the processes, which is why quitting Bessie is safe."
-        case .readTheRail: "Every pane reports one of four states, and each one is a different shape — so a glance at the rail tells you who is stuck, who is busy and who is finished. Clicking a row takes you into that pane."
+        case .readTheRail: "Every pane reports one of five states, and each one is a different shape — so a glance at the rail tells you who is stuck, who is busy, who is finished and who is idle. Clicking a row takes you into that pane."
         case .notifications: "Bessie sits in the menu bar and sends a push notification when an agent needs a human — the only way it can reach you when you are somewhere else."
         }
     }
@@ -413,8 +498,90 @@ struct OnboardingView: View {
     }
 
     private func chooseFolder() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        let panel = NSOpenPanel()
+        panel.title = "Choose Your First Workspace"
+        panel.prompt = "Choose"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
         if panel.runModal() == .OK { path = panel.url?.standardizedFileURL.path ?? path }
+    }
+
+    private func chooseConnection(_ connection: BessieConnectionDefinition) {
+        guard settings.selectConnectionForSetup(connection.id) else { return }
+        if setupConnectionID != connection.id { path = "" }
+        setupConnectionID = connection.id
+        if connection.kind == .local { chooseFolder() }
+        else { pathFocused = true }
+    }
+
+    private var addRemoteSheet: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            BessieSectionLabel("ADD REMOTE HERD")
+                .padding(.bottom, 18)
+            remoteField("Name", placeholder: "Studio Mac", text: $remoteName)
+            remoteField("SSH host", placeholder: "studio-mac", text: $remoteHost)
+                .padding(.top, 14)
+            remoteField("Herdr session", placeholder: "default", text: $remoteSession)
+                .padding(.top, 14)
+            Text("Use a Host alias from ~/.ssh/config. OpenSSH owns the destination, user, key, and agent. The Herdr session is optional.")
+                .font(.system(size: 10.5))
+                .lineSpacing(2)
+                .foregroundStyle(BessieDesign.subtle)
+                .padding(.top, 12)
+            if let error = settings.connectionError {
+                Text(error)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(BessieDesign.strong)
+                    .padding(.top, 10)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { showAddRemote = false }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                Button("Add and connect") { addRemote() }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+            }
+            .padding(.top, 22)
+        }
+        .padding(28)
+        .frame(width: 460)
+        .background(BessieDesign.background)
+        .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
+    }
+
+    private func remoteField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(BessieDesign.subtle)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .tint(BessieDesign.insertionPoint)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .background(BessieDesign.inset)
+                .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
+        }
+    }
+
+    private func prepareAddRemote() {
+        remoteName = ""
+        remoteHost = ""
+        remoteSession = ""
+        settings.clearConnectionError()
+        showAddRemote = true
+    }
+
+    private func addRemote() {
+        guard settings.addConnection(name: remoteName, sshHost: remoteHost, session: remoteSession) else { return }
+        setupConnectionID = settings.selectedConnectionID
+        path = ""
+        showAddRemote = false
+        pathFocused = true
     }
 }
 
@@ -437,6 +604,48 @@ private struct OnboardingPrimaryButtonStyle: ButtonStyle {
     }
 }
 
+private struct OnboardingStepRegion<Content: View>: View {
+    let initialOffset: CGFloat
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 0.0
+    @State private var horizontalOffset: CGFloat
+
+    init(initialOffset: CGFloat, @ViewBuilder content: () -> Content) {
+        self.initialOffset = initialOffset
+        self.content = content()
+        _horizontalOffset = State(initialValue: initialOffset)
+    }
+
+    var body: some View {
+        content
+            .opacity(reduceMotion ? 1 : opacity)
+            .offset(x: reduceMotion ? 0 : horizontalOffset)
+            .task {
+                guard !reduceMotion else {
+                    opacity = 1
+                    horizontalOffset = 0
+                    return
+                }
+                opacity = 0
+                horizontalOffset = initialOffset
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                withAnimation(BessieDesign.motionExplanatoryEaseOut) {
+                    opacity = 1
+                    horizontalOffset = 0
+                }
+            }
+            .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                if shouldReduceMotion {
+                    opacity = 1
+                    horizontalOffset = 0
+                }
+            }
+    }
+}
+
 private struct OnboardingSegmentButtonStyle: ButtonStyle {
     let selected: Bool
     let width: CGFloat
@@ -452,7 +661,7 @@ private struct OnboardingSegmentButtonStyle: ButtonStyle {
 }
 
 private enum OnboardingStateMark {
-    enum Geometry { case needsYou, working, settled, unknown }
+    enum Geometry { case needsYou, working, done, idle, unknown }
 }
 
 private extension OnboardingStateMark.Geometry {
@@ -460,7 +669,8 @@ private extension OnboardingStateMark.Geometry {
         switch self {
         case .needsYou: .blocked
         case .working: .working
-        case .settled: .done
+        case .done: .done
+        case .idle: .idle
         case .unknown: .unknown
         }
     }

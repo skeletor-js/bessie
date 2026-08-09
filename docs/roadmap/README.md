@@ -9,7 +9,7 @@
 
 ## Current V1 state
 
-D–J and the Agent Intent Bus are integrated on `main` through PR #2. The 2026-08-04 Pre-v1 redesign is the newer release-boundary amendment: native menu-bar Herd and the entity-aware palette are unparked, the four visible states are Needs you / Working / Settled / Unknown, and its shell/onboarding direction supersedes older visual plans. Its U12 matrix and packaged-app gate must pass before K. This is not a V1 release.
+D–J and the Agent Intent Bus are integrated on `main` through PR #2. The 2026-08-04 Pre-v1 redesign is the newer release-boundary amendment: native menu-bar Herd and the entity-aware palette are unparked, the visible states are Needs you / Working / Done / Idle, with Unknown appearing only while its scoped live count is nonzero, and its shell/onboarding direction supersedes older visual plans. Its U12 matrix and packaged-app gate must pass before K. This is not a V1 release.
 
 ## First after V1 launch
 

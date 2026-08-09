@@ -38,7 +38,7 @@ This plan is a delta over `docs/plans/2026-08-04-001-feat-pre-v1-ui-redesign-pla
 
 A Bessie window shows one concrete live workspace. The title bar expresses that location as three selectors—herd, workspace, and tab—on its trailing edge. Herd and workspace are quiet path text; tab is the only filled chip and shows pane count, never rolled-up status. The workspace card below contains panes, not a second path bar or tab strip.
 
-The rail stops duplicating herd/workspace/project navigation. It becomes the aggregate herd in time order: Needs you, Working, Settled, and folded Shells, with Settings retained in the footer. Existing product destinations remain routable from the title-bar menus, command palette, keyboard shortcuts, notifications, and other established entry points.
+The rail stops duplicating herd/workspace/project navigation. It becomes the aggregate herd in time order: Needs you, Working, Done, Idle, conditional Unknown, and folded Shells, with Settings retained in the footer. Existing product destinations remain routable from the title-bar menus, command palette, keyboard shortcuts, notifications, and other established entry points.
 
 ### Problem Frame
 

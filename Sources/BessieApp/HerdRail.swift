@@ -2,6 +2,52 @@ import AppKit
 import BessieCore
 import SwiftUI
 
+struct HerdRailUpdatePresentation: Equatable {
+    let version: String
+
+    init?(phase: BessieUpdatePhase, canRestartToUpdate: Bool) {
+        guard canRestartToUpdate,
+              case let .readyToRestart(version) = phase
+        else { return nil }
+        self.version = version.shortVersion
+    }
+
+    let title = "Restart to Update"
+    let symbolName = "arrow.clockwise"
+    var expandedAccessibilityLabel: String { title }
+    var collapsedAccessibilityLabel: String { "Restart to Update Bessie \(version)" }
+    var help: String { collapsedAccessibilityLabel }
+}
+
+enum HerdRailFooterPresentation {
+    enum Item: Hashable {
+        case restartToUpdate
+        case settingsDivider
+        case settings
+    }
+
+    static func items(update: HerdRailUpdatePresentation?) -> [Item] {
+        update == nil
+            ? [.settingsDivider, .settings]
+            : [.restartToUpdate, .settingsDivider, .settings]
+    }
+}
+
+struct HerdRailUpdateActivation {
+    private(set) var isConsumed = false
+
+    mutating func invoke(_ action: () -> Void) -> Bool {
+        guard !isConsumed else { return false }
+        isConsumed = true
+        action()
+        return true
+    }
+
+    mutating func reset() {
+        isConsumed = false
+    }
+}
+
 struct HerdRail: View {
     private enum FocusTarget: Hashable {
         case row(HerdPaneIdentity)
@@ -13,8 +59,10 @@ struct HerdRail: View {
     let healthMessages: [String]
     let selectedPane: HerdPaneIdentity?
     let hierarchy: WorkspaceHierarchyRail
+    let update: HerdRailUpdatePresentation?
     @Binding var collapsed: Bool
     @Binding var appearance: BessieAppearance
+    let restartToUpdate: () -> Void
     let openSearch: () -> Void
     let selectDestination: (ProductDestination) -> Void
     let openPane: (RoutedPaneTarget) -> Void
@@ -36,6 +84,8 @@ struct HerdRail: View {
     @State private var hoveredRows: Set<HerdPaneIdentity> = []
     @State private var renderNow = Date()
     @State private var pendingRelocation: (BessiePaneIncarnation, String)?
+    @State private var updateActivation = HerdRailUpdateActivation()
+    @State private var updateHovered = false
     @FocusState private var focusTarget: FocusTarget?
     @Environment(\.colorScheme) private var colorScheme
 
@@ -48,7 +98,7 @@ struct HerdRail: View {
                     if !presentation.pinnedRows.isEmpty {
                         presentedSection("Pinned", rows: presentation.pinnedRows)
                     }
-                    ForEach(Array(HerdRailGroup.allCases.prefix(4)), id: \.self) { group in
+                    ForEach(HerdRailGroup.statusCases, id: \.self) { group in
                         stateSection(group)
                     }
                     if !presentation.shellRows.isEmpty {
@@ -90,6 +140,7 @@ struct HerdRail: View {
         .accessibilityLabel("Herd rail")
         .task(id: countdownSignature) { await runCountdownCadence() }
         .onChange(of: presentation) { _, _ in restorePendingRelocationFocus() }
+        .onChange(of: update) { _, _ in updateActivation.reset() }
     }
 
     private var header: some View {
@@ -111,7 +162,6 @@ struct HerdRail: View {
                     Button { collapsed.toggle() } label: { BessiePhosphorCow(size: 19) }
                         .buttonStyle(.plain).help("Collapse herd rail")
                         .accessibilityLabel("Collapse herd rail").accessibilityValue("Expanded")
-                    Text("Bessie").font(.headline)
                     Spacer()
                     Button(action: openSearch) { BessieIconView(icon: .magnifyingGlass).frame(width: 28, height: 28) }
                         .buttonStyle(.plain).help("Search").accessibilityLabel("Search")
@@ -124,8 +174,10 @@ struct HerdRail: View {
 
     @ViewBuilder private func stateSection(_ group: HerdRailGroup) -> some View {
         let rows = presentation.rows(in: group)
-        if !collapsed { sectionHeader(group.rawValue, count: rows.count) }
-        ForEach(rows) { paneRow($0) }
+        if group != .unknown || !rows.isEmpty {
+            if !collapsed { sectionHeader(group.rawValue, count: rows.count) }
+            ForEach(rows) { paneRow($0) }
+        }
     }
 
     @ViewBuilder private func presentedSection(_ title: String, rows: [HerdRailPresentedRow]) -> some View {
@@ -235,7 +287,7 @@ struct HerdRail: View {
                             if row.isSnoozed { Text("Zzz").font(.system(size: 9, weight: .semibold, design: .rounded)) }
                         }
                         HStack(spacing: 6) {
-                            Text(base.location)
+                            Text([base.secondaryIdentity, base.location].compactMap { $0 }.joined(separator: " · "))
                                 .font(.system(size: 9.5, design: .monospaced))
                                 .foregroundStyle(BessieDesign.faint)
                                 .lineLimit(1)
@@ -412,6 +464,58 @@ struct HerdRail: View {
     }
 
     private var footer: some View {
+        VStack(spacing: 0) {
+            ForEach(HerdRailFooterPresentation.items(update: update), id: \.self) { item in
+                switch item {
+                case .restartToUpdate:
+                    if let update { restartToUpdateRow(update) }
+                case .settingsDivider:
+                    Rectangle().fill(BessieDesign.border).frame(height: 1)
+                case .settings:
+                    settingsFooter
+                }
+            }
+        }
+    }
+
+    private func restartToUpdateRow(_ update: HerdRailUpdatePresentation) -> some View {
+        Button {
+            _ = updateActivation.invoke(restartToUpdate)
+        } label: {
+            if collapsed {
+                Image(systemName: update.symbolName)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 40, height: 38)
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: update.symbolName)
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(update.title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text(update.version)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(BessieDesign.subtle)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 44)
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(BessieDesign.text)
+        .frame(maxWidth: .infinity)
+        .background(updateHovered ? BessieDesign.hover : BessieDesign.accentSoft)
+        .help(update.help)
+        .accessibilityLabel(collapsed ? update.collapsedAccessibilityLabel : update.expandedAccessibilityLabel)
+        .disabled(updateActivation.isConsumed)
+        .accessibilityIdentifier("restart-to-update")
+        .onHover { updateHovered = $0 }
+    }
+
+    private var settingsFooter: some View {
         Group {
             if collapsed {
                 footerControls.frame(maxWidth: .infinity)
@@ -428,7 +532,6 @@ struct HerdRail: View {
             }
         }
         .padding(.vertical, 7)
-        .overlay(alignment: .top) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
     }
 
     private var footerControls: some View {
@@ -498,7 +601,8 @@ private struct HerdRailStateMark: View {
         switch group {
         case .needsYou: .blocked
         case .working: .working
-        case .settled: .done
+        case .done: .done
+        case .idle: .idle
         case .unknown, .shells: .unknown
         }
     }

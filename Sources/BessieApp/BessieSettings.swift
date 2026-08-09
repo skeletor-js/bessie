@@ -344,6 +344,21 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     @discardableResult
+    func selectConnectionForSetup(_ id: String) -> Bool {
+        guard let index = connections.firstIndex(where: { $0.id == id }) else {
+            connectionError = "That herd is no longer configured."
+            return false
+        }
+        var candidate = connections
+        candidate[index].enabled = true
+        return publishConnectionCandidate(
+            selectedConnectionID: id,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: candidate
+        )
+    }
+
+    @discardableResult
     func setDefaultProjectConnection(_ id: String) -> Bool {
         guard connections.contains(where: { $0.id == id && $0.enabled }) else {
             connectionError = "Enable this herd before making it the Project default."
@@ -618,6 +633,7 @@ struct BessieSettingsView: View {
     @EnvironmentObject private var themeCoordinator: BessieThemeCoordinator
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @EnvironmentObject private var fleet: ConnectionFleetViewModel
+    @EnvironmentObject private var updates: BessieUpdateCoordinator
     @State private var showAddConnection = false
     @State private var connectionName = ""
     @State private var sshHost = ""
@@ -704,6 +720,11 @@ struct BessieSettingsView: View {
                 BessieSettingsSectionLabel(icon: .play, title: "General")
 
                 BessieGeneralSettingsControls()
+
+                BessieSettingsSectionLabel(icon: .cloud, title: "Updates")
+                    .padding(.top, 16)
+
+                BessieUpdateSettingsControls()
 
                 BessieSettingsSectionLabel(icon: .hardDrives, title: "Herds") {
                     Button { prepareAddConnection() } label: { BessieIconView(icon: .plus, size: 13) }
@@ -1000,6 +1021,107 @@ struct BessieGeneralSettingsControls: View {
         BessieSettingRow(label: "On startup", hint: "What Bessie opens when it launches.") {
             BessieMiniSegments(selection: $model.preferences.startupBehavior, values: BessieStartupBehavior.allCases) { $0.title }
         }
+    }
+}
+
+struct BessieUpdateSettingsPresentation: Equatable {
+    static let maximumStatusLength = 240
+
+    let currentVersion: String
+    let currentBuild: String
+    let targetVersion: String?
+    let targetBuild: String?
+    let status: String?
+    let canCheckForUpdates: Bool
+
+    init(
+        state: BessieUpdateState,
+        canCheckForUpdates: Bool,
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]
+    ) {
+        currentVersion = infoDictionary["CFBundleShortVersionString"] as? String ?? "development"
+        currentBuild = infoDictionary["CFBundleVersion"] as? String ?? "unknown"
+        let target: BessieUpdateVersion? = switch state.phase {
+        case let .readyToRestart(version), let .installing(version): version
+        case .ineligible, .idle, .checking, .failed: nil
+        }
+        targetVersion = target?.shortVersion
+        targetBuild = target?.buildVersion
+        status = state.status.map { String($0.prefix(Self.maximumStatusLength)) }
+        self.canCheckForUpdates = canCheckForUpdates
+    }
+}
+
+struct BessieUpdateSettingsControls: View {
+    @EnvironmentObject private var updates: BessieUpdateCoordinator
+
+    private var presentation: BessieUpdateSettingsPresentation {
+        BessieUpdateSettingsPresentation(
+            state: updates.state,
+            canCheckForUpdates: updates.canCheckForUpdates
+        )
+    }
+
+    var body: some View {
+        Group {
+            BessieSettingRow(
+                label: "Automatic checks",
+                hint: "Use Sparkle’s normal schedule to look for signed Bessie updates."
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { updates.state.preferences.automaticallyChecksForUpdates },
+                    set: { updates.setAutomaticallyChecksForUpdates($0) }
+                ))
+                .labelsHidden()
+                .accessibilityLabel("Automatically check for updates")
+                .toggleStyle(BessieSettingsSwitchStyle())
+            }
+            BessieSettingRow(
+                label: "Automatic downloads",
+                hint: automaticDownloadHint
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { updates.state.preferences.automaticallyDownloadsAndInstallsUpdates },
+                    set: { updates.setAutomaticallyDownloadsAndInstallsUpdates($0) }
+                ))
+                .labelsHidden()
+                .accessibilityLabel("Automatically download and install updates")
+                .toggleStyle(BessieSettingsSwitchStyle())
+                .disabled(!updates.state.preferences.allowsAutomaticUpdates)
+            }
+            BessieSettingRow(label: "Current version") {
+                Text("\(presentation.currentVersion) (\(presentation.currentBuild))")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(BessieDesign.subtle)
+            }
+            if let targetVersion = presentation.targetVersion {
+                BessieSettingRow(label: "Target version") {
+                    Text("\(targetVersion) (\(presentation.targetBuild ?? "unknown"))")
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(BessieDesign.subtle)
+                }
+            }
+            BessieSettingRow(label: "Check now", hint: "Sparkle shows progress and any manual-check errors.") {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                    .disabled(!presentation.canCheckForUpdates)
+            }
+            if let status = presentation.status {
+                Text(status)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(BessieDesign.subtle)
+                    .lineLimit(3)
+                    .frame(maxWidth: BessieSettingsLayout.labelColumnWidth * 2, alignment: .leading)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("update-status")
+            }
+        }
+    }
+
+    private var automaticDownloadHint: String {
+        updates.state.preferences.allowsAutomaticUpdates
+            ? "Download verified updates in the background and install them when Bessie quits."
+            : "Automatic updates are unavailable in this build."
     }
 }
 
@@ -1430,7 +1552,7 @@ extension BessieNotifications {
         switch self {
         case .off: "Off"
         case .blockedOnly: "When work needs me"
-        case .blockedAndDone: "Needs me and settled"
+        case .blockedAndDone: "Needs me, Done, and Idle"
         }
     }
 }
