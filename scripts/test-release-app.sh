@@ -312,9 +312,11 @@ if path.exists():
 xml = f'''<?xml version="1.0"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel>{prior_items}<item>
 <title>Bessie {version}</title><pubDate>Sun, 09 Aug 2026 00:00:00 +0000</pubDate>
+<sparkle:version>{build}</sparkle:version>
+<sparkle:shortVersionString>{version}</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
 <sparkle:fullReleaseNotesLink>{notes}</sparkle:fullReleaseNotesLink>
-<enclosure url="{url}" length="{length}" type="application/octet-stream" sparkle:version="{build}" sparkle:shortVersionString="{version}" sparkle:edSignature="{signature}" />
+<enclosure url="{url}" length="{length}" type="application/octet-stream" sparkle:edSignature="{signature}" />
 </item></channel></rss>
 '''.encode()
 xml += f"<!-- sparkle-signatures:\nedSignature: {signature}\nlength: {len(xml)}\n-->\n".encode()

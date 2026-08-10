@@ -104,11 +104,19 @@ def feed_items(root: ET.Element) -> list[ET.Element]:
     return items
 
 
+def feed_item_version(item: ET.Element, enclosure: ET.Element, name: str) -> str:
+    attribute_value = enclosure.get(f"{SPARKLE}{name}", "")
+    element_value = item.findtext(f"{SPARKLE}{name}", "")
+    if attribute_value and element_value and attribute_value != element_value:
+        fail(f"appcast item has conflicting {name} values")
+    return element_value or attribute_value
+
+
 def enclosure_for_build(root: ET.Element, build: str) -> tuple[ET.Element, ET.Element]:
     matches: list[tuple[ET.Element, ET.Element]] = []
     for item in feed_items(root):
         enclosure = item.find("enclosure")
-        if enclosure is not None and enclosure.get(f"{SPARKLE}version") == build:
+        if enclosure is not None and feed_item_version(item, enclosure, "version") == build:
             matches.append((item, enclosure))
     if len(matches) != 1:
         fail(f"expected exactly one appcast enclosure for build {build}, found {len(matches)}")
@@ -154,8 +162,8 @@ def validate_feed_item(item: ET.Element) -> tuple[str, str, str]:
     if len(enclosures) != 1:
         fail("every appcast item must contain exactly one full enclosure")
     enclosure = enclosures[0]
-    build = enclosure.get(f"{SPARKLE}version", "")
-    marketing = enclosure.get(f"{SPARKLE}shortVersionString", "")
+    build = feed_item_version(item, enclosure, "version")
+    marketing = feed_item_version(item, enclosure, "shortVersionString")
     parse_version(build, "appcast build version")
     parse_version(marketing, "appcast marketing version", minimum_parts=3)
     archive_name = f"Bessie-{marketing}-{build}.zip"
@@ -231,7 +239,7 @@ def check_previous(appcast: Path, archive: Path, build: str, tag: str, marketing
         enclosure = item.find("enclosure")
         if enclosure is None:
             continue
-        previous_build = enclosure.get(f"{SPARKLE}version")
+        previous_build = feed_item_version(item, enclosure, "version")
         url = enclosure.get("url", "")
         if f"/download/{tag}/" in url:
             fail(f"tag {tag} already appears in the previous appcast")
@@ -244,7 +252,7 @@ def check_previous(appcast: Path, archive: Path, build: str, tag: str, marketing
     if not version_greater(build, latest_build):
         fail(f"build {build} must be strictly greater than previous build {latest_build}")
     latest_item, latest_enclosure = enclosure_for_build(root, latest_build)
-    previous_marketing = latest_enclosure.get(f"{SPARKLE}shortVersionString", "")
+    previous_marketing = feed_item_version(latest_item, latest_enclosure, "shortVersionString")
     if not version_at_least(marketing, previous_marketing):
         fail(f"marketing version {marketing} must not be lower than previous {previous_marketing}")
     expected_archive_name = f"Bessie-{previous_marketing}-{latest_build}.zip"
@@ -308,12 +316,14 @@ def check_appcast_item(
     archive_url = str(metadata["archive_url"])
     validate_feed_item(item)
     expected_attributes = {
-        f"{SPARKLE}version": build,
-        f"{SPARKLE}shortVersionString": version,
         "length": str(archive.stat().st_size),
         "url": archive_url,
         "type": "application/octet-stream",
     }
+    if feed_item_version(item, enclosure, "version") != build:
+        fail("appcast item has invalid version")
+    if feed_item_version(item, enclosure, "shortVersionString") != version:
+        fail("appcast item has invalid shortVersionString")
     enclosure_url = enclosure.get("url", "")
     validate_release_url(enclosure_url, tag, archive.name)
     for key, value in expected_attributes.items():
