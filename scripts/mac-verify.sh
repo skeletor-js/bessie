@@ -2,23 +2,18 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-mac_host=${BESSIE_MAC_HOST:-jordan-macbook}
-mac_dir=${BESSIE_MAC_DIR:-/Users/jordanstella/GitHub/bessie}
+mac_host=${BESSIE_MAC_HOST:-}
+mac_dir=${BESSIE_MAC_DIR:-}
 agent_kind=${BESSIE_AGENT_KIND:-codex}
 codesign_identity=${BESSIE_CODESIGN_IDENTITY:--}
 skip_install=${BESSIE_SKIP_INSTALL:-0}
-mirror_marker='source=/home/hermes/code/bessie'
+mirror_marker=${BESSIE_MIRROR_MARKER:-source=$repo_root}
 verification_lock=/tmp/bessie-mac-verify.lock
 ssh_options=(-o StrictHostKeyChecking=yes)
 
 case "$agent_kind" in
     pi|claude|codex|gemini|amp|grok|hermes) ;;
     *) echo "Refusing unsupported live verification agent: $agent_kind" >&2; exit 1 ;;
-esac
-
-case "$mac_dir" in
-    /Users/jordanstella/GitHub/bessie|/tmp/bessie-verify-*) ;;
-    *) echo "Refusing unapproved Mac mirror path: $mac_dir" >&2; exit 1 ;;
 esac
 
 case "$skip_install" in
@@ -44,6 +39,19 @@ if [[ $# -ne 0 ]]; then
     echo "Usage: $0 [--print-package-configuration]" >&2
     exit 1
 fi
+
+[[ -n "$mac_host" ]] || {
+    echo "Set BESSIE_MAC_HOST to an SSH host for the verification Mac." >&2
+    exit 1
+}
+case "$mac_dir" in
+    /*) ;;
+    *) echo "Set BESSIE_MAC_DIR to an absolute mirror path on the verification Mac." >&2; exit 1 ;;
+esac
+[[ "$mac_dir" != / ]] || {
+    echo "Refusing to use the filesystem root as a Mac mirror." >&2
+    exit 1
+}
 
 if ! ssh "${ssh_options[@]}" "$mac_host" mkdir "$verification_lock"; then
     echo "Another Bessie Mac verification is already running: $verification_lock" >&2
@@ -683,9 +691,11 @@ fi
 packaged_runtime="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr"
 packaged_license="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/LICENSE"
 packaged_lock="$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/runtime-lock.json"
+packaged_bessie_license="$mac_dir/dist/Bessie.app/Contents/Resources/Bessie-LICENSE.txt"
 test -x "$packaged_runtime"
 test -s "$packaged_license"
 test -s "$packaged_lock"
+test -s "$packaged_bessie_license"
 if [[ "$codesign_identity" == - ]]; then
     [[ $(shasum -a 256 "$packaged_runtime" | awk '{print $1}') == "$herdr_sha256" ]]
 else
@@ -694,7 +704,8 @@ fi
 [[ $(lipo -archs "$packaged_runtime") == "$herdr_architecture" ]]
 [[ $("$packaged_runtime" --version) == "$herdr_expected_version" ]]
 [[ $(( $(stat -f %Lp "$packaged_runtime") & 022 )) == 0 ]]
-cmp docs/research/herdr-apache-2.0-license.txt "$packaged_license"
+cmp Sources/BessieApp/Resources/Herdr-LICENSE.txt "$packaged_license"
+cmp LICENSE "$packaged_bessie_license"
 cmp scripts/herdr-runtime-lock.json "$packaged_lock"
 codesign --verify --strict "$packaged_runtime"
 codesign --verify --deep --strict dist/Bessie.app
@@ -748,7 +759,7 @@ for _ in {1..40}; do
 done
 [[ -S "$herdr_socket" ]] || { echo "Isolated Herdr socket did not appear." >&2; exit 1; }
 grep -Fq "logs: $herdr_xdg_config/herdr/herdr-server.log" "$herdr_log"
-if grep -Fq '/Users/jordanstella/.config/herdr' "$herdr_log"; then
+if grep -Fq "$HOME/.config/herdr" "$herdr_log"; then
     echo "Isolated Herdr reported a global config/log path." >&2
     exit 1
 fi
@@ -771,6 +782,10 @@ test -x .build/debug/bessie-mcp
 test -x dist/Bessie.app/Contents/MacOS/BessieApp
 test -x dist/Bessie.app/Contents/Resources/Herdr/herdr
 test -s dist/Bessie.app/Contents/Resources/Herdr/LICENSE
+test -s dist/Bessie.app/Contents/Resources/Bessie-LICENSE.txt
+[[ $(shasum -a 256 dist/Bessie.app/Contents/Resources/libghostty-spm-LICENSE.txt | awk '{print $1}') == 1f4b38df6a142e678a85d84c3a7ec4d1db328a556483241df714156134e81615 ]]
+[[ $(shasum -a 256 dist/Bessie.app/Contents/Resources/Ghostty-LICENSE.txt | awk '{print $1}') == 386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1 ]]
+[[ $(shasum -a 256 dist/Bessie.app/Contents/Resources/Sparkle-LICENSE.txt | awk '{print $1}') == 389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe ]]
 test -s dist/Bessie.app/Contents/Resources/BessieDark.icns
 test -s dist/Bessie.app/Contents/Resources/BessieLight.icns
 attribution_path=dist/Bessie.app/Contents/Resources/ATTRIBUTION.md
@@ -1819,6 +1834,10 @@ if ! (
     cmp "$mac_dir/dist/Bessie.app/Contents/MacOS/BessieApp" "$installed_app/Contents/MacOS/BessieApp"
     cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr" "$installed_app/Contents/Resources/Herdr/herdr"
     cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/LICENSE" "$installed_app/Contents/Resources/Herdr/LICENSE"
+    cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Bessie-LICENSE.txt" "$installed_app/Contents/Resources/Bessie-LICENSE.txt"
+    cmp "$mac_dir/dist/Bessie.app/Contents/Resources/libghostty-spm-LICENSE.txt" "$installed_app/Contents/Resources/libghostty-spm-LICENSE.txt"
+    cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Ghostty-LICENSE.txt" "$installed_app/Contents/Resources/Ghostty-LICENSE.txt"
+    cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Sparkle-LICENSE.txt" "$installed_app/Contents/Resources/Sparkle-LICENSE.txt"
     if [[ "$codesign_identity" == - ]]; then
         [[ $(shasum -a 256 "$installed_app/Contents/Resources/Herdr/herdr" | awk '{print $1}') == "$herdr_sha256" ]]
     else

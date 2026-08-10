@@ -251,10 +251,6 @@ struct BessieMenuBarPopover: View {
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         Text([row.secondaryIdentity, row.location].compactMap { $0 }.joined(separator: " · ")).lineLimit(1)
-                        Spacer(minLength: 2)
-                        if let provider = row.provider {
-                            BessieProviderMark(provider: provider)
-                        }
                     }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(BessieDesign.faint)

@@ -35,13 +35,20 @@ final class OnboardingCompletionCoordinator: ObservableObject {
     @Published private(set) var attempt: PendingOnboardingAttempt?
     @Published private(set) var error: String?
     private let store: PendingOnboardingAttemptStore
+    private let clearAttempt: () throws -> Void
     private var submitting = false
     private var service: (any OnboardingMaterializationService)?
 
-    init(store: PendingOnboardingAttemptStore? = nil, service: (any OnboardingMaterializationService)? = nil) {
+    init(
+        store: PendingOnboardingAttemptStore? = nil,
+        service: (any OnboardingMaterializationService)? = nil,
+        clearAttempt: (() throws -> Void)? = nil
+    ) {
         let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Bessie/pending-onboarding-attempt.json")
-        self.store = store ?? PendingOnboardingAttemptStore(url: defaultURL)
+        let resolvedStore = store ?? PendingOnboardingAttemptStore(url: defaultURL)
+        self.store = resolvedStore
+        self.clearAttempt = clearAttempt ?? { try resolvedStore.clear() }
         self.service = service
         do { attempt = try self.store.load(); stage = attempt?.stage ?? .idle }
         catch { self.error = error.localizedDescription; stage = .failed }
@@ -96,8 +103,19 @@ final class OnboardingCompletionCoordinator: ObservableObject {
         attempt.workspaceID = ids.workspace ?? attempt.workspaceID
         attempt.tabID = ids.tab ?? attempt.tabID
         attempt.paneID = ids.pane ?? attempt.paneID
+        if next == .completed {
+            do {
+                try clearAttempt()
+            } catch {
+                self.error = "Bessie couldn't finish setup cleanup. \(error.localizedDescription)"
+                throw error
+            }
+            self.attempt = nil
+            stage = .completed
+            error = nil
+            return
+        }
         try persist(attempt, stage: next)
-        if next == .completed { try store.clear(); self.attempt = nil }
     }
 
     func cancelBeforeMaterialization() throws {
@@ -188,7 +206,8 @@ final class ProductionOnboardingMaterializationService: OnboardingMaterializatio
               tabs[0].workspaceID == workspaces[0].id,
               panes[0].workspaceID == workspaces[0].id,
               panes[0].tabID == tabs[0].id,
-              panes[0].effectiveCWD == attempt.path
+              let effectiveCWD = panes[0].effectiveCWD,
+              OnboardingPathValidator.localPathsAreEquivalent(effectiveCWD, attempt.path)
         else { throw OnboardingMaterializationError.ambiguousTopology }
         return OnboardingMaterializationResult(
             connectionID: localDefinition.id,

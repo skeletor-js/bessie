@@ -272,7 +272,7 @@ struct HerdRail: View {
             Group {
                 if collapsed {
                     HStack(spacing: 2) {
-                        HerdRailStateMark(group: base.group, agentKind: base.agentKind)
+                        HerdRailStateMark(group: base.group)
                         if row.isSnoozed { Text("Zzz").font(.system(size: 7, weight: .semibold, design: .rounded)) }
                     }.frame(width: 40, height: 28)
                 } else {
@@ -293,7 +293,6 @@ struct HerdRail: View {
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                             if let wake = row.compactWakeLabel(now: renderNow) { Text(wake).monospacedDigit() }
-                            BessieProviderMark(provider: base.agentKind)
                         }
                     }
                     .padding(.leading, 9)
@@ -584,14 +583,11 @@ struct HerdRail: View {
 
 private struct HerdRailStateMark: View {
     let group: HerdRailGroup
-    let agentKind: String?
     var body: some View {
         HStack(spacing: 5) {
             BessieStatusGlyph(state: state)
             if group == .shells {
                 BessieIconView(icon: .terminalWindow, size: 13)
-            } else {
-                BessieProviderMark(provider: agentKind)
             }
         }
         .frame(width: 26)

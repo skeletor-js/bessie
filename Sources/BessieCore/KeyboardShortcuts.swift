@@ -1,39 +1,66 @@
 import Foundation
 
-public enum BessieShortcutKey: Equatable, Sendable {
+public enum BessieShortcutKey: Equatable, Hashable, Sendable {
     case character(String)
+    case escape
+    case tab
+    case backtab
+    case enter
     case leftArrow
     case rightArrow
     case upArrow
     case downArrow
+    case home
+    case end
+    case pageUp
+    case pageDown
+    case function(Int)
+    case minus
+    case keypadMinus
     case backspace
     case forwardDelete
 }
 
-public struct BessieShortcutStroke: Equatable, Sendable {
+public enum BessieShortcutEventPhase: Equatable, Hashable, Sendable {
+    case keyDown
+    case keyUp
+    case modifierOnly
+}
+
+public struct BessieShortcutStroke: Equatable, Hashable, Sendable {
     public let key: BessieShortcutKey
     public let control: Bool
     public let option: Bool
     public let command: Bool
     public let shift: Bool
+    public let layoutCharacter: String?
+    public let phase: BessieShortcutEventPhase
+    public let isRepeat: Bool
 
     public init(
         key: BessieShortcutKey,
         control: Bool = false,
         option: Bool = false,
         command: Bool = false,
-        shift: Bool = false
+        shift: Bool = false,
+        layoutCharacter: String? = nil,
+        phase: BessieShortcutEventPhase = .keyDown,
+        isRepeat: Bool = false
     ) {
         self.key = key
         self.control = control
         self.option = option
         self.command = command
         self.shift = shift
+        self.layoutCharacter = layoutCharacter
+        self.phase = phase
+        self.isRepeat = isRepeat
     }
 }
 
 public enum BessieShortcutCommand: Equatable, Sendable {
     case showCommandPalette
+    case showKeyboardReference
     case showHerd
     case showSettings
     case newProject
@@ -167,7 +194,6 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
 
         if case .character(let raw) = stroke.key, !stroke.option {
             switch (raw.lowercased(), stroke.shift) {
-            case ("b", false): return .sendBytes(Data([0x02]))
             case ("c", false): return .copy
             case ("v", false): return .paste
             case ("k", false): return .clearScrollback
@@ -187,12 +213,15 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
         case .rightArrow where !stroke.shift: return .sendBytes(Data([0x05])) // Ghostty super+right
         case .backspace where !stroke.shift: return .sendBytes(Data([0x15])) // Ghostty super+backspace
         case .forwardDelete where !stroke.shift: return .sendBytes(Data([0x0b])) // kill to EOL
-        case .character, .leftArrow, .rightArrow, .backspace, .forwardDelete: return nil
+        case .character, .escape, .tab, .backtab, .enter,
+             .leftArrow, .rightArrow, .home, .end, .pageUp, .pageDown,
+             .function, .minus, .keypadMinus, .backspace, .forwardDelete:
+            return nil
         }
     }
 
     private func handleProductCommand(_ stroke: BessieShortcutStroke) -> BessieShortcutHandling {
-        if !stroke.command, !stroke.control, stroke.option, !stroke.shift,
+        if stroke.command, !stroke.control, stroke.option, !stroke.shift,
            case .character(let raw) = stroke.key, raw.lowercased() == "p" {
             return .command(.projectsPicker)
         }
@@ -201,24 +230,9 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
         if case .character(let raw) = stroke.key {
             let key = raw.lowercased()
             if !stroke.control && !stroke.option {
-                if let index = Int(key), (1...9).contains(index), !stroke.shift {
-                    return .command(.switchTab(index))
-                }
                 switch (key, stroke.shift) {
                 case ("p", true): return .command(.showCommandPalette)
                 case (",", false): return .command(.showSettings)
-                case ("n", false): return .command(.newWorkspace)
-                case ("w", false): return .command(.closePane)
-                case ("w", true): return .command(.closeWorkspace)
-                case ("g", true): return .command(.workspacePicker)
-                case ("t", false): return .command(.newTab)
-                case ("[", false): return .command(.previousPane)
-                case ("]", false): return .command(.nextPane)
-                case ("[", true): return .command(.previousTab)
-                case ("]", true): return .command(.nextTab)
-                case ("\r", true): return .command(.zoomPane)
-                case ("d", false): return .command(.splitPane(.right))
-                case ("d", true): return .command(.splitPane(.down))
                 case ("b", true): return .command(.toggleSidebar)
                 case ("j", true): return .command(.nextRailPane)
                 case ("k", true): return .command(.previousRailPane)
@@ -229,9 +243,6 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
             if stroke.option && !stroke.control {
                 switch (key, stroke.shift) {
                 case ("n", false): return .command(.openNextNeedsYou)
-                case ("t", false): return .command(.renameTab)
-                case ("r", false): return .command(.renamePane)
-                case ("x", false): return .command(.closePane)
                 case ("[", true): return .command(.previousAgent)
                 case ("]", true): return .command(.nextAgent)
                 default: break
@@ -239,61 +250,46 @@ public struct BessieKeyboardShortcutRouter: Equatable, Sendable {
             }
             return .passthrough
         }
-
-        let direction: PaneDirection
-        switch stroke.key {
-        case .leftArrow: direction = .left
-        case .rightArrow: direction = .right
-        case .upArrow: direction = .up
-        case .downArrow: direction = .down
-        case .character, .backspace, .forwardDelete: return .passthrough
-        }
-
-        if stroke.option && !stroke.control {
-            return .command(stroke.shift ? .swapPane(direction) : .focusPane(direction))
-        }
-        if stroke.control && !stroke.option && !stroke.shift {
-            return .command(.resizePane(direction))
-        }
         return .passthrough
     }
 
     public static let commands: [BessieCommandDefinition] = [
         .init(title: "Command Palette", detail: "Search panes, workspaces, Projects, herds, and commands", shortcut: "⇧⌘P", command: .showCommandPalette, keywords: "search cmdk"),
+        .init(title: "Keyboard reference", detail: "Show Herdr prefix commands and Bessie application shortcuts", command: .showKeyboardReference, keywords: "help keys ctrl-b prefix"),
         .init(title: "The herd", detail: "Open Bessie's live herd page", command: .showHerd, keywords: "home agents activity"),
         .init(title: "Create project", detail: "Create a reusable Project recipe", command: .newProject, keywords: "new project recipe"),
-        .init(title: "Manage projects", detail: "Browse and edit Project recipes", shortcut: "⌥P", command: .projectsPicker, keywords: "open project recipes offline"),
+        .init(title: "Manage projects", detail: "Browse and edit Project recipes", shortcut: "⌥⌘P", command: .projectsPicker, keywords: "open project recipes offline"),
         .init(title: "Create project from current workspace…", detail: "Capture the focused Herdr layout as a new Project draft", command: .saveCurrentWorkspaceAsProject, keywords: "save project capture tabs panes layout"),
-        .init(title: "New workspace", detail: "Create and focus a Herdr workspace", shortcut: "⌘N", command: .newWorkspace, keywords: "create"),
-        .init(title: "Rename workspace", detail: "Rename the current workspace", command: .renameWorkspace),
-        .init(title: "Close workspace", detail: "Close the current workspace and its processes", shortcut: "⇧⌘W", command: .closeWorkspace),
-        .init(title: "Open Workspaces", detail: "Browse and focus a workspace", shortcut: "⇧⌘G", command: .workspacePicker, keywords: "goto switch"),
-        .init(title: "New tab", detail: "Create a shell tab in the current workspace", shortcut: "⌘T", command: .newTab, keywords: "create"),
-        .init(title: "Rename tab", detail: "Rename the current tab", shortcut: "⌥⌘T", command: .renameTab),
-        .init(title: "Previous tab", detail: "Focus the previous tab", shortcut: "⇧⌘[", command: .previousTab),
-        .init(title: "Next tab", detail: "Focus the next tab", shortcut: "⇧⌘]", command: .nextTab),
-        .init(title: "Close tab", detail: "Close the current tab and its processes", command: .closeTab),
-        .init(title: "Rename pane", detail: "Rename the focused pane", shortcut: "⌥⌘R", command: .renamePane),
-        .init(title: "Previous pane", detail: "Focus the previous pane", shortcut: "⌘[", command: .previousPane),
-        .init(title: "Next pane", detail: "Focus the next pane", shortcut: "⌘]", command: .nextPane),
+        .init(title: "New workspace", detail: "Create and focus a Herdr workspace", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .newWorkspace), command: .newWorkspace, keywords: "create"),
+        .init(title: "Rename workspace", detail: "Rename the current workspace", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .renameWorkspace), command: .renameWorkspace),
+        .init(title: "Close workspace", detail: "Close the current workspace and its processes", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .closeWorkspace), command: .closeWorkspace),
+        .init(title: "Open Workspaces", detail: "Browse and focus a workspace", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .showWorkspacePicker), command: .workspacePicker, keywords: "goto switch"),
+        .init(title: "New tab", detail: "Create a shell tab in the current workspace", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .newTab), command: .newTab, keywords: "create"),
+        .init(title: "Rename tab", detail: "Rename the current tab", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .renameTab), command: .renameTab),
+        .init(title: "Previous tab", detail: "Focus the previous tab", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .previousTab), command: .previousTab),
+        .init(title: "Next tab", detail: "Focus the next tab", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .nextTab), command: .nextTab),
+        .init(title: "Close tab", detail: "Close the current tab and its processes", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .closeTab), command: .closeTab),
+        .init(title: "Rename pane", detail: "Rename the focused pane", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .renamePane), command: .renamePane),
+        .init(title: "Previous pane", detail: "Focus the previous pane", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .cyclePane(.previous)), command: .previousPane),
+        .init(title: "Next pane", detail: "Focus the next pane", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .cyclePane(.next)), command: .nextPane),
         .init(title: "Previous pane in the herd", detail: "Open the previous available pane in rendered rail order", shortcut: "⇧⌘K", command: .previousRailPane),
         .init(title: "Next pane in the herd", detail: "Open the next available pane in rendered rail order", shortcut: "⇧⌘J", command: .nextRailPane),
-        .init(title: "Focus pane left", detail: "Move focus to the pane on the left", shortcut: "⌥⌘←", command: .focusPane(.left)),
-        .init(title: "Focus pane down", detail: "Move focus to the pane below", shortcut: "⌥⌘↓", command: .focusPane(.down)),
-        .init(title: "Focus pane up", detail: "Move focus to the pane above", shortcut: "⌥⌘↑", command: .focusPane(.up)),
-        .init(title: "Focus pane right", detail: "Move focus to the pane on the right", shortcut: "⌥⌘→", command: .focusPane(.right)),
-        .init(title: "Swap pane left", detail: "Swap the focused pane with the pane on the left", shortcut: "⇧⌥⌘←", command: .swapPane(.left)),
-        .init(title: "Swap pane down", detail: "Swap the focused pane with the pane below", shortcut: "⇧⌥⌘↓", command: .swapPane(.down)),
-        .init(title: "Swap pane up", detail: "Swap the focused pane with the pane above", shortcut: "⇧⌥⌘↑", command: .swapPane(.up)),
-        .init(title: "Swap pane right", detail: "Swap the focused pane with the pane on the right", shortcut: "⇧⌥⌘→", command: .swapPane(.right)),
-        .init(title: "Split pane right", detail: "Open a shell pane to the right", shortcut: "⌘D", command: .splitPane(.right)),
-        .init(title: "Split pane down", detail: "Open a shell pane below", shortcut: "⇧⌘D", command: .splitPane(.down)),
-        .init(title: "Close pane", detail: "Close the focused pane and its process", shortcut: "⌘W", command: .closePane),
-        .init(title: "Zoom pane", detail: "Toggle zoom for the focused pane", shortcut: "⇧⌘↩", command: .zoomPane),
-        .init(title: "Resize pane left", detail: "Nudge the focused pane left", shortcut: "⌃⌘←", command: .resizePane(.left)),
-        .init(title: "Resize pane down", detail: "Nudge the focused pane down", shortcut: "⌃⌘↓", command: .resizePane(.down)),
-        .init(title: "Resize pane up", detail: "Nudge the focused pane up", shortcut: "⌃⌘↑", command: .resizePane(.up)),
-        .init(title: "Resize pane right", detail: "Nudge the focused pane right", shortcut: "⌃⌘→", command: .resizePane(.right)),
+        .init(title: "Focus pane left", detail: "Move focus to the pane on the left", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .focusPane(.left)), command: .focusPane(.left)),
+        .init(title: "Focus pane down", detail: "Move focus to the pane below", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .focusPane(.down)), command: .focusPane(.down)),
+        .init(title: "Focus pane up", detail: "Move focus to the pane above", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .focusPane(.up)), command: .focusPane(.up)),
+        .init(title: "Focus pane right", detail: "Move focus to the pane on the right", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .focusPane(.right)), command: .focusPane(.right)),
+        .init(title: "Swap pane left", detail: "Swap the focused pane with the pane on the left", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .swapPane(.left)), command: .swapPane(.left)),
+        .init(title: "Swap pane down", detail: "Swap the focused pane with the pane below", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .swapPane(.down)), command: .swapPane(.down)),
+        .init(title: "Swap pane up", detail: "Swap the focused pane with the pane above", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .swapPane(.up)), command: .swapPane(.up)),
+        .init(title: "Swap pane right", detail: "Swap the focused pane with the pane on the right", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .swapPane(.right)), command: .swapPane(.right)),
+        .init(title: "Split pane right", detail: "Open a shell pane to the right", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .splitPane(.right)), command: .splitPane(.right)),
+        .init(title: "Split pane down", detail: "Open a shell pane below", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .splitPane(.down)), command: .splitPane(.down)),
+        .init(title: "Close pane", detail: "Close the focused pane and its process", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .closePane), command: .closePane),
+        .init(title: "Zoom pane", detail: "Toggle zoom for the focused pane", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .toggleZoom), command: .zoomPane),
+        .init(title: "Resize pane left", detail: "Nudge the focused pane left", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .resizePane(.left)), command: .resizePane(.left)),
+        .init(title: "Resize pane down", detail: "Nudge the focused pane down", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .resizePane(.down)), command: .resizePane(.down)),
+        .init(title: "Resize pane up", detail: "Nudge the focused pane up", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .resizePane(.up)), command: .resizePane(.up)),
+        .init(title: "Resize pane right", detail: "Nudge the focused pane right", shortcut: HerdrPrefixCommandCatalog.displaySequence(for: .resizePane(.right)), command: .resizePane(.right)),
         .init(title: "Toggle sidebar", detail: "Show or hide Bessie's navigation", shortcut: "⇧⌘B", command: .toggleSidebar),
         .init(title: "Toggle Zen", detail: "Focus the selected real terminal with minimal chrome", shortcut: "⇧⌘Z", command: .toggleZen, keywords: "focus terminal presentation"),
         .init(title: "Exit Zen", detail: "Return to the workspace without changing Herdr topology", command: .exitZen, keywords: "leave focus terminal presentation"),

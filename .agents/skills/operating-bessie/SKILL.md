@@ -18,7 +18,7 @@ bessie call <intent-id> --json '{"connection_id":"<id>","other_param":"<value>"}
 
 Use the returned schema exactly. Supply `connection_id` whenever an intent addresses Herdr-owned IDs; IDs are scoped to that connection.
 
-Pane pin and snooze operations are Bessie-owned presentation mutations. Read `pane.presentation.list`, then send the exact fresh `connection_id`, `pane_id`, `terminal_id`, and `expected_revision`. Preserve the request correlation ID when retrying the identical operation. A revision conflict or incarnation mismatch requires a fresh list; never extend a snooze by rebuilding a stale retry with a new request ID.
+Pane pin and snooze operations are Bessie-owned presentation mutations. Read `pane.presentation.list`, then send the exact fresh `connection_id`, `pane_id`, `terminal_id`, and `expected_revision`. Assign a stable correlation ID with CLI `--request-id <id>` or MCP `request_id`, and preserve it when retrying an identical ambiguous timeout. A revision conflict or incarnation mismatch requires a fresh list and a new ID; never extend a snooze by rebuilding a stale retry.
 
 Use the catalog's read-only connection-context capability when you need to distinguish configured, enabled, selected/default, and currently connected herds. It can report disabled or disconnected definitions, but it cannot enable, retarget, start, or infer paths for them.
 

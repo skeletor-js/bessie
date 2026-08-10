@@ -176,14 +176,19 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
 public extension RemoteOnboardingBootstrap {
     static func production(register: @escaping Register) -> RemoteOnboardingBootstrap {
         RemoteOnboardingBootstrap(command: { arguments, input in
-            let process = Process(), output = Pipe(), errors = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = arguments
-            process.standardOutput = output; process.standardError = errors
-            if let input { let pipe = Pipe(); process.standardInput = pipe; try process.run(); pipe.fileHandleForWriting.write(input); try pipe.fileHandleForWriting.close() }
-            else { process.standardInput = FileHandle.nullDevice; try process.run() }
-            process.waitUntilExit()
-            return RemoteBootstrapCommandResult(exitCode: process.terminationStatus,
-                stdout: output.fileHandleForReading.readDataToEndOfFile(), stderr: errors.fileHandleForReading.readDataToEndOfFile())
+            do {
+                let result = try FoundationProcessCommandRunner.run(
+                    executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+                    arguments: arguments,
+                    standardInput: input,
+                    timeout: 30
+                )
+                return RemoteBootstrapCommandResult(
+                    exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr
+                )
+            } catch FoundationProcessCommandError.timedOut {
+                throw RemoteBootstrapError.commandFailed("SSH command timed out.")
+            }
         }, attach: { arguments in
             let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = arguments
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice; try process.run()

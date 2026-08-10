@@ -62,6 +62,35 @@ final class CommandPaletteIndexTests: XCTestCase {
                        BessieKeyboardShortcutRouter.commands.count - 1)
     }
 
+    func testTopologyCommandsRemainDiscoverableWithPrefixBindings() {
+        let commands = BessieKeyboardShortcutRouter.commands
+        let expected: [(BessieShortcutCommand, String)] = [
+            (.newWorkspace, "Ctrl-B Shift-N"),
+            (.newTab, "Ctrl-B c"),
+            (.splitPane(.right), "Ctrl-B v"),
+            (.closePane, "Ctrl-B x"),
+            (.closeWorkspace, "Ctrl-B Shift-D"),
+        ]
+
+        for (command, binding) in expected {
+            XCTAssertEqual(commands.first(where: { $0.command == command })?.shortcut, binding)
+        }
+        XCTAssertEqual(commands.first(where: { $0.command == .projectsPicker })?.shortcut, "⌥⌘P")
+    }
+
+    func testKeyboardReferenceIsDiscoverableWithoutANativeAccelerator() throws {
+        let command = try XCTUnwrap(
+            BessieKeyboardShortcutRouter.commands.first { $0.command == .showKeyboardReference }
+        )
+
+        XCTAssertEqual(command.title, "Keyboard reference")
+        XCTAssertNil(command.shortcut)
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.commands.filter { $0.command == .showKeyboardReference }.count,
+            1
+        )
+    }
+
     func testQueryTieBreaksByAttentionActiveConnectionKindAndStableID() {
         let remote = CommandPaletteConnectionInput(
             connection: .init(id: "remote", name: "Remote", kind: .ssh, sshHost: "remote.test"),

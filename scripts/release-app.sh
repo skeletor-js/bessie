@@ -150,7 +150,7 @@ if [[ "$initial_release" == 0 ]]; then
         --tag "$tag" --version "$version"
 fi
 
-[[ $(uname -s) == Darwin || ${BESSIE_RELEASE_FIXTURE_MODE:-0} == 1 ]] || die "prepare requires Jordan's trusted macOS release host"
+[[ $(uname -s) == Darwin || ${BESSIE_RELEASE_FIXTURE_MODE:-0} == 1 ]] || die "prepare requires a trusted macOS release host"
 head_commit=$(git -C "$repo_root" rev-parse HEAD)
 [[ "$source_commit" == "$head_commit" && "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "approved source commit must exactly match HEAD"
 [[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] || die "approved source must have a clean working tree"

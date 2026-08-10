@@ -1,12 +1,14 @@
 # Bessie release preparation and verification
 
-This runbook covers the BES-3 U5 boundary: create signed, notarized, stapled, immutable local release bytes and a staged signed appcast. It does not publish a GitHub release, upload an asset, deploy Cloudflare, change repository visibility, install Bessie, or update the production feed.
+This runbook creates signed, notarized, stapled, immutable local release bytes and a staged signed appcast. It does not publish a GitHub release, upload an asset, deploy Cloudflare, change repository visibility, install Bessie, or update the production feed.
+
+**Current status:** no production release has been published. The local 0.1.0 build-11 candidate is Developer ID-signed but unnotarized and is not a public release artifact.
 
 ## Boundaries
 
-- `./scripts/release-app.sh prepare ...` is credentialed and macOS-only. Run it on Jordan's trusted Mac after separate authorization. It reads a Developer ID identity, a named `notarytool` Keychain profile, and Sparkle's Keychain-backed Ed25519 key. It never publishes.
+- `./scripts/release-app.sh prepare ...` is credentialed and macOS-only. Run it on a trusted maintainer Mac. It reads a Developer ID identity, a named `notarytool` Keychain profile, and Sparkle's Keychain-backed Ed25519 key. It never publishes.
 - `./scripts/release-app.sh verify PREPARED_DIRECTORY` is offline and secret-free. Against a separately trusted `release.json`, it checks internal consistency: final archive SHA-256 and length, checksum file, exact version/build/tag and URLs, minimum macOS, full-archive-only feed structure, signature metadata, signed-feed trailer shape/length, and the recorded preparation sequence.
-- `./scripts/release-app.sh publish PREPARED_DIRECTORY` intentionally verifies and then refuses. GitHub draft upload, immutable-release publication, anonymous asset verification, and appcast deployment belong to later operator-approved U8 work. The appcast remains the final client-exposure step.
+- `./scripts/release-app.sh publish PREPARED_DIRECTORY` intentionally verifies and then refuses. GitHub draft upload, immutable-release publication, anonymous asset verification, and appcast deployment are separate maintainer operations. The appcast remains the final client-exposure step.
 
 Ordinary `./scripts/check.sh` runs fixture tests and the secret-free verifier. It does not query Keychain, inspect identities, contact Apple, sign production code, or submit notarization work.
 
@@ -79,7 +81,7 @@ Copy the complete prepared directory without changing its contents, then run:
 
 This proves the copied archive and appcast remain internally consistent with the supplied `release.json`. The manifest must come through a separately trusted handoff; it is not itself signed. The offline check does not independently establish archive/feed signature authenticity, notarization, stapling, Developer ID identity, execution order, or manifest provenance. Sparkle 2.9.5's supported `sign_update --verify` derives its public key from the selected Keychain private key, so cryptographic archive/feed verification runs during `prepare`. The same prepare also validates the notary log's job ID/status/submission-archive SHA-256 and an extracted copy of the final ZIP. Bessie does not implement custom Ed25519 verification.
 
-## R31 release evidence
+## Release evidence
 
 `release-evidence.md` is generated with these fields. Deferred publication/runtime fields must remain marked deferred until observed, never inferred:
 

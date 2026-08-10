@@ -55,6 +55,25 @@ final class OnboardingCompletionCoordinatorTests: XCTestCase {
         XCTAssertNotNil(try fixture.store.load())
     }
 
+    func testCompletionCleanupFailureKeepsThePriorAttemptResumable() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let coordinator = OnboardingCompletionCoordinator(
+            store: fixture.store,
+            clearAttempt: { throw CocoaError(.fileWriteNoPermission) }
+        )
+        _ = try coordinator.begin(connectionID: "local", path: "/tmp/project")
+        try coordinator.advance(.waitingForFirstFrame, ids: ("workspace", "tab", "pane"))
+        let prior = try XCTUnwrap(coordinator.attempt)
+
+        XCTAssertThrowsError(try coordinator.advance(.completed))
+
+        XCTAssertEqual(coordinator.stage, .waitingForFirstFrame)
+        XCTAssertEqual(coordinator.attempt, prior)
+        XCTAssertEqual(try fixture.store.load(), prior)
+        XCTAssertNotNil(coordinator.error)
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }

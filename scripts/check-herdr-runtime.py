@@ -38,7 +38,7 @@ for name, value in swift_expectations.items():
 notice = lock.get("notice", {})
 required_notice = {
     "license": "Apache-2.0",
-    "source_path": "docs/research/herdr-apache-2.0-license.txt",
+    "source_path": "Sources/BessieApp/Resources/Herdr-LICENSE.txt",
     "bundle_path": "Contents/Resources/Herdr/LICENSE",
     "source_url": "https://raw.githubusercontent.com/herdrdev/herdr/cd5ea1be0e69ed49b6f32f7ed5b333f6c8526874/LICENSE",
     "relicense_commit_url": "https://github.com/herdrdev/herdr/commit/cd5ea1be0e69ed49b6f32f7ed5b333f6c8526874",

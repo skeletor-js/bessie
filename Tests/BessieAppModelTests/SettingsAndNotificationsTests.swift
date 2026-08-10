@@ -65,7 +65,7 @@ final class SettingsAndNotificationsTests: XCTestCase {
             NSError(
                 domain: NSURLErrorDomain,
                 code: NSURLErrorUserAuthenticationRequired,
-                userInfo: [NSLocalizedDescriptionKey: String(repeating: "secret /Users/jordan/appcast.xml ", count: 100)]
+                userInfo: [NSLocalizedDescriptionKey: String(repeating: "secret /Users/tester/appcast.xml ", count: 100)]
             ),
             checkKind: .background
         )

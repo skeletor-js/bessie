@@ -152,7 +152,7 @@ final class BessieUpdateCoordinatorTests: XCTestCase {
         factory.adapter.startError = NSError(
             domain: "secret.example",
             code: 73,
-            userInfo: [NSLocalizedDescriptionKey: "token=abc123 /Users/jordan/private-feed.xml"]
+            userInfo: [NSLocalizedDescriptionKey: "token=abc123 /Users/tester/private-feed.xml"]
         )
         let coordinator = makeCoordinator(factory: factory)
 
@@ -335,7 +335,7 @@ final class BessieUpdateCoordinatorTests: XCTestCase {
             code: NSURLErrorUserAuthenticationRequired,
             userInfo: [
                 NSURLErrorKey: URL(string: "https://user:secret@example.com/private/appcast.xml")!,
-                NSLocalizedDescriptionKey: "Authorization secret in /Users/jordan/Library/Feeds/appcast.xml",
+                NSLocalizedDescriptionKey: "Authorization secret in /Users/tester/Library/Feeds/appcast.xml",
             ]
         )
 
@@ -365,7 +365,7 @@ final class BessieUpdateCoordinatorTests: XCTestCase {
     private func assertSanitized(_ status: String?, file: StaticString = #filePath, line: UInt = #line) {
         let status = status ?? ""
         XCTAssertFalse(status.isEmpty, file: file, line: line)
-        for sensitive in ["abc123", "secret", "jordan", "appcast.xml", "example.com", "/Users/"] {
+        for sensitive in ["abc123", "secret", "tester", "appcast.xml", "example.com", "/Users/"] {
             XCTAssertFalse(status.localizedCaseInsensitiveContains(sensitive), status, file: file, line: line)
         }
     }

@@ -1869,21 +1869,20 @@ public struct BessieProjectTargetMigration: Sendable {
     }
 
     private static func runProcess(_ executable: String, _ arguments: [String], allowFailure: Bool) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-        try process.run()
-        process.waitUntilExit()
-        let stdout = output.fileHandleForReading.readDataToEndOfFile()
-        let stderr = error.fileHandleForReading.readDataToEndOfFile()
-        guard allowFailure || process.terminationStatus == 0 else {
-            let reason = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw BessieProjectTargetMigrationError.backupFailed(reason?.isEmpty == false ? reason! : "\(executable) failed with status \(process.terminationStatus).")
+        let result: FoundationProcessCommandResult
+        do {
+            result = try FoundationProcessCommandRunner.run(
+                executableURL: URL(fileURLWithPath: executable),
+                arguments: arguments,
+                timeout: 120
+            )
+        } catch FoundationProcessCommandError.timedOut {
+            throw BessieProjectTargetMigrationError.backupFailed("\(executable) timed out.")
         }
-        return String(data: stdout, encoding: .utf8) ?? ""
+        guard allowFailure || result.exitCode == 0 else {
+            let reason = String(data: result.stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BessieProjectTargetMigrationError.backupFailed(reason?.isEmpty == false ? reason! : "\(executable) failed with status \(result.exitCode).")
+        }
+        return String(data: result.stdout, encoding: .utf8) ?? ""
     }
 }

@@ -329,6 +329,17 @@ public enum OnboardingPathValidator {
         guard trimmed.hasPrefix("/"), !trimmed.contains("\0") else { throw OnboardingPersistenceError.pathMustBeAbsolute }
         return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL.path
     }
+
+    public static func localPathsAreEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        canonicalLocalURL(lhs) == canonicalLocalURL(rhs)
+    }
+
+    private static func canonicalLocalURL(_ path: String) -> URL {
+        URL(fileURLWithPath: path, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+    }
 }
 
 public struct PendingOnboardingAttemptStore: Sendable {

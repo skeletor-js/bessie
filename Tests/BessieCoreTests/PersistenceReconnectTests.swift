@@ -11,6 +11,18 @@ final class PersistenceReconnectTests: XCTestCase {
         XCTAssertNil(policy.delay(afterFailure: 3))
     }
 
+    func testReconnectBudgetResetsAfterEverySuccessfulConnection() {
+        let policy = ReconnectPolicy(delays: [0.25, 0.5])
+        var budget = ReconnectAttemptBudget()
+
+        XCTAssertEqual(budget.recordFailure(using: policy), .init(attempt: 1, delay: 0.25))
+        XCTAssertEqual(budget.recordFailure(using: policy), .init(attempt: 2, delay: 0.5))
+
+        budget.recordConnectionSuccess()
+
+        XCTAssertEqual(budget.recordFailure(using: policy), .init(attempt: 1, delay: 0.25))
+    }
+
     func testPresentationPersistenceContainsOnlyPreferencesAndWorkspaceHint() throws {
         let state = BessiePresentationState(
             lastWorkspaceID: "workspace-hint",

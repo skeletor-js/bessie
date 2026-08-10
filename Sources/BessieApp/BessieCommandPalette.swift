@@ -525,9 +525,6 @@ private struct BessieCommandPaletteRow: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(BessieDesign.faint)
                     .lineLimit(1)
-                if item.kind == .pane, let provider = item.provider {
-                    BessieProviderMark(provider: provider)
-                }
             }
             .padding(.horizontal, horizontalPadding)
             .frame(minHeight: density.rowHeight)

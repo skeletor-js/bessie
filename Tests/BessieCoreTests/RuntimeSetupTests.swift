@@ -101,6 +101,19 @@ final class RuntimeSetupTests: XCTestCase {
         XCTAssertFalse(args.joined(separator: " ").contains("nohup"))
     }
 
+    func testLocalOnboardingPathComparisonResolvesSymlinksOnBothSides() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let canonical = root.appendingPathComponent("canonical", isDirectory: true)
+        let selected = root.appendingPathComponent("selected", isDirectory: true)
+        try FileManager.default.createDirectory(at: canonical, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: selected, withDestinationURL: canonical)
+
+        XCTAssertTrue(OnboardingPathValidator.localPathsAreEquivalent(selected.path, canonical.path))
+        XCTAssertTrue(OnboardingPathValidator.localPathsAreEquivalent(canonical.path + "/", selected.path))
+        XCTAssertFalse(OnboardingPathValidator.localPathsAreEquivalent(selected.path, root.path))
+    }
+
     func testEveryFindingHasStableTypedIdentity() {
         XCTAssertEqual(Set(SetupFinding.allCases.map(\.rawValue)).count, 9)
         XCTAssertTrue(SetupFinding.allCases.allSatisfy { !$0.safeActions.isEmpty })

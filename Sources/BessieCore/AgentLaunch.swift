@@ -203,7 +203,8 @@ public struct HerdrProcessLauncher: Sendable {
     }
 
     private func isTransientFreshPaneError(_ error: Error) -> Bool {
-        guard let clientError = error as? HerdrClientError,
+        let underlying = (error as? HerdrActionAttemptFailure)?.underlying ?? error
+        guard let clientError = underlying as? HerdrClientError,
               case .server(let code, _) = clientError
         else { return false }
         return code == "agent_pane_busy" || code == "agent_pane_unavailable"

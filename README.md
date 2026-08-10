@@ -6,178 +6,116 @@
 
 <p align="center">
   <strong>A native Mac client for <a href="https://github.com/herdrdev/herdr">Herdr</a>.</strong><br>
-  Workspaces, terminals, and coding agents in one window. Quit Bessie and they keep running.
+  See every coding agent, shape its terminal workspace, and leave the work running.
 </p>
 
 <p align="center">
-  <img alt="Release candidate 0.1.0 RC3" src="https://img.shields.io/badge/status-0.1.0--rc.3-f1ede3?style=flat-square&labelColor=050505">
-  <img alt="macOS 14 or newer" src="https://img.shields.io/badge/macOS-14%2B-f1ede3?style=flat-square&labelColor=050505&logo=apple&logoColor=white">
+  <img alt="Pre-release" src="https://img.shields.io/badge/status-pre--release-f1ede3?style=flat-square&labelColor=050505">
+  <img alt="macOS 14 or newer on Apple silicon" src="https://img.shields.io/badge/macOS-14%2B%20Apple%20silicon-f1ede3?style=flat-square&labelColor=050505&logo=apple&logoColor=white">
   <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-f1ede3?style=flat-square&labelColor=050505&logo=swift&logoColor=white">
-  <a href="https://github.com/herdrdev/herdr"><img alt="Herdr 0.7.5" src="https://img.shields.io/badge/Herdr-0.7.5-f1ede3?style=flat-square&labelColor=050505"></a>
-  <a href="https://github.com/Lakr233/libghostty-spm"><img alt="libghostty 1.3.2" src="https://img.shields.io/badge/libghostty-1.3.2-f1ede3?style=flat-square&labelColor=050505"></a>
+  <a href="https://github.com/herdrdev/herdr"><img alt="Herdr 0.8.0 protocol 19" src="https://img.shields.io/badge/Herdr-0.8.0%20%2F%20protocol%2019-f1ede3?style=flat-square&labelColor=050505"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-f1ede3?style=flat-square&labelColor=050505"></a>
 </p>
 
 ![Bessie workspace with two live terminal panes](.github/assets/workspace.png)
 
-Bessie is a graphical client, not a second session manager. [Herdr](https://github.com/herdrdev/herdr) remains the authority for workspaces, tabs, panes, terminal processes, and agent state. Bessie subscribes to that state and turns it into a native SwiftUI and AppKit interface backed by real [libghostty](https://github.com/Lakr233/libghostty-spm) terminals.
+Bessie is a graphical window onto Herdr, not another session manager. Herdr owns the live workspaces, tabs, panes, terminals, processes, agents, and durable session state. Bessie presents that state through native SwiftUI and AppKit, with every visible terminal rendered by [libghostty](https://github.com/Lakr233/libghostty-spm).
 
-`0.1.0-rc.3` is the verified foundation preview. Real V1 adds the compatible Herdr runtime inside the signed app, first-run onboarding and Trouble, and Native Bessie Projects for reusable workspace blueprints.
+Quit Bessie and the Herdr work keeps running.
 
-## What works
+## Install status
 
-- **Live workspaces:** create, rename, reorder, open, and close Herdr workspaces.
-- **Tabs and panes:** split, resize, zoom, focus, reorder, and move panes across tabs or workspaces.
-- **Real terminals:** every visible pane is a Ghostty surface connected to a Herdr terminal controller.
-- **Coding agents:** start supported agents from Herdr's manifest-backed catalog and follow their reported state.
-- **Attention routing:** jump straight to panes that need you or have finished.
-- **Safe ownership:** observe a terminal without taking control, then confirm before takeover.
-- **Native notifications:** opt in from Settings; blocked and completed work routes back to the exact pane.
-- **Flexible herd startup:** enabled local and SSH herds connect at launch or on demand, as configured.
-- **One unified herd:** every enabled Herdr connection contributes its agents to one roster.
-- **Process survival:** close and reopen Bessie without killing the shells and agents Herdr owns.
-- **Two app icons:** choose the dark or light icon in Settings. Bessie reapplies it to the Dock and app switcher at launch.
+**There is no public download yet.** The current `0.1.0` build `9` candidate is for local acceptance: it is Developer ID signed, but it has not been notarized or approved as a public release. Do not treat a source checkout or locally packaged app as a published binary.
 
-## Requirements
+The intended V1 release is direct distribution—not a Mac App Store submission—through `bessie.dev`, an immutable GitHub release, and verified Homebrew and/or `curl` install commands pointing at the same notarized archive.
 
-- Apple silicon Mac running macOS 14 or newer
-- Herdr 0.7.5 for the current foundation preview; real V1 includes the compatible runtime
-- An agent CLI on your login `PATH` if you want to start an agent
-- Xcode command-line tools and Swift 6 only when building from source
+Bessie currently supports **macOS 14 or newer on Apple silicon**. The app includes the compatible Apple-silicon Herdr `0.8.0` runtime (protocol `19`, source `346411fa21afd297f5ed3b3fa56f9e3fbf7654b7`). A compatible system or custom runtime is an explicit advanced option, not a setup requirement.
 
-For an enabled local herd, Bessie checks `BESSIE_HERDR_PATH`, the current `PATH`, `~/.local/bin/herdr`, and the repository-local `.local/herdr/herdr`, in that order. It then opens the named Herdr session `bessie`, starting it as a detached background server if necessary. A remote-only configuration does not start local Herdr. Other Herdr sessions are not reused, stopped, or modified.
+Building from source requires Swift 6 and the Xcode command-line tools.
 
-## Install the release candidate
+## V1 highlights
 
-The current candidate is source-built and requires a stable Apple signing identity. It is not notarized yet.
+- **One Herd across machines:** supervise local and SSH-connected Herdr sessions in one roster.
+- **Useful status at a glance:** Needs you, Working, Done, Idle, and Unknown, plus pin, snooze, and hierarchy filters.
+- **Real terminal workspaces:** create and shape Herdr workspaces, tabs, splits, and panes in native Ghostty terminals; start shells or supported coding agents.
+- **Projects:** save reusable launch recipes for folders, tabs, pane layouts, and commands, then materialize them as ordinary Herdr work.
+- **Fast navigation:** exact-pane routing, bounded Zen, an entity-aware command palette, a menu-bar companion, and native notifications.
+- **Native fit and finish:** System, Bessie, and Catppuccin themes; density and terminal controls; bounded Ghostty configuration compatibility.
+- **Operational surfaces:** startup or on-demand connections, first-run setup, Trouble diagnostics, secure Sparkle update UI, and a local CLI/MCP intent bus.
 
-From a checkout on the Mac:
+See [the complete V1 feature contract](docs/v1/features.md), including deliberate exclusions.
+
+## First run
+
+When an approved build is available to you:
+
+1. Open Bessie and choose **This Mac** or **Remote over SSH**.
+2. Select an absolute workspace folder.
+3. Continue through the ownership and Herd-state primer.
+4. Choose a notification policy and, if wanted, grant macOS permission.
+5. Finish setup to open the first real terminal.
+
+The included runtime is the default for **This Mac**. SSH setup uses your existing OpenSSH configuration and agent; Bessie stores the host alias and Herdr session name, not passwords or private keys.
+
+Read [Getting started](docs/v1/getting-started.md) for local and SSH setup, Projects, notifications, terminal takeover, troubleshooting, and updates.
+
+## The ownership boundary
+
+Bessie may keep presentation preferences, Project recipes, and last-opened Herdr identifiers. Those identifiers are only hints and are revalidated against a fresh Herdr snapshot.
+
+Herdr remains authoritative for all live work. Closing a Herdr workspace, tab, or pane is therefore a real destructive action and can stop its processes; Bessie confirms destructive cascades. Closing Bessie's window or quitting the app is different: it must not stop Herdr or pane processes.
+
+Bessie uses Herdr's public JSON API, CLI surfaces, and terminal-session bridge. It does not copy Herdr's private protocol, maintain a shadow session database, or invent graphical approval actions that Herdr does not expose.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [V1 features and non-goals](docs/v1/features.md)
+- [Getting started](docs/v1/getting-started.md)
+- [CLI, MCP, and intent-bus automation](docs/v1/automation.md)
+- [Architecture](docs/v1/architecture.md)
+- [Development and release operations](docs/v1/development.md)
+- [Release engineering](docs/releases/README.md)
+- [Credits](CREDITS.md) and [packaged asset attribution](Sources/BessieApp/Resources/ATTRIBUTION.md)
+- [Apache-2.0 license](LICENSE)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
+## Development quick start
+
+On an Apple-silicon Mac with macOS 14+, Swift 6, and the Xcode command-line tools:
 
 ```bash
-./scripts/dogfood-install-signed.sh
+swift package resolve
+swift build
+swift test
 ```
 
-Run the installer from an interactive GUI login so `codesign` can use the private key. Verification-only packages use the separate `dev.bessie.app.verify` identity and are never production install candidates.
-
-The bundle reports version `0.1.0` with build number `3`. This branch is the `0.1.0-rc.3` acceptance candidate.
-
-## Using Bessie
-
-1. Open Bessie. It connects every enabled herd configured for start at launch; on-demand herds connect when selected or used by a Project.
-2. Open **The herd** to see local and remote agents together. Opening a card routes workspace and terminal actions to the connection that owns it.
-3. Use **Workspaces** and **New pane** to open shells or start supported agents in the current workspace context.
-4. Open **Attention** when work needs you.
-
-The herd retains every Herdr-tracked agent across every workspace, including idle, blocked, done, and temporarily unknown agents—not only agents currently working.
-
-Bessie never silently steals a terminal controlled by another client. A conflicting pane opens read-only. Use **Take over terminal control** only when you mean it.
-
-The background server survives Bessie quitting, so reopening the app returns to the same shells and agents. Bessie ignores an inherited generic `HERDR_SOCKET_PATH` so an unrelated shell cannot redirect it; diagnostics can opt into a socket only with `BESSIE_HERDR_SOCKET_PATH`. Set `BESSIE_HERDR_AUTOSTART=0` only when diagnosing startup manually.
-
-## Remote VPS sessions
-
-Open **Settings → Herds → Add a herd**, enter an SSH config host (or `user@host`), and optionally name a Herdr session. Leave the session blank for the remote default session. Enabled connections participate in The herd. You can disable This Mac while retaining its configuration as long as another herd remains enabled and selected.
-
-Bessie asks the remote `herdr status --json` command for the authoritative Unix-socket path, then forwards both public Herdr Unix sockets to private sockets under `/tmp` with `0700` directory permissions. A stopped remote session must be started on its host first. No Herdr socket is exposed over TCP. Authentication remains entirely in OpenSSH configuration and the user's SSH agent; Bessie stores the host alias and session name but never a password or private key. See [Herdr's persistence and remote-access guide](https://herdr.dev/docs/persistence-remote/).
-
-## Settings
-
-Settings covers:
-
-- independently enabled local and SSH Herdr connections included in one herd
-- dark or light Dock icon
-- cowprint contrast and motion
-- terminal font size
-- pane spacing
-- startup behavior
-- notification policy and permission
-- pinned Herdr and libghostty versions
-
-Notification permission is requested only after you click **Allow notifications**.
-
-![Bessie Settings](.github/assets/settings.png)
-
-## Test this candidate
-
-The highest-value acceptance pass is short:
-
-- drag workspaces and tabs in both directions
-- resize a split using the divider
-- move a pane to another tab and another workspace
-- open a pane in observe mode, then confirm takeover
-- allow notifications and follow one back to its pane
-- start a shell and a Codex agent
-- quit Bessie, reopen it, and confirm both are still there
-- switch between the dark and light app icons
-
-Record anything surprising, even if it is only a rough edge. This candidate remains the foundation preview; it is not the complete V1 until bundled-runtime/onboarding/Trouble and Native Projects pass the integrated release contract.
-
-## Keyboard shortcuts
-
-Bessie uses Ghostty-style native macOS Command shortcuts. Product chords (split, close pane, tabs, rail, palette, …) use **one window-scoped policy** — they do not change based on whether the terminal or chrome currently has focus. They only yield to ordinary text fields, IME composition, and modal sheets.
-
-Press `Cmd+Shift+P` to open the searchable command palette (also **Bessie → Command Palette…**). Browse every action and its shortcut there. In the palette: `↑`/`↓` move, `Return` runs, `Cmd+Return` runs the alternate route when present, `Esc` closes.
-
-### Product / topology
-- `Cmd+N` new workspace · `Cmd+T` new tab · `Cmd+1`–`9` jump to tab
-- `Cmd+[` / `Cmd+]` cycle **panes** · `Cmd+Shift+[` / `Cmd+Shift+]` cycle **tabs**
-- `Cmd+W` close **pane** (confirm) · `Cmd+Shift+W` close workspace · close tab via palette
-- `Cmd+D` split right · `Shift+Cmd+D` split down · `Cmd+Shift+Enter` zoom pane
-- `Option+Cmd+Arrow` focus pane · `Shift+Option+Cmd+Arrow` swap · `Control+Cmd+Arrow` resize
-- `Cmd+Shift+J` / `Cmd+Shift+K` walk the rail · `Cmd+Shift+B` toggle rail · `Cmd+,` Settings
-- `Option+P` Projects · `Cmd+Shift+G` workspaces · `Cmd+Shift+Z` Zen · `Option+Cmd+N` next needs-you
-- `Shift+Option+Cmd+[` / `]` previous/next agent · `Esc` exits Zen
-
-### Terminal-focused (Ghostty-style)
-- `Cmd+B` → one byte `0x02` (Herdr prefix; same as your Ghostty `cmd+b=text:\\x02`)
-- `Cmd+G` → delete entire line (`Ctrl-A` + `Ctrl-K`) — Ghostty uses ⌘G for search-next; Bessie has no terminal search yet
-- `Cmd+Backspace` → kill to start of line (`Ctrl-U`) · `Cmd+Delete` → kill to end (`Ctrl-K`)
-- `Cmd+←` / `Cmd+→` → beginning / end of line
-- `Option+←` / `Option+→` → word left / right (ESC b / ESC f)
-- `Cmd+C` copy selection, or `0x03` interrupt if nothing selected
-- `Cmd+V` paste · `Cmd+A` select all · `Cmd+K` clear scrollback
-- `Cmd+↑` / `Cmd+↓` jump to previous/next prompt
-- Ordinary typing and Control sequences stay with the terminal
-
-System chords `Cmd+Q` / `H` / `M` / `` ` `` always pass through to AppKit.
-
-## How it is built
-
-Bessie keeps only presentation preferences and a last-workspace hint. It does not persist a shadow copy of Herdr's session. Snapshot reconciliation is authoritative, and all mutations go through Herdr's public actions.
-
-Terminal controllers use bounded reconnect delays of `0.25`, `0.5`, `1`, `2`, and `4` seconds. Input stays frozen until a matching full repaint makes the controller ready again. Observe mode is read-only; takeover is explicit.
-
-See the [V1 plan](docs/plans/2026-07-31-bessie-v1.md) and [Mac verification report](docs/reports/mac-v1-alpha.md) for the full contract and evidence.
-
-## Development
-
-Run the static checks on any machine:
+Run the repository checks from any supported development host:
 
 ```bash
 ./scripts/check.sh
 ```
 
-Run the native acceptance suite from the VPS repository with the configured Mac mirror:
+The package pins `libghostty-spm` `1.3.2` and Sparkle `2.9.5`. Development may use the repository-local runtime and configuration under `.local/`; it must not silently install or overwrite a system Herdr installation.
+
+Maintainers with the approved Developer ID identity can package and install the current local acceptance candidate from an interactive Mac GUI login:
 
 ```bash
-BESSIE_AGENT_KIND=codex ./scripts/mac-verify.sh
+./scripts/dogfood-install-signed.sh
 ```
 
-The verifier:
+That command writes `/Applications/Bessie.app`; it is not a public installer and does not make the unnotarized candidate a release.
 
-- syncs to the Mac without destructive mirroring
-- isolates Herdr config, state, and sockets under the repository
-- runs the Swift test suite
-- builds, packages, signs, and validates `dist/Bessie.app`
-- exercises live Herdr, libghostty, shell, and agent flows
-- proves Bessie can start a detached named Herdr session without touching the default session
-- tests reconnect and survival across app reopen
-- captures and checks native Workspace and Settings screenshots
-- removes only the processes and state it created
+`./scripts/mac-verify.sh` is a broad release gate, not the ordinary development command. Follow [AGENTS.md](AGENTS.md) before changing implementation or packaging behavior.
 
-It refuses to reuse or stop an unrelated Herdr server.
+## Release status
 
-## V1 boundaries
+Current candidate: **Bessie `0.1.0` build `11`**.
 
-This candidate does not include graphical remote sessions, worktrees, plugins, IDE surfaces, or generic activity feeds. Remote Herdr remains available through `herdr --remote`. Inner-terminal mouse and focus reporting and Kitty keyboard protocol handling remain outside the verified V1 baseline. Shift-drag still provides local terminal selection.
+- Developer ID signed: **yes**
+- Notarized: **no**
+- Public download: **no**
+- Public V1 release: **not yet**
 
-The app is ad hoc signed for local testing. Public distribution still needs release signing and notarization.
+Release packaging and Sparkle support are implemented, but publishing still requires the clean-machine, signing, notarization, update, and explicit release-approval gates in [the release documentation](docs/releases/README.md).

@@ -2,6 +2,68 @@ import XCTest
 @testable import BessieCore
 
 final class KeyboardShortcutTests: XCTestCase {
+    func testRemovedNativeTopologyChordsReturnToAppKitOrTerminalPolicy() {
+        let removedTopology: [BessieShortcutStroke] = [
+            .init(key: .character("n"), command: true),
+            .init(key: .character("w"), command: true),
+            .init(key: .character("w"), command: true, shift: true),
+            .init(key: .character("g"), command: true, shift: true),
+            .init(key: .character("t"), command: true),
+            .init(key: .character("1"), command: true),
+            .init(key: .character("["), command: true),
+            .init(key: .character("]"), command: true),
+            .init(key: .character("["), command: true, shift: true),
+            .init(key: .character("]"), command: true, shift: true),
+            .init(key: .character("d"), command: true),
+            .init(key: .character("d"), command: true, shift: true),
+            .init(key: .character("t"), option: true, command: true),
+            .init(key: .character("r"), option: true, command: true),
+            .init(key: .character("x"), option: true, command: true),
+            .init(key: .leftArrow, option: true, command: true),
+            .init(key: .downArrow, option: true, command: true, shift: true),
+            .init(key: .rightArrow, control: true, command: true),
+        ]
+
+        for stroke in removedTopology {
+            XCTAssertEqual(
+                BessieKeyboardShortcutRouter.policy(for: stroke),
+                .passthrough,
+                "Removed topology chord is still claimed: \(stroke)"
+            )
+        }
+    }
+
+    func testTerminalAndAppKitOwnershipAfterPrefixMigration() {
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("b"), command: true)),
+            .passthrough
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("c"), command: true)),
+            .terminalShortcut(.copy)
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("v"), command: true)),
+            .terminalShortcut(.paste)
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("c"), control: true)),
+            .passthrough
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("q"), command: true)),
+            .passthrough
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("p"), option: true, command: true)),
+            .appCommand(.projectsPicker)
+        )
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("p"), option: true)),
+            .passthrough
+        )
+    }
+
     func testNonCommandInputAlwaysPassesThroughToTerminal() {
         let router = BessieKeyboardShortcutRouter()
         XCTAssertEqual(router.handle(.init(key: .character("b"), control: true)), .passthrough)
@@ -25,10 +87,10 @@ final class KeyboardShortcutTests: XCTestCase {
         }
     }
 
-    func testCommandBSendsJordanControlBAndPaletteUsesShiftCommandP() {
+    func testCommandBIsUnclaimedAndPaletteUsesShiftCommandP() {
         XCTAssertEqual(
             BessieKeyboardShortcutRouter.policy(for: .init(key: .character("b"), command: true)),
-            .terminalShortcut(.sendBytes(Data([0x02])))
+            .passthrough
         )
         XCTAssertEqual(
             BessieKeyboardShortcutRouter.policy(for: .init(key: .character("p"), command: true, shift: true)),
@@ -49,7 +111,6 @@ final class KeyboardShortcutTests: XCTestCase {
 
     func testGhosttyMacOSTerminalShortcutMatrix() {
         let cases: [(BessieShortcutStroke, BessieTerminalShortcutAction)] = [
-            (.init(key: .character("b"), command: true), .sendBytes(Data([0x02]))),
             (.init(key: .character("c"), command: true), .copy),
             (.init(key: .character("v"), command: true), .paste),
             (.init(key: .character("k"), command: true), .clearScrollback),
@@ -90,22 +151,13 @@ final class KeyboardShortcutTests: XCTestCase {
         }
     }
 
-    func testNativeWorkspaceTabAndPaneShortcuts() {
+    func testNativeApplicationAllowlistRemainsAvailable() {
         let cases: [(BessieShortcutStroke, BessieShortcutCommand)] = [
-            (.init(key: .character("n"), command: true), .newWorkspace),
-            (.init(key: .character("t"), command: true), .newTab),
-            (.init(key: .character("3"), command: true), .switchTab(3)),
-            (.init(key: .character("["), command: true), .previousPane),
-            (.init(key: .character("]"), command: true), .nextPane),
-            (.init(key: .character("["), command: true, shift: true), .previousTab),
-            (.init(key: .character("]"), command: true, shift: true), .nextTab),
-            (.init(key: .character("\r"), command: true, shift: true), .zoomPane),
-            (.init(key: .character("d"), command: true), .splitPane(.right)),
-            (.init(key: .character("D"), command: true, shift: true), .splitPane(.down)),
+            (.init(key: .character("p"), command: true, shift: true), .showCommandPalette),
             (.init(key: .character("b"), command: true, shift: true), .toggleSidebar),
             (.init(key: .character("j"), command: true, shift: true), .nextRailPane),
             (.init(key: .character("k"), command: true, shift: true), .previousRailPane),
-            (.init(key: .character("p"), option: true), .projectsPicker),
+            (.init(key: .character("p"), option: true, command: true), .projectsPicker),
             (.init(key: .character(","), command: true), .showSettings),
             (.init(key: .character("n"), option: true, command: true), .openNextNeedsYou),
             (.init(key: .character("z"), command: true, shift: true), .toggleZen),
@@ -118,13 +170,17 @@ final class KeyboardShortcutTests: XCTestCase {
         }
         XCTAssertEqual(
             BessieKeyboardShortcutRouter.policy(for: .init(key: .character("w"), command: true)),
-            .appCommand(.closePane)
+            .passthrough,
+            "Command-W must retain standard AppKit window-close ownership"
         )
         XCTAssertEqual(
-            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("p"), option: true, command: true)),
+            BessieKeyboardShortcutRouter.policy(for: .init(key: .character("p"), option: true)),
             .passthrough
         )
-        XCTAssertNil(BessieKeyboardShortcutRouter.commands.first(where: { $0.command == .closeTab })?.shortcut)
+        XCTAssertEqual(
+            BessieKeyboardShortcutRouter.commands.first(where: { $0.command == .closeTab })?.shortcut,
+            "Ctrl-B Shift-X"
+        )
     }
 
     func testZenCommandsDoNotConsumeOrdinaryTerminalInput() {
@@ -239,13 +295,13 @@ final class KeyboardShortcutTests: XCTestCase {
         )
     }
 
-    func testModifiedArrowShortcutsFocusSwapAndResizePanes() {
+    func testRemovedModifiedArrowTopologyShortcutsPassThrough() {
         let router = BessieKeyboardShortcutRouter()
-        XCTAssertEqual(router.handle(.init(key: .leftArrow, option: true, command: true)), .command(.focusPane(.left)))
-        XCTAssertEqual(router.handle(.init(key: .rightArrow, option: true, command: true)), .command(.focusPane(.right)))
-        XCTAssertEqual(router.handle(.init(key: .upArrow, option: true, command: true)), .command(.focusPane(.up)))
-        XCTAssertEqual(router.handle(.init(key: .downArrow, option: true, command: true, shift: true)), .command(.swapPane(.down)))
-        XCTAssertEqual(router.handle(.init(key: .rightArrow, control: true, command: true)), .command(.resizePane(.right)))
+        XCTAssertEqual(router.handle(.init(key: .leftArrow, option: true, command: true)), .passthrough)
+        XCTAssertEqual(router.handle(.init(key: .rightArrow, option: true, command: true)), .passthrough)
+        XCTAssertEqual(router.handle(.init(key: .upArrow, option: true, command: true)), .passthrough)
+        XCTAssertEqual(router.handle(.init(key: .downArrow, option: true, command: true, shift: true)), .passthrough)
+        XCTAssertEqual(router.handle(.init(key: .rightArrow, control: true, command: true)), .passthrough)
     }
 
     func testCommandPaletteSearchesTitlesDetailsAndKeywords() {
@@ -254,6 +310,10 @@ final class KeyboardShortcutTests: XCTestCase {
         XCTAssertEqual(commands.filter { $0.matches("needs you") }.map(\.title), ["Open next agent that needs you"])
         XCTAssertTrue(commands.allSatisfy { !$0.title.isEmpty && !$0.detail.isEmpty })
         XCTAssertEqual(commands.first(where: { $0.command == .showSettings })?.shortcut, "⌘,")
+        XCTAssertEqual(commands.first(where: { $0.command == .splitPane(.right) })?.shortcut, "Ctrl-B v")
+        XCTAssertEqual(commands.first(where: { $0.command == .closePane })?.shortcut, "Ctrl-B x")
+        XCTAssertEqual(commands.first(where: { $0.command == .projectsPicker })?.shortcut, "⌥⌘P")
+        XCTAssertFalse(commands.compactMap(\.shortcut).contains("⌘B"))
     }
 
     func testDirectionalNavigationUsesProjectedPaneGeometry() throws {

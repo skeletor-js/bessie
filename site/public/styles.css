@@ -191,7 +191,7 @@ a:hover { color: #fff; }
 .rail-row .rr-age { align-self: center; color: var(--faint); font: 400 9.5px/1.5 var(--mono); white-space: nowrap; }
 .rail-row .rr-loc { display: flex; grid-column: 1/-1; align-items: center; gap: 6px; min-width: 0; color: var(--faint); font: 400 9.5px/1.4 var(--mono); }
 .rail-row .rr-loc-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rr-mark { display: inline-block; flex: none; width: 12px; height: 12px; background: currentColor; }
+
 .rail-row.is-selected { background: var(--selected); }
 .rail-row.is-selected .rr-title { color: var(--strong); font-weight: 600; }
 .rail-row.is-selected::before { position: absolute; top: 6px; bottom: 6px; left: -8px; width: 2.5px; border-radius: 0 2px 2px 0; background: var(--accent); content: ""; }

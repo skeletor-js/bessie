@@ -44,6 +44,8 @@ final class ProjectionActionTests: XCTestCase {
             (.tabClose(id: "t1"), "tab.close", ["tab_id": .string("t1")]),
             (.paneSplit(targetPaneID: "p1", direction: .down, ratio: 0.4, cwd: nil, focus: true), "pane.split", ["target_pane_id": .string("p1"), "direction": .string("down"), "ratio": .number(0.4), "focus": .bool(true)]),
             (.paneFocus(id: "p1"), "pane.focus", ["pane_id": .string("p1")]),
+            (.paneFocusDirection(sourcePaneID: "p1", direction: .left), "pane.focus_direction", ["pane_id": .string("p1"), "direction": .string("left")]),
+            (.paneFocusDirection(sourcePaneID: nil, direction: .right), "pane.focus_direction", ["direction": .string("right")]),
             (.paneResize(id: "p1", direction: .right, amount: 0.1), "pane.resize", ["pane_id": .string("p1"), "direction": .string("right"), "amount": .number(0.1)]),
             (.paneSwap(id: "p1", direction: .left), "pane.swap", ["pane_id": .string("p1"), "direction": .string("left")]),
             (.paneSwapExplicit(sourceID: "p1", targetID: "p2"), "pane.swap", ["source_pane_id": .string("p1"), "target_pane_id": .string("p2")]),
@@ -83,6 +85,47 @@ final class ProjectionActionTests: XCTestCase {
         ])
 
         XCTAssertEqual(api.calls, ["workspace.focus", "tab.focus", "pane.focus", "session.snapshot"])
+    }
+
+    func testStagedActionAttemptPreservesCompletedCountAndUnknownDisposition() throws {
+        let api = StagedRecordingMutationAPI(
+            snapshot: .projectionFixture,
+            outcomes: [
+                .success(.object([:])),
+                .failure(.init(
+                    disposition: .mutationOutcomeUnknown,
+                    underlying: HerdrClientError.connectionClosed
+                )),
+            ]
+        )
+        let client = HerdrActionClient(api: api)
+
+        let result = client.performRequests([
+            .paneFocus(id: "p1"),
+            .paneResize(id: "p1", direction: .right, amount: 0.05),
+        ])
+
+        guard case .failure(let failure) = result else { return XCTFail("expected staged failure") }
+        XCTAssertEqual(failure.disposition, .mutationOutcomeUnknown)
+        XCTAssertEqual(failure.completedRequestCount, 1)
+        XCTAssertEqual(api.calls, ["pane.focus", "pane.resize"])
+    }
+
+    func testStagedActionAttemptKeepsDefinitelyUnsentFirstRequestDistinct() {
+        let api = StagedRecordingMutationAPI(
+            snapshot: .projectionFixture,
+            outcomes: [.failure(.init(
+                disposition: .definitelyUnsent,
+                underlying: HerdrClientError.socket(path: "/tmp/test", message: "connect failed")
+            ))]
+        )
+        let client = HerdrActionClient(api: api)
+
+        let result = client.performRequests([.paneFocus(id: "p1")])
+
+        guard case .failure(let failure) = result else { return XCTFail("expected staged failure") }
+        XCTAssertEqual(failure.disposition, .definitelyUnsent)
+        XCTAssertEqual(failure.completedRequestCount, 0)
     }
 
     func testCloseConfirmationAndFallbackComeFromAuthoritativeProjection() throws {
@@ -137,6 +180,34 @@ private final class RecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable 
     init(snapshot: HerdrSnapshot) { snapshotValue = snapshot }
     func request(method: String, params: [String: JSONValue]) throws -> JSONValue { calls.append(method); return .object([:]) }
     func snapshot() throws -> HerdrSnapshot { calls.append("session.snapshot"); return snapshotValue }
+}
+
+private final class StagedRecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable {
+    var calls: [String] = []
+    let snapshotValue: HerdrSnapshot
+    var outcomes: [Result<JSONValue, HerdrMutationRequestFailure>]
+
+    init(
+        snapshot: HerdrSnapshot,
+        outcomes: [Result<JSONValue, HerdrMutationRequestFailure>]
+    ) {
+        snapshotValue = snapshot
+        self.outcomes = outcomes
+    }
+
+    func request(method: String, params: [String: JSONValue]) throws -> JSONValue {
+        try stagedMutationRequest(method: method, params: params).get()
+    }
+
+    func stagedMutationRequest(
+        method: String,
+        params: [String: JSONValue]
+    ) -> Result<JSONValue, HerdrMutationRequestFailure> {
+        calls.append(method)
+        return outcomes.removeFirst()
+    }
+
+    func snapshot() throws -> HerdrSnapshot { snapshotValue }
 }
 
 private extension HerdrSnapshot {

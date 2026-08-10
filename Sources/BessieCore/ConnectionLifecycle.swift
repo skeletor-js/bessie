@@ -24,6 +24,25 @@ public struct ReconnectPolicy: Equatable, Sendable {
     }
 }
 
+struct ReconnectAttempt: Equatable, Sendable {
+    let attempt: Int
+    let delay: TimeInterval
+}
+
+struct ReconnectAttemptBudget: Sendable {
+    private var failureCount = 0
+
+    mutating func recordConnectionSuccess() {
+        failureCount = 0
+    }
+
+    mutating func recordFailure(using policy: ReconnectPolicy) -> ReconnectAttempt? {
+        guard let delay = policy.delay(afterFailure: failureCount) else { return nil }
+        failureCount += 1
+        return ReconnectAttempt(attempt: failureCount, delay: delay)
+    }
+}
+
 public enum HerdrConnectionState: Equatable, Sendable {
     case notFound
     case resolutionFailed(RuntimeResolutionFailure)
@@ -230,7 +249,7 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
             socketPath = status.socketPath
         }
 
-        var failure = 0
+        var retryBudget = ReconnectAttemptBudget()
         var connectedOnce = false
         while !cancellation.isCancelled {
             onState(.connecting(runtime: runtime))
@@ -263,6 +282,7 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
                 }
                 var latestSnapshot = bootstrapped.snapshot
                 connectedOnce = true
+                retryBudget.recordConnectionSuccess()
                 onState(.connected(runtime: runtime, socketPath: socketPath, snapshot: bootstrapped.snapshot))
                 while !cancellation.isCancelled, try bootstrapped.subscription.nextEvent() != nil {
                     guard cancellation.wait(for: 0.03) else { return }
@@ -277,15 +297,19 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
                 throw HerdrClientError.connectionClosed
             } catch {
                 guard !cancellation.isCancelled else { return }
-                guard let delay = policy.delay(afterFailure: failure) else {
+                guard let retry = retryBudget.recordFailure(using: policy) else {
                     onState(connectedOnce
                         ? .lost(runtime: runtime, reason: error.localizedDescription)
                         : .apiUnavailable(runtime: runtime, reason: error.localizedDescription))
                     return
                 }
-                failure += 1
-                onState(.retrying(runtime: runtime, attempt: failure, delay: delay, reason: error.localizedDescription))
-                guard cancellation.wait(for: delay) else { return }
+                onState(.retrying(
+                    runtime: runtime,
+                    attempt: retry.attempt,
+                    delay: retry.delay,
+                    reason: error.localizedDescription
+                ))
+                guard cancellation.wait(for: retry.delay) else { return }
             }
         }
     }

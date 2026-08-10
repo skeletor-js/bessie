@@ -147,9 +147,7 @@ private struct ProjectLayoutNodeView: View {
     @ViewBuilder
     private func paneMark(for pane: BessieProjectPane) -> some View {
         let command = pane.command?.lowercased() ?? ""
-        if ["claude", "codex", "grok", "amp"].contains(where: command.contains) {
-            BessieProviderMark(provider: command, size: 12)
-        } else {
+        if !["claude", "codex", "grok", "amp"].contains(where: command.contains) {
             BessieIconView(icon: .terminalWindow, size: 12)
                 .foregroundStyle(BessieDesign.faint)
                 .accessibilityLabel("Shell")

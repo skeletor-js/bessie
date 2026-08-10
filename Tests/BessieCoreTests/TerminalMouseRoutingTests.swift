@@ -95,7 +95,7 @@ final class TerminalMouseRoutingTests: XCTestCase {
         XCTAssertEqual(
             TerminalMouseRouting.captureCapability(
                 agent: nil,
-                foregroundCWD: "/home/hermes/code/bessie"
+                foregroundCWD: "/work/bessie"
             ),
             .unavailable
         )

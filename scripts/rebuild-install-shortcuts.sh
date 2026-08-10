@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Focused rebuild + install for Jordan's Mac after shortcut routing changes.
+# Focused rebuild + install after shortcut routing changes.
 # Does NOT run the full mac-verify acceptance suite.
 set -euo pipefail
 
@@ -23,7 +23,8 @@ if [[ ${1:-} == --print-package-configuration || $# -gt 1 ]]; then
   exit 1
 fi
 
-mac_dir=${1:-/Users/jordanstella/GitHub/bessie}
+mac_dir=${1:-${BESSIE_MAC_DIR:-}}
+: "${mac_dir:?Pass the Mac checkout path or set BESSIE_MAC_DIR.}"
 cd "$mac_dir"
 source "$mac_dir/scripts/lib/bessie-app-lifecycle.sh"
 
@@ -92,6 +93,10 @@ if ! (
   cmp "$mac_dir/dist/Bessie.app/Contents/MacOS/BessieApp" "$installed_app/Contents/MacOS/BessieApp"
   cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/herdr" "$installed_app/Contents/Resources/Herdr/herdr"
   cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Herdr/LICENSE" "$installed_app/Contents/Resources/Herdr/LICENSE"
+  cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Bessie-LICENSE.txt" "$installed_app/Contents/Resources/Bessie-LICENSE.txt"
+  cmp "$mac_dir/dist/Bessie.app/Contents/Resources/libghostty-spm-LICENSE.txt" "$installed_app/Contents/Resources/libghostty-spm-LICENSE.txt"
+  cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Ghostty-LICENSE.txt" "$installed_app/Contents/Resources/Ghostty-LICENSE.txt"
+  cmp "$mac_dir/dist/Bessie.app/Contents/Resources/Sparkle-LICENSE.txt" "$installed_app/Contents/Resources/Sparkle-LICENSE.txt"
   installed_app_sha=$(shasum -a 256 "$installed_app/Contents/MacOS/BessieApp" | awk '{print $1}')
   [[ "$installed_app_sha" == "$packaged_app_sha" ]]
 ); then

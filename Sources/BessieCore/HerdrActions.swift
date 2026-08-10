@@ -31,7 +31,8 @@ public enum HerdrAction: Equatable, Sendable {
     case tabCreate(workspaceID: String, cwd: String?, label: String?, focus: Bool)
     case tabFocus(id: String), tabRename(id: String, label: String), tabMove(id: String, insertIndex: Int), tabClose(id: String)
     case paneSplit(targetPaneID: String, direction: SplitDirection, ratio: Double?, cwd: String?, focus: Bool)
-    case paneFocus(id: String), paneResize(id: String, direction: PaneDirection, amount: Double?)
+    case paneFocus(id: String), paneFocusDirection(sourcePaneID: String?, direction: PaneDirection)
+    case paneResize(id: String, direction: PaneDirection, amount: Double?)
     case paneSwap(id: String, direction: PaneDirection), paneSwapExplicit(sourceID: String, targetID: String)
     case paneMove(id: String, destination: PaneMoveDestination, focus: Bool)
     case paneZoom(id: String, mode: PaneZoomMode), paneRename(id: String, label: String?), paneClose(id: String)
@@ -52,6 +53,7 @@ public enum HerdrAction: Equatable, Sendable {
         case .tabClose(let id): return target("tab.close", "tab_id", id)
         case .paneSplit(let targetID, let direction, let ratio, let cwd, let focus): return .init(method: "pane.split", params: compactJSON(["target_pane_id": .string(targetID), "direction": .string(direction.rawValue), "ratio": ratio.map(JSONValue.number), "cwd": cwd.map(JSONValue.string), "focus": .bool(focus)]))
         case .paneFocus(let id): return target("pane.focus", "pane_id", id)
+        case .paneFocusDirection(let sourcePaneID, let direction): return .init(method: "pane.focus_direction", params: compactJSON(["pane_id": sourcePaneID.map(JSONValue.string), "direction": .string(direction.rawValue)]))
         case .paneResize(let id, let direction, let amount): return .init(method: "pane.resize", params: compactJSON(["pane_id": .string(id), "direction": .string(direction.rawValue), "amount": amount.map(JSONValue.number)]))
         case .paneSwap(let id, let direction): return .init(method: "pane.swap", params: ["pane_id": .string(id), "direction": .string(direction.rawValue)])
         case .paneSwapExplicit(let source, let target): return .init(method: "pane.swap", params: ["source_pane_id": .string(source), "target_pane_id": .string(target)])
@@ -74,9 +76,69 @@ public enum HerdrAction: Equatable, Sendable {
 
 public protocol HerdrMutationAPI: Sendable {
     func request(method: String, params: [String: JSONValue]) throws -> JSONValue
+    func stagedMutationRequest(
+        method: String,
+        params: [String: JSONValue]
+    ) -> Result<JSONValue, HerdrMutationRequestFailure>
     func snapshot() throws -> HerdrSnapshot
 }
+
+public enum HerdrMutationDisposition: Equatable, Sendable {
+    case definitelyUnsent
+    case mutationOutcomeUnknown
+}
+
+public struct HerdrMutationRequestFailure: Error, @unchecked Sendable {
+    public let disposition: HerdrMutationDisposition
+    public let underlying: any Error
+
+    public init(disposition: HerdrMutationDisposition, underlying: any Error) {
+        self.disposition = disposition
+        self.underlying = underlying
+    }
+}
+
+public extension HerdrMutationAPI {
+    func stagedMutationRequest(
+        method: String,
+        params: [String: JSONValue]
+    ) -> Result<JSONValue, HerdrMutationRequestFailure> {
+        do {
+            return .success(try request(method: method, params: params))
+        } catch {
+            return .failure(.init(disposition: .mutationOutcomeUnknown, underlying: error))
+        }
+    }
+}
 extension HerdrSocketAPI: HerdrMutationAPI {}
+
+public struct HerdrActionReceipt: Equatable, Sendable {
+    public let completedRequestCount: Int
+
+    public init(completedRequestCount: Int) {
+        self.completedRequestCount = completedRequestCount
+    }
+}
+
+public struct HerdrActionAttemptFailure: Error, @unchecked Sendable {
+    public let disposition: HerdrMutationDisposition
+    public let completedRequestCount: Int
+    public let underlying: any Error
+
+    public init(
+        disposition: HerdrMutationDisposition,
+        completedRequestCount: Int,
+        underlying: any Error
+    ) {
+        self.disposition = disposition
+        self.completedRequestCount = completedRequestCount
+        self.underlying = underlying
+    }
+}
+
+extension HerdrActionAttemptFailure: LocalizedError {
+    public var errorDescription: String? { underlying.localizedDescription }
+}
 
 public struct HerdrActionClient: Sendable {
     private let api: any HerdrMutationAPI
@@ -86,10 +148,38 @@ public struct HerdrActionClient: Sendable {
     }
     public func perform(_ actions: [HerdrAction]) throws -> HerdrSessionProjection {
         guard !actions.isEmpty else { return try HerdrSessionProjection(snapshot: api.snapshot()) }
+        switch performRequests(actions) {
+        case .success:
+            return try snapshot()
+        case .failure(let failure):
+            throw failure
+        }
+    }
+
+    public func snapshot() throws -> HerdrSessionProjection {
+        try HerdrSessionProjection(snapshot: api.snapshot())
+    }
+
+    public func performRequests(
+        _ actions: [HerdrAction]
+    ) -> Result<HerdrActionReceipt, HerdrActionAttemptFailure> {
+        var completedRequestCount = 0
         for action in actions {
             let request = action.request
-            _ = try api.request(method: request.method, params: request.params)
+            switch api.stagedMutationRequest(method: request.method, params: request.params) {
+            case .success:
+                completedRequestCount += 1
+            case .failure(let failure):
+                let disposition: HerdrMutationDisposition = completedRequestCount > 0
+                    ? .mutationOutcomeUnknown
+                    : failure.disposition
+                return .failure(.init(
+                    disposition: disposition,
+                    completedRequestCount: completedRequestCount,
+                    underlying: failure.underlying
+                ))
+            }
         }
-        return try HerdrSessionProjection(snapshot: api.snapshot())
+        return .success(.init(completedRequestCount: completedRequestCount))
     }
 }

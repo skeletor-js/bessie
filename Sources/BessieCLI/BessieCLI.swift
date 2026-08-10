@@ -13,7 +13,7 @@ enum BessieCLIParseError: Error, Equatable, LocalizedError {
 
 enum BessieCLICommand: Equatable {
     case intents
-    case call(intent: String, params: [String: JSONValue], confirmToken: String?)
+    case call(intent: String, params: [String: JSONValue], confirmToken: String?, requestID: String?)
 
     static func parse(_ arguments: [String]) throws -> BessieCLICommand {
         guard let verb = arguments.first else { throw invalid("Missing command.") }
@@ -23,11 +23,12 @@ enum BessieCLICommand: Equatable {
             return .intents
         case "status":
             guard arguments.count == 1 else { throw invalid("'status' does not accept arguments.") }
-            return .call(intent: "app.status", params: [:], confirmToken: nil)
+            return .call(intent: "app.status", params: [:], confirmToken: nil, requestID: nil)
         case "call":
             guard arguments.count >= 2, !arguments[1].isEmpty else { throw invalid("Missing intent ID after 'call'.") }
             var params: [String: JSONValue] = [:]
             var confirmToken: String?
+            var explicitRequestID: String?
             var sawJSON = false
             var index = 2
             while index < arguments.count {
@@ -41,12 +42,19 @@ enum BessieCLICommand: Equatable {
                 case "--confirm":
                     guard confirmToken == nil else { throw invalid("'--confirm' may be provided only once.") }
                     confirmToken = arguments[index + 1]
+                case "--request-id":
+                    guard explicitRequestID == nil else { throw invalid("'--request-id' may be provided only once.") }
+                    guard !arguments[index + 1].isEmpty else { throw invalid("'--request-id' must not be empty.") }
+                    explicitRequestID = arguments[index + 1]
                 default:
                     throw invalid("Unknown option '\(option)'.")
                 }
                 index += 2
             }
-            return .call(intent: arguments[1], params: params, confirmToken: confirmToken)
+            return .call(
+                intent: arguments[1], params: params,
+                confirmToken: confirmToken, requestID: explicitRequestID
+            )
         default:
             throw invalid("Unknown command '\(verb)'.")
         }
@@ -97,9 +105,10 @@ struct BessieCLIRunner {
             } else {
                 result = liveResult
             }
-        case let .call(intent, params, confirmToken):
+        case let .call(intent, params, confirmToken, explicitRequestID):
             result = call(BessieIntentRequest(
-                id: requestID(), intent: intent, params: params, confirmToken: confirmToken
+                id: explicitRequestID ?? requestID(), intent: intent,
+                params: params, confirmToken: confirmToken
             ))
         }
         return BessieCLIOutcome(result: result, exitCode: result.ok ? 0 : 1)
@@ -124,7 +133,7 @@ enum BessieCLI {
                 code: .invalidParams,
                 message: error.localizedDescription
             )
-            FileHandle.standardError.write(Data("Usage: bessie intents | bessie status | bessie call <intent-id> [--json '<object>'] [--confirm <token>]\n".utf8))
+            FileHandle.standardError.write(Data("Usage: bessie intents | bessie status | bessie call <intent-id> [--json '<object>'] [--confirm <token>] [--request-id <id>]\n".utf8))
             write(result)
             exit(2)
         }

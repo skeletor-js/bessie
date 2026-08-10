@@ -7,8 +7,12 @@ import Testing
 struct BessieCLIArgumentsTests {
     @Test func validForms() throws {
         #expect(try BessieCLICommand.parse(["intents"]) == .intents)
-        #expect(try BessieCLICommand.parse(["status"]) == .call(intent: "app.status", params: [:], confirmToken: nil))
-        #expect(try BessieCLICommand.parse(["call", "pane.focus"]) == .call(intent: "pane.focus", params: [:], confirmToken: nil))
+        #expect(try BessieCLICommand.parse(["status"]) == .call(
+            intent: "app.status", params: [:], confirmToken: nil, requestID: nil
+        ))
+        #expect(try BessieCLICommand.parse(["call", "pane.focus"]) == .call(
+            intent: "pane.focus", params: [:], confirmToken: nil, requestID: nil
+        ))
     }
 
     @Test func missingIntent() {
@@ -30,8 +34,29 @@ struct BessieCLIArgumentsTests {
         #expect(command == .call(
             intent: "workspace.close",
             params: ["workspace_id": .string("w1")],
-            confirmToken: "same-token"
+            confirmToken: "same-token",
+            requestID: nil
         ))
+    }
+
+    @Test func preservesExplicitRequestIDForRetry() throws {
+        var received: BessieIntentRequest?
+        let runner = BessieCLIRunner(call: { request in
+            received = request
+            return .success(id: request.id, value: .null)
+        })
+
+        _ = try runner.run(arguments: [
+            "call", "pane.pin", "--request-id", "retry-42",
+        ])
+
+        #expect(received?.id == "retry-42")
+    }
+
+    @Test func rejectsEmptyRequestID() {
+        #expect(throws: BessieCLIParseError.self) {
+            try BessieCLICommand.parse(["call", "pane.pin", "--request-id", ""])
+        }
     }
 
     @Test func offlineStatusIsAnHonestFailure() throws {

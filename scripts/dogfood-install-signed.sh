@@ -5,7 +5,7 @@
 # Must run in an interactive GUI login on the Mac (keychain unlock). SSH-only
 # sessions hit errSecInternalComponent for Developer ID.
 #
-# Usage (on jordan-macbook, from the Mac mirror):
+# Usage (from an interactive macOS checkout):
 #   ./scripts/dogfood-install-signed.sh
 #   BESSIE_CODESIGN_IDENTITY="Apple Development: …" ./scripts/dogfood-install-signed.sh
 set -euo pipefail
@@ -13,8 +13,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-default_identity='Developer ID Application: JORDAN JAMES STELLA (T4K7A3GPQ6)'
-identity=${BESSIE_CODESIGN_IDENTITY:-$default_identity}
+: "${BESSIE_CODESIGN_IDENTITY:?Set BESSIE_CODESIGN_IDENTITY to a stable Apple signing identity.}"
+identity=$BESSIE_CODESIGN_IDENTITY
 
 if [[ "$identity" == "-" ]]; then
   echo "Refusing ad-hoc dogfood install. Set BESSIE_CODESIGN_IDENTITY to a real identity." >&2

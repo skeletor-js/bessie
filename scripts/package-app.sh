@@ -62,6 +62,7 @@ sparkle_framework_path="$app_path/Contents/Frameworks/Sparkle.framework"
 runtime_staging_path="$repo_root/.local/herdr-runtime/herdr"
 runtime_path="$app_path/Contents/Resources/Herdr/herdr"
 provenance_path="$app_path/Contents/Resources/Herdr/runtime-lock.json"
+bessie_license_path="$app_path/Contents/Resources/Bessie-LICENSE.txt"
 IFS=$'\t' read -r expected_runtime_sha notice_source notice_bundle_path < <(
     /usr/bin/python3 -c 'import json, sys; lock = json.load(open(sys.argv[1])); print(lock["sha256"], lock["notice"]["source_path"], lock["notice"]["bundle_path"], sep="\t")' "$repo_root/scripts/herdr-runtime-lock.json"
 )
@@ -98,6 +99,7 @@ resource_bundle=$(find "$bin_path" -maxdepth 1 -type d -name '*BessieApp*.bundle
 while IFS= read -r -d '' resource; do
     cp -R "$resource" "$app_path/Contents/Resources/"
 done < <(find "$resource_bundle" -mindepth 1 -maxdepth 1 -print0)
+cp "$repo_root/LICENSE" "$bessie_license_path"
 
 "$repo_root/scripts/fetch-herdr-runtime.sh" "$runtime_staging_path"
 [[ $(shasum -a 256 "$runtime_staging_path" | awk '{print $1}') == "$expected_runtime_sha" ]]
@@ -107,10 +109,11 @@ cp "$repo_root/scripts/herdr-runtime-lock.json" "$provenance_path"
 
 chmod 755 "$app_path/Contents/MacOS/BessieApp"
 chmod 755 "$runtime_path"
-chmod 644 "$license_path" "$provenance_path"
+chmod 644 "$bessie_license_path" "$license_path" "$provenance_path"
 [[ $(( $(stat -f %Lp "$runtime_path") & 022 )) == 0 ]]
 [[ $(shasum -a 256 "$runtime_path" | awk '{print $1}') == "$expected_runtime_sha" ]]
 cmp "$license_source" "$license_path"
+cmp "$repo_root/LICENSE" "$bessie_license_path"
 plutil -lint "$app_path/Contents/Info.plist"
 [[ $(plutil -extract CFBundleIdentifier raw "$app_path/Contents/Info.plist") == "$bundle_identifier" ]]
 [[ $(plutil -extract CFBundleShortVersionString raw "$app_path/Contents/Info.plist") == "$marketing_version" ]]

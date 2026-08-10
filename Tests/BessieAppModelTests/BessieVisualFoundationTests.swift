@@ -97,6 +97,74 @@ final class BessieVisualFoundationTests: XCTestCase {
         XCTAssertEqual(BessieStateGeometry.needsYouFilledCircle.rawValue, "needsYouFilledCircle")
     }
 
+    func testPrefixModeIndicatorHasOneStaticAccessiblePresentation() {
+        XCTAssertNil(HerdrPrefixModePresentation(mode: .idle))
+        XCTAssertEqual(HerdrPrefixModePresentation(mode: .armed)?.text, "PREFIX")
+        XCTAssertEqual(HerdrPrefixModePresentation(mode: .armed)?.accessibilityValue, "Prefix command armed")
+        XCTAssertEqual(HerdrPrefixModePresentation(mode: .resize)?.text, "RESIZE")
+        XCTAssertEqual(HerdrPrefixModePresentation(mode: .resize)?.accessibilityValue, "Pane resize mode")
+        XCTAssertFalse(HerdrPrefixModePresentation.isAnimated)
+    }
+
+    func testKeyboardReferenceRowsAreGeneratedFromCanonicalMetadata() {
+        let model = HerdrKeyboardReferenceModel()
+
+        XCTAssertEqual(model.prefixRows.count, HerdrPrefixCommandCatalog.definitions.count)
+        XCTAssertEqual(model.prefixRows.map(\.sequence), HerdrPrefixCommandCatalog.definitions.map(\.displaySequence))
+        XCTAssertEqual(
+            model.nativeRows.map(\.sequence),
+            BessieKeyboardShortcutRouter.commands.compactMap { definition in
+                guard let shortcut = definition.shortcut, !shortcut.hasPrefix("Ctrl-B") else { return nil }
+                return shortcut
+            }
+        )
+        XCTAssertTrue(model.prefixRows.contains {
+            $0.sequence == "Ctrl-B ["
+                && $0.availability.contains("unavailable")
+                && $0.detail.contains("protocol 19")
+        })
+        XCTAssertTrue(model.boundaryNotice.localizedCaseInsensitiveContains("custom Herdr bindings"))
+    }
+
+    @MainActor
+    func testPrefixModalFocusRestoresOnlyForTheSameLiveOwner() {
+        let window = NSWindow(
+            contentRect: .zero,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let controller = NSObject()
+        let generation = UUID()
+        let origin = BessiePrefixInputOwner(
+            window: window,
+            connectionID: "c1",
+            connectionGeneration: generation,
+            paneID: "p1",
+            terminalControllerID: ObjectIdentifier(controller),
+            terminalID: "term1"
+        )
+
+        XCTAssertTrue(BessiePrefixFocusRestoration.canRestore(
+            origin: origin,
+            window: window,
+            connectionID: "c1",
+            connectionGeneration: generation,
+            paneID: "p1",
+            controllerID: ObjectIdentifier(controller),
+            terminalID: "term1"
+        ))
+        XCTAssertFalse(BessiePrefixFocusRestoration.canRestore(
+            origin: origin,
+            window: window,
+            connectionID: "c1",
+            connectionGeneration: UUID(),
+            paneID: "p1",
+            controllerID: ObjectIdentifier(controller),
+            terminalID: "term1"
+        ))
+    }
+
     func testOnboardingWindowTitlesMatchTheBinding() {
         XCTAssertEqual(BessieOnboardingWindowChrome.splashTitle, "bessie")
         XCTAssertEqual(BessieOnboardingWindowChrome.welcomeTitle, "welcome to bessie")
@@ -115,68 +183,9 @@ final class BessieVisualFoundationTests: XCTestCase {
     }
 
     @MainActor
-    func testProviderMarksHaveStableSpokenNames() {
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "claude"), "Claude agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "Codex CLI"), "Codex agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "grok"), "Grok agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "amp"), "Amp agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: nil), "Unknown agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "cursor"), "Cursor agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "pi"), "Pi agent")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "unknown-bot"), "Unknown agent")
-    }
-
-    func testAllAgentMarkSVGsArePackaged() throws {
-        XCTAssertEqual(
-            BessieProviderMark.packagedResourceNames,
-            [
-                "AgentClaude", "AgentCodex", "AgentGrok", "AgentAmp", "AgentGeneric",
-                "AgentHermes", "AgentGemini", "AgentOpenCode", "AgentCopilot",
-                "AgentPi", "AgentOmp", "AgentCursor", "AgentDevin", "AgentAgy",
-                "AgentCline", "AgentMastraCode", "AgentKimi", "AgentKiro", "AgentDroid",
-                "AgentKilo", "AgentQodercli", "AgentMaki", "AgentOpenClaw",
-            ]
-        )
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "claude-code"), "AgentClaude")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "openai-codex"), "AgentCodex")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "xai-grok"), "AgentGrok")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "sourcegraph-amp"), "AgentAmp")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "hermes"), "AgentHermes")
-        XCTAssertEqual(BessieProviderMark.spokenLabel(for: "hermes"), "Hermes agent")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "gemini"), "AgentGemini")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "opencode"), "AgentOpenCode")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "copilot"), "AgentCopilot")
-        // Token matching: "pi" must not steal "copilot".
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "copilot"), "AgentCopilot")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "pi"), "AgentPi")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "omp"), "AgentOmp")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "cursor"), "AgentCursor")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "devin"), "AgentDevin")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "agy"), "AgentAgy")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "antigravity"), "AgentAgy")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "cline"), "AgentCline")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "mastracode"), "AgentMastraCode")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "kimi"), "AgentKimi")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "kiro"), "AgentKiro")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "droid"), "AgentDroid")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "kilo"), "AgentKilo")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "qodercli"), "AgentQodercli")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "maki"), "AgentMaki")
-        XCTAssertEqual(BessieProviderMark.resourceName(for: "openclaw"), "AgentOpenClaw")
-
-        for name in BessieProviderMark.packagedResourceNames {
-            let url = try XCTUnwrap(BessieResources.url(forResource: name, withExtension: "svg"), name)
-            let source = try String(contentsOf: url, encoding: .utf8)
-            XCTAssertTrue(source.contains("<svg"), name)
-            XCTAssertTrue(source.contains("<title>"), name)
-            XCTAssertTrue(
-                source.contains("<path")
-                    || source.contains("<circle")
-                    || source.contains("<rect")
-                    || source.contains("<polygon")
-                    || source.contains("<image"),
-                name
-            )
+    func testThirdPartyAgentMarksAreNotPackaged() {
+        for name in ["AgentClaude", "AgentCodex", "AgentGrok", "AgentAmp", "AgentGeneric", "AgentHermes", "AgentGemini", "AgentOpenCode", "AgentCopilot"] {
+            XCTAssertNil(BessieResources.url(forResource: name, withExtension: "svg"), name)
         }
     }
 

@@ -15,9 +15,11 @@ for (const bad of ['React', 'dc-runtime', 'sc-camel', 'ref="{{']) {
 for (const file of [
   'styles.css', 'config.js', 'main.js', 'assets/favicon.png', 'assets/og.png',
   'assets/fonts/phosphor-thin.woff2', 'assets/fonts/phosphor-fill.woff2',
-  'assets/marks/claude.svg', 'assets/marks/codex.svg', 'assets/marks/amp.svg',
 ]) {
   if (!fs.existsSync(publicFile(file))) throw new Error(`missing ${file}`);
+}
+for (const file of ['assets/marks/claude.svg', 'assets/marks/codex.svg', 'assets/marks/amp.svg']) {
+  if (fs.existsSync(publicFile(file))) throw new Error(`third-party agent mark remains: ${file}`);
 }
 if ((css.match(/\.ph-(?:thin|fill)\.ph-[\w-]+::?before/g) || []).length > 22) {
   throw new Error('Phosphor selector dump was not pruned');

@@ -203,6 +203,9 @@ struct BessieApp: App {
                     .keyboardShortcut("q", modifiers: .command)
             }
             CommandMenu("Bessie") {
+                Button("Keyboard Reference…") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.showKeyboardReference)
+                }
                 Button("Command Palette…") {
                     NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.showCommandPalette)
                 }
@@ -337,6 +340,7 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var actionInFlight = false
     @Published private(set) var navigationInFlight = false
     @Published private(set) var activeConnection: BessieConnectionDefinition = .localBessie
+    @Published private(set) var herdrConnectionGeneration: UUID?
     @Published private(set) var projectMaterializationConnection: BessieProjectMaterializationConnection?
     @Published private(set) var remoteFileAccess: SSHRemoteFileAccess?
     private var connectionTask: Task<Void, Never>?
@@ -350,6 +354,7 @@ final class ConnectionViewModel: ObservableObject {
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
     private var projectHandoffToken: UUID?
+    private var herdrDispatchToken: UUID?
     @Published private(set) var catalogLoaded = false
     private let runtimeSelection: HerdrRuntimeSelection
     private let bundledRuntimeURL: URL?
@@ -448,6 +453,30 @@ final class ConnectionViewModel: ObservableObject {
                 }
                 Task { @MainActor in
                     guard self?.connectionToken == token else { return }
+                    if let endpoint {
+                        if self?.terminalEndpoint != endpoint
+                            || self?.actionClient == nil
+                            || self?.herdrConnectionGeneration == nil
+                        {
+                            let client = HerdrActionClient(api: HerdrSocketAPI(socketPath: endpoint.socketPath))
+                            self?.installHerdrActionClient(client, projection: projection)
+                        } else if let projection, let generation = self?.herdrConnectionGeneration {
+                            self?.intentDispatcher.refreshProjection(
+                                projection,
+                                connectionID: connection.id,
+                                generation: generation
+                            )
+                        }
+                    } else {
+                        self?.intentDispatcher.disconnect(
+                            connectionID: connection.id,
+                            generation: self?.herdrConnectionGeneration
+                        )
+                        self?.actionClient = nil
+                        self?.herdrConnectionGeneration = nil
+                        self?.herdrDispatchToken = nil
+                        self?.actionInFlight = false
+                    }
                     if case .connected(_, let socketPath, let snapshot) = state {
                         let identity = HerdrServerIdentity(
                             version: snapshot.version,
@@ -461,7 +490,7 @@ final class ConnectionViewModel: ObservableObject {
                             self?.projectMaterializationConnection = BessieProjectMaterializationConnection(
                                 definition: connection,
                                 socketPath: socketPath,
-                                generation: UUID(),
+                                generation: self?.herdrConnectionGeneration ?? UUID(),
                                 identity: identity
                             )
                         }
@@ -479,12 +508,6 @@ final class ConnectionViewModel: ObservableObject {
                     if projection != nil {
                         self?.performanceRecorder.mark(.snapshotInstalled, sequence: performanceSequence)
                     }
-                    self?.actionClient = endpoint.map { HerdrActionClient(api: HerdrSocketAPI(socketPath: $0.socketPath)) }
-                    self?.intentDispatcher.update(
-                        client: self?.actionClient,
-                        connectionID: connection.id,
-                        projection: projection
-                    )
                     if let endpoint { self?.ensureAgentCatalog(socketPath: endpoint.socketPath) }
                 }
             }
@@ -515,6 +538,21 @@ final class ConnectionViewModel: ObservableObject {
         start(connection: connection)
     }
 
+    func installHerdrActionClient(
+        _ client: HerdrActionClient,
+        projection: HerdrSessionProjection?
+    ) {
+        actionClient = client
+        self.projection = projection
+        herdrConnectionGeneration = intentDispatcher.connect(
+            client: client,
+            connectionID: activeConnection.id,
+            projection: projection
+        )
+        herdrDispatchToken = nil
+        actionInFlight = false
+    }
+
     func stop() {
         connectionToken = UUID()
         openPaneToken = nil
@@ -531,7 +569,12 @@ final class ConnectionViewModel: ObservableObject {
         projection = nil
         terminalEndpoint = nil
         actionClient = nil
-        intentDispatcher.update(client: nil, connectionID: activeConnection.id, projection: nil)
+        intentDispatcher.disconnect(
+            connectionID: activeConnection.id,
+            generation: herdrConnectionGeneration
+        )
+        herdrConnectionGeneration = nil
+        herdrDispatchToken = nil
         catalogSocketPath = nil
         catalogLoaded = false
         agentCatalog = AgentCatalog(items: [])
@@ -545,6 +588,10 @@ final class ConnectionViewModel: ObservableObject {
         completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
         failure: (@MainActor () -> Void)? = nil
     ) {
+        if let intent = HerdrDefaultTopologyIntent(action: action) {
+            dispatchHerdrDefault(intent, completion: completion, failure: failure)
+            return
+        }
         let connectionGeneration = connectionToken
         let connectionID = activeConnection.id
         actionInFlight = true
@@ -569,6 +616,76 @@ final class ConnectionViewModel: ObservableObject {
                     self.actionError = error.localizedDescription
                     failure?()
                 }
+            }
+        }
+    }
+
+    static func obsoleteGenerationUncertaintyMessage(
+        for result: HerdrDefaultDispatchResult
+    ) -> String? {
+        guard case .failed(let failure, _) = result,
+              failure.disposition == .mutationOutcomeUnknown
+        else { return nil }
+        return "Herdr may have applied a command on the previous connection, but Bessie could not confirm the result. The command was not retried."
+    }
+
+    func dispatchHerdrDefault(
+        _ intent: HerdrDefaultTopologyIntent,
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
+        failure: (@MainActor () -> Void)? = nil
+    ) {
+        guard !actionInFlight, let expectedGeneration = herdrConnectionGeneration else {
+            failure?()
+            return
+        }
+        let token = UUID()
+        herdrDispatchToken = token
+        let connectionID = activeConnection.id
+        actionInFlight = true
+        actionError = nil
+        Task {
+            let result = await intentDispatcher.dispatchHerdrDefault(
+                intent,
+                connectionID: connectionID
+            )
+            guard herdrDispatchToken == token,
+                  herdrConnectionGeneration == expectedGeneration,
+                  activeConnection.id == connectionID
+            else {
+                if let message = Self.obsoleteGenerationUncertaintyMessage(for: result) {
+                    actionError = message
+                }
+                return
+            }
+            herdrDispatchToken = nil
+            actionInFlight = false
+            switch result {
+            case .applied(let fresh):
+                projection = fresh
+                completion?(fresh)
+            case .noOp(let fresh):
+                if let fresh { projection = fresh }
+                if let projection { completion?(projection) }
+            case .rejected(let rejection):
+                switch rejection {
+                case .disconnected:
+                    actionError = "Herdr is disconnected."
+                case .generationChanged:
+                    actionError = "The Herdr connection changed before the command was sent."
+                case .supersededAfterAcknowledgement:
+                    actionError = "Herdr acknowledged the command, but this connection was replaced before Bessie could reconcile it."
+                case .preflightFailed(let message), .invalidTarget(let message):
+                    actionError = message
+                }
+                failure?()
+            case .failed(let dispatchFailure, let recovered):
+                if let recovered { projection = recovered }
+                if dispatchFailure.disposition == .mutationOutcomeUnknown {
+                    actionError = "Herdr may have applied that command, but Bessie could not confirm the result. The session was refreshed without retrying."
+                } else {
+                    actionError = dispatchFailure.message
+                }
+                failure?()
             }
         }
     }
@@ -1828,7 +1945,7 @@ struct ConnectView: View {
             state: settings.onboarding,
             connected: true,
             completionAvailable: onboardingCoordinator.canSubmit,
-            connectionError: nil,
+            connectionError: onboardingCoordinator.error,
             path: $onboardingPath,
             continueSetup: {
                 settings.advanceSetup(
@@ -1852,7 +1969,7 @@ struct ConnectView: View {
             state: settings.onboarding,
             connected: false,
             completionAvailable: false,
-            connectionError: "\(presentation.title). \(presentation.detail)",
+            connectionError: onboardingCoordinator.error ?? "\(presentation.title). \(presentation.detail)",
             path: $onboardingPath,
             continueSetup: {},
             finishSetup: {},
@@ -2054,12 +2171,16 @@ struct ConnectView: View {
         }
         model.openPane(target) { _ in
             setupAutomationStarted = false
+            do {
+                try onboardingCoordinator.advance(.completed)
+            } catch {
+                return
+            }
             guard settings.finishSetup(
                 connected: true,
                 hasWorkspace: true,
                 terminalControllerReady: true
             ) else { return }
-            try? onboardingCoordinator.advance(.completed)
             navigationRequest = ProductNavigationRequest(
                 connectionID: model.activeConnection.id,
                 workspaceID: target.workspaceID,

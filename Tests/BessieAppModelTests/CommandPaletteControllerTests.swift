@@ -213,6 +213,21 @@ final class CommandPaletteControllerTests: XCTestCase {
         ])
     }
 
+    func testKeyboardReferenceCommandDispatchesTheTypedAction() {
+        let model = BessieCommandPaletteModel()
+        var dispatched: [CommandPaletteRouteIntent] = []
+        model.configure(
+            onDispatch: { dispatched.append($0); return true },
+            onSuccessfulDispatch: { _ in },
+            onDismiss: { _ in }
+        )
+
+        model.open(input: input(panes: []), initialQuery: "Keyboard reference")
+        model.activate(alternate: false)
+
+        XCTAssertEqual(dispatched, [.command(.showKeyboardReference)])
+    }
+
     func testFailedDispatchRestoresOriginAndDoesNotRecordMRU() {
         let model = BessieCommandPaletteModel()
         var recorded: [CommandPaletteEntityID] = []

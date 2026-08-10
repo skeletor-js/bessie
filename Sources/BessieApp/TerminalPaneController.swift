@@ -3,6 +3,7 @@ import BessieCore
 import Combine
 import Foundation
 import GhosttyTerminal
+import ObjectiveC
 import SwiftUI
 
 enum TerminalSurfaceStreamAction: Equatable {
@@ -452,6 +453,64 @@ final class TerminalControllerRegistry: ObservableObject {
     }
 }
 
+final class TerminalTakeoverInputGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let send: @Sendable (TerminalInputOperation) -> Void
+    private var isHolding = false
+    private var isReleasing = false
+    private var pending: [TerminalInputOperation] = []
+
+    init(send: @escaping @Sendable (TerminalInputOperation) -> Void) {
+        self.send = send
+    }
+
+    var pendingCount: Int { lock.withLock { pending.count } }
+
+    func hold() {
+        lock.withLock { isHolding = true }
+    }
+
+    func enqueue(_ operation: TerminalInputOperation) {
+        let shouldSend = lock.withLock {
+            guard isHolding else { return true }
+            pending.append(operation)
+            return false
+        }
+        if shouldSend { send(operation) }
+    }
+
+    func release() {
+        let shouldRelease = lock.withLock {
+            guard isHolding, !isReleasing else { return false }
+            isReleasing = true
+            return true
+        }
+        guard shouldRelease else { return }
+        while true {
+            let operations = lock.withLock {
+                guard !pending.isEmpty else {
+                    isHolding = false
+                    isReleasing = false
+                    return [TerminalInputOperation]()
+                }
+                let operations = pending
+                pending.removeAll(keepingCapacity: true)
+                return operations
+            }
+            guard !operations.isEmpty else { return }
+            operations.forEach(send)
+        }
+    }
+
+    func discard() {
+        lock.withLock {
+            isHolding = false
+            isReleasing = false
+            pending.removeAll(keepingCapacity: true)
+        }
+    }
+}
+
 @MainActor
 final class PaneTerminalController: ObservableObject, Identifiable {
     let id: String
@@ -459,6 +518,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     let session: InMemoryTerminalSession
     let herdrController: HerdrTerminalController
     let inputRouter: TerminalInputRouter
+    let inputGate: TerminalTakeoverInputGate
     let terminalView: BessieTerminalView
     @Published private(set) var status: TerminalControllerStatus = .starting
     @Published private(set) var sessionMode: TerminalSessionMode = .control
@@ -473,7 +533,6 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     private var surfaceLifecycle = TerminalSurfaceStreamLifecycle()
     private var released = false
     private var isPrewarming = false
-    private var lastAutoTakeoverAt: TimeInterval = 0
     private var configuredFontSize = 13.0
     private var configuredTheme: BessieResolvedTerminalTheme?
     private let localUseCallback: PaneLocalUseCallback
@@ -515,13 +574,17 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         herdrController = herdr
         let inputRouter = TerminalInputRouter(transport: herdr, performanceRecorder: performanceRecorder)
         self.inputRouter = inputRouter
+        let inputGate = TerminalTakeoverInputGate(send: { [weak inputRouter] operation in
+            inputRouter?.enqueue(operation)
+        })
+        self.inputGate = inputGate
         session = InMemoryTerminalSession(
-            write: { [weak inputRouter] data in
-                guard let inputRouter else { return }
+            write: { [weak inputGate] data in
+                guard let inputGate else { return }
                 TerminalLocalUseForwarder.forward(
                     .raw(data),
                     recordLocalUse: localUseCallback.call,
-                    enqueue: inputRouter.enqueue
+                    enqueue: inputGate.enqueue
                 )
             },
             resize: { [weak herdr] viewport in
@@ -533,6 +596,7 @@ final class PaneTerminalController: ObservableObject, Identifiable {
             }
         )
         bridge.session = session
+        BessieTerminalView.installResponderPasteAction()
         terminalView = BessieTerminalView(frame: .zero)
         terminalView.paneID = paneID
         terminalView.controller = ghosttyController
@@ -540,22 +604,17 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         terminalView.sendOperation = { [weak self] operation in
             guard let self else { return }
             self.recordLocalUse()
-            // Without a writable controller, mouse/keys are dead. Native Herdr TUI
-            // commonly holds the exclusive attach; click-to-control must steal it.
             if case .ownershipConflict = self.status {
-                BessieDiagnosticLog.append("Terminal pane=\(self.id) input while ownershipConflict — takeover")
-                self.takeOver()
-                return
-            }
-            if self.sessionMode == .observe {
-                BessieDiagnosticLog.append("Terminal pane=\(self.id) input while observe — takeover")
-                self.takeOver()
-                return
+                self.inputGate.hold()
+                BessieDiagnosticLog.append("Terminal pane=\(self.id) input held pending explicit takeover")
+            } else if self.sessionMode != .control {
+                self.inputGate.hold()
+                BessieDiagnosticLog.append("Terminal pane=\(self.id) input held while mode=\(self.sessionMode)")
             }
             TerminalLocalUseForwarder.forward(
                 operation,
                 recordLocalUse: {},
-                enqueue: self.inputRouter.enqueue
+                enqueue: self.inputGate.enqueue
             )
         }
         terminalView.recordLocalUse = { [weak self] in self?.recordLocalUse() }
@@ -578,11 +637,20 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     func release() {
         guard !released else { return }
         released = true
+        inputGate.discard()
         terminalView.removeFromSuperview()
         herdrController.release()
     }
-    func observe() { sessionMode = .observe; herdrController.observe() }
-    func takeOver() { sessionMode = .takeover; herdrController.takeOver() }
+    func observe() {
+        sessionMode = .observe
+        inputGate.discard()
+        herdrController.observe()
+    }
+    func takeOver() {
+        sessionMode = .takeover
+        inputGate.hold()
+        herdrController.takeOver()
+    }
 
     /// Gate synthesized mouse SGR. Plain shells stay `.unavailable` so pointer
     /// motion never becomes PTY gibberish; Hermes TUI panes get `.full`.
@@ -595,9 +663,6 @@ final class PaneTerminalController: ObservableObject, Identifiable {
     func setPrewarming(_ prewarming: Bool) {
         guard isPrewarming != prewarming else { return }
         isPrewarming = prewarming
-        if !prewarming, case .ownershipConflict = status {
-            takeOver()
-        }
     }
     func reconnectForVerification() { herdrController.reconnect(reason: "verification requested controller reconnect") }
 
@@ -833,21 +898,12 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         guard themeConfigurationError == nil else { return }
         status = state
         terminalView.updateGridFromStatus(state)
-        if case .ready = state, sessionMode == .takeover { sessionMode = .control }
-        BessieDiagnosticLog.append("Terminal pane=\(id) state=\(state.diagnosticLabel)")
-        // When another client holds exclusive control (usually native Herdr TUI
-        // via mosh), auto-takeover so Bessie is writable. Without this the pane
-        // shows an overlay and Hermes mouse never reaches the PTY.
-        if case .ownershipConflict = state, !released, !isPrewarming {
-            let now = ProcessInfo.processInfo.systemUptime
-            // Debounce so two clients cannot thrash takeover forever.
-            if now - lastAutoTakeoverAt >= 1.5 {
-                lastAutoTakeoverAt = now
-                BessieDiagnosticLog.append("Terminal pane=\(id) auto-takeover after ownership conflict")
-                takeOver()
-            }
-            return
+        if case .ownershipConflict = state { inputGate.hold() }
+        if case .ready = state, sessionMode == .takeover {
+            sessionMode = .control
+            inputGate.release()
         }
+        BessieDiagnosticLog.append("Terminal pane=\(id) state=\(state.diagnosticLabel)")
         if case .ready(let grid, _, let full) = state,
            full,
            grid == resizePerformanceTarget,
@@ -897,11 +953,11 @@ final class PaneTerminalController: ObservableObject, Identifiable {
                 inputRouter.enqueue(.keys(["enter"]))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     guard let self else { return }
-                    terminalView.performBessieShortcut(.sendBytes(Data([0x02])))
+                    terminalView.sendLiteralHerdrPrefix()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                         guard let self else { return }
                         let shortcut = session.readViewportText()?.contains("BESSIE_SHORTCUT_BYTE_2") == true
-                        BessieDiagnosticLog.append("Terminal pane=\(id) input=shortcut_cmd_b_control_b value=\(shortcut)")
+                        BessieDiagnosticLog.append("Terminal pane=\(id) input=literal_prefix_ctrl_b value=\(shortcut)")
                         inputRouter.enqueue(.raw(Data("printf '\\n'; seq 1 80".utf8)))
                         inputRouter.enqueue(.keys(["enter"]))
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -1306,6 +1362,23 @@ final class TerminalSurfaceHostView: NSView {
 
 @MainActor
 final class BessieTerminalView: TerminalView {
+    private static let responderPasteActionInstalled: Bool = {
+        guard let method = class_getInstanceMethod(
+            BessieTerminalView.self,
+            #selector(bessiePaste(_:))
+        ) else { return false }
+        return class_addMethod(
+            BessieTerminalView.self,
+            #selector(NSText.paste(_:)),
+            method_getImplementation(method),
+            method_getTypeEncoding(method)
+        )
+    }()
+
+    static func installResponderPasteAction() {
+        _ = responderPasteActionInstalled
+    }
+
     var sendOperation: ((TerminalInputOperation) -> Void)?
     var recordLocalUse: () -> Void = {}
     /// Herdr/Bessie pane focus. Must be cheap when the pane is already active —
@@ -1641,6 +1714,13 @@ final class BessieTerminalView: TerminalView {
         return true
     }
 
+    @discardableResult
+    func sendLiteralHerdrPrefix() -> Bool {
+        guard sendOperation != nil else { return false }
+        sendOperation?(.keys(["ctrl+b"]))
+        return true
+    }
+
     private func pasteFromPasteboard() -> Bool {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty, sendOperation != nil else {
             return false
@@ -1970,7 +2050,7 @@ final class BessieTerminalView: TerminalView {
         )
     }
 
-    private static func herdrKeyCombo(_ event: NSEvent) -> String? {
+    static func herdrKeyCombo(_ event: NSEvent) -> String? {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let hasCommand = flags.contains(.command)
         // Command chords are handled by Bessie shortcuts / performKeyEquivalent.
@@ -2009,6 +2089,14 @@ final class BessieTerminalView: TerminalView {
         }
         guard let base else { return nil }
 
+        // Keep physical Shift-Tab on libghostty's raw input path. Kitty-aware
+        // children such as Claude Code negotiate CSI-u and require the surface
+        // to encode BackTab against that live protocol state. Herdr 0.8's
+        // semantic pane.send_keys("shift+tab") always emits legacy ESC [ Z,
+        // which Claude does not treat as its Kitty Shift-Tab permission-mode
+        // cycle command.
+        if base == "tab", hasShift, !hasControl, !hasOption { return nil }
+
         // Unmodified editing keys: let libghostty emit raw bytes (fast local path).
         // Only route through Herdr keys when Control/Option/Shift change the meaning.
         let plainEditingKeys: Set<String> = [
@@ -2025,8 +2113,7 @@ final class BessieTerminalView: TerminalView {
         var modifiers: [String] = []
         if hasControl { modifiers.append("ctrl") }
         if hasOption { modifiers.append("alt") }
-        if hasShift, base != "tab" { modifiers.append("shift") }
-        if hasShift, base == "tab" { return "shift+tab" }
+        if hasShift { modifiers.append("shift") }
         return (modifiers + [base]).joined(separator: "+")
     }
 }

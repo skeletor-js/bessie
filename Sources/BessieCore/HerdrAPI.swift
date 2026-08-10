@@ -14,9 +14,25 @@ public protocol HerdrEventSubscription: AnyObject, Sendable {
 
 public final class HerdrSocketAPI: HerdrAPI, @unchecked Sendable {
     public let socketPath: String
+    private let requestConnection: @Sendable () throws -> any HerdrLineConnection
 
-    public init(socketPath: String) {
+    public init(
+        socketPath: String,
+        requestDeadlines: HerdrRequestDeadlines = .prefixDispatch
+    ) {
         self.socketPath = URL(fileURLWithPath: socketPath).standardizedFileURL.path
+        let path = self.socketPath
+        requestConnection = {
+            try UnixSocketNDJSONConnection(path: path, deadlines: requestDeadlines)
+        }
+    }
+
+    init(
+        socketPath: String,
+        requestConnection: @escaping @Sendable () throws -> any HerdrLineConnection
+    ) {
+        self.socketPath = socketPath
+        self.requestConnection = requestConnection
     }
 
     public func ping() throws -> HerdrServerIdentity {
@@ -30,6 +46,49 @@ public final class HerdrSocketAPI: HerdrAPI, @unchecked Sendable {
     @discardableResult
     public func request(method: String, params: [String: JSONValue] = [:]) throws -> JSONValue {
         try perform(method: method, params: params).result
+    }
+
+    public func stagedMutationRequest(
+        method: String,
+        params: [String: JSONValue]
+    ) -> Result<JSONValue, HerdrMutationRequestFailure> {
+        let connection: any HerdrLineConnection
+        do {
+            connection = try requestConnection()
+        } catch {
+            return .failure(.init(disposition: .definitelyUnsent, underlying: error))
+        }
+        defer { connection.close() }
+        let id = "bessie-\(UUID().uuidString)"
+        let request: JSONValue = .object([
+            "id": .string(id),
+            "method": .string(method),
+            "params": .object(params),
+        ])
+        let encoded: Data
+        do {
+            encoded = try JSONEncoder().encode(request)
+        } catch {
+            return .failure(.init(disposition: .definitelyUnsent, underlying: error))
+        }
+        do {
+            try connection.sendLine(encoded)
+        } catch let failure as HerdrLineSendFailure {
+            return .failure(.init(
+                disposition: failure.disposition,
+                underlying: failure.underlying
+            ))
+        } catch {
+            return .failure(.init(disposition: .mutationOutcomeUnknown, underlying: error))
+        }
+        do {
+            return .success(try HerdrResponseDecoder.decode(
+                connection.readLine(),
+                expectedID: id
+            ).result)
+        } catch {
+            return .failure(.init(disposition: .mutationOutcomeUnknown, underlying: error))
+        }
     }
 
     public func subscribe() throws -> any HerdrEventSubscription {
@@ -52,7 +111,7 @@ public final class HerdrSocketAPI: HerdrAPI, @unchecked Sendable {
     }
 
     private func perform(method: String, params: [String: JSONValue] = [:]) throws -> HerdrResponse {
-        let connection = try UnixSocketNDJSONConnection(path: socketPath)
+        let connection = try requestConnection()
         defer { connection.close() }
         let id = "bessie-\(UUID().uuidString)"
         let request: JSONValue = .object([

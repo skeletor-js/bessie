@@ -353,6 +353,41 @@ enum BessieActionSurfaceContract {
     static let paneGroups = [["focus", "zen"], ["split-right", "split-down", "zoom"], ["resize", "move", "take-over", "rename"], ["close"]]
 }
 
+struct BessiePaletteTopologyContext {
+    let hasWorkspace: Bool
+    let hasTab: Bool
+    let hasPane: Bool
+    let hasFocusedPane: Bool
+
+    init(
+        workspace: WorkspaceProjection?,
+        tab: TabProjection?,
+        paneID: String?,
+        projection: HerdrSessionProjection
+    ) {
+        hasWorkspace = workspace != nil
+        hasTab = tab != nil
+        hasPane = paneID != nil
+        hasFocusedPane = projection.focusedPane != nil
+    }
+
+    func failure(for command: BessieShortcutCommand) -> String? {
+        switch command {
+        case .renameWorkspace, .closeWorkspace, .newTab:
+            hasWorkspace ? nil : "That command needs a current Herdr workspace."
+        case .renameTab, .previousTab, .nextTab, .closeTab:
+            hasTab ? nil : "That command needs a current Herdr tab."
+        case .renamePane, .previousPane, .nextPane, .swapPane, .splitPane,
+             .closePane, .zoomPane, .resizePane:
+            hasPane ? nil : "That command needs a current Herdr pane."
+        case .focusPane:
+            hasFocusedPane ? nil : "That command needs a current Herdr pane."
+        default:
+            nil
+        }
+    }
+}
+
 enum BessieZenControlLabels {
     static let expand = "Expand"
 }
@@ -399,7 +434,6 @@ extension RecursivePaneLayout {
 enum TopologyCreation: Equatable {
     case workspace
     case tab(workspaceID: String, name: String)
-    case pane(targetPaneID: String, direction: SplitDirection, name: String)
 
     var action: HerdrAction {
         switch self {
@@ -407,14 +441,7 @@ enum TopologyCreation: Equatable {
             .workspaceCreate(cwd: nil, label: nil, focus: true)
         case .tab(let workspaceID, let name):
             .tabCreate(workspaceID: workspaceID, cwd: nil, label: normalized(name), focus: true)
-        case .pane(let targetPaneID, let direction, _):
-            .paneSplit(targetPaneID: targetPaneID, direction: direction, ratio: 0.5, cwd: nil, focus: true)
         }
-    }
-
-    func followUpAction(createdPaneID: String) -> HerdrAction? {
-        guard case .pane(_, _, let name) = self else { return nil }
-        return .paneRename(id: createdPaneID, label: normalized(name))
     }
 
     private func normalized(_ name: String) -> String {
@@ -422,20 +449,28 @@ enum TopologyCreation: Equatable {
     }
 }
 
+struct BessieTopologyModalLease: Equatable {
+    let connectionID: String
+    let generation: UUID
+
+    func matches(connectionID: String, generation: UUID?) -> Bool {
+        self.connectionID == connectionID && self.generation == generation
+    }
+}
+
 private struct NamedTopologyRequest: Identifiable, Equatable {
     enum Target: Equatable {
         case tab(connectionID: String, workspaceID: String)
-        case pane(connectionID: String, targetPaneID: String, direction: SplitDirection)
         case movedPaneTab(connectionID: String, paneID: String, workspaceID: String)
     }
 
     let id = UUID()
     let target: Target
+    let lease: BessieTopologyModalLease
 
     var title: String {
         switch target {
         case .tab: "Name new tab"
-        case .pane: "Name new pane"
         case .movedPaneTab: "Name new tab"
         }
     }
@@ -443,7 +478,6 @@ private struct NamedTopologyRequest: Identifiable, Equatable {
     var fieldLabel: String {
         switch target {
         case .tab, .movedPaneTab: "Tab name"
-        case .pane: "Pane name"
         }
     }
 }
@@ -568,22 +602,28 @@ struct BessieProductShell: View {
     @State private var performanceSwitchAutomationStarted = false
     @State private var themeCaptureAutomationStarted = false
     @StateObject private var shortcuts = BessieKeyboardShortcutCoordinator()
+    @State private var herdrPrefixMode: HerdrPrefixMode = .idle
+    @State private var resizeRun: HerdrResizeDispatchRun<BessiePrefixInputOwner>?
+    @State private var prefixOwnerPaneID: String?
+    @State private var prefixModalOrigin: BessiePrefixInputOwner?
     @StateObject private var commandPalette = BessieCommandPaletteModel()
     @State private var sidebarCollapsed = false
     @State private var isFullScreen = false
     @State private var showCommandPalette = false
+    @State private var showKeyboardReference = false
     @State private var commandPaletteMRU = CommandPaletteMRU()
     @State private var commandPaletteRetryAttempts: [String: Int] = [:]
     @State private var commandPaletteRebuildPending = false
     @State private var commandPalettePreviousResponder: NSResponder?
+    @State private var commandPaletteTerminalOrigin: BessiePrefixInputOwner?
     @State private var commandPalettePreviewPending = false
     @State private var isDispatchingPaletteCommand = false
     @State private var shortcutEditor: ProductEditor?
+    @State private var shortcutEditorLease: BessieTopologyModalLease?
     @State private var namedTopologyRequest: NamedTopologyRequest?
-    @State private var shortcutClose: PendingClose?
-    @State private var shortcutCloseConnectionID: String?
-    @State private var topologyWorkspaceClose: ScopedWorkspaceItem?
-    @State private var topologyPaneClose: ScopedPaneItem?
+    @State private var shortcutClose: CapturedPendingClose?
+    @State private var topologyWorkspaceClose: CapturedPendingClose?
+    @State private var topologyPaneClose: CapturedPendingClose?
     @State private var topologyPaneTakeover: ScopedPaneItem?
     @State private var openRouteToken: UUID?
     @ObservedObject var projects: ProjectsViewModel
@@ -985,7 +1025,7 @@ struct BessieProductShell: View {
         }
     }
 
-    private var shellStateLifecycle: some View {
+    private var shellOwnershipLifecycle: some View {
         shellPresentation
         .onAppear(perform: prepareShell)
         .onDisappear {
@@ -994,6 +1034,13 @@ struct BessieProductShell: View {
             commandPaletteAvailability.canToggle = false
         }
         .onChange(of: model.activeConnection.id) { _, _ in activeConnectionChanged() }
+        .onChange(of: currentPrefixInputOwner()) { _, owner in
+            shortcuts.reconcilePrefixOwner(owner)
+        }
+    }
+
+    private var shellStateLifecycle: some View {
+        shellOwnershipLifecycle
         .onChange(of: fleet.herdScope) { _, scope in
             reconcileSelection(for: scope)
             scheduleCommandPaletteRebuild()
@@ -1092,7 +1139,16 @@ struct BessieProductShell: View {
         }
         .task(id: notificationRouteSignature) { routePendingNotification() }
         .task(id: shortcutContextSignature) {
-            shortcuts.update(isZenActive: { zenState.isActive }) { command in handleShortcut(command) }
+            shortcuts.cancelPrefixSequence()
+            shortcuts.update(
+                isZenActive: { zenState.isActive },
+                handler: { command in handleShortcut(command) },
+                prefixHandler: handleHerdrPrefixCommand,
+                sendLiteralPrefix: sendLiteralHerdrPrefix,
+                prefixOwner: prefixInputOwner,
+                modeChanged: prefixModeChanged,
+                accessibilityAnnouncement: announcePrefixAccessibility
+            )
         }
         .task(id: terminalRegistrySignature) {
             terminalRegistry.reconcile(
@@ -1108,33 +1164,40 @@ struct BessieProductShell: View {
 
     var body: some View {
         shellLifecycle
-        .sheet(item: $shortcutEditor) { editor in
+        .sheet(item: $shortcutEditor, onDismiss: {
+            shortcutEditorLease = nil
+            restorePrefixModalFocus()
+        }) { editor in
             ProductEditorSheet(editor: editor) { action in
-                model.perform(action)
-                shortcutEditor = nil
+                performShortcutEditorAction(action)
             }
         }
-        .sheet(item: $namedTopologyRequest) { request in
+        .sheet(item: $namedTopologyRequest, onDismiss: restorePrefixModalFocus) { request in
             TopologyNameSheet(request: request) { name in
                 performNamedTopologyRequest(request, name: name)
                 namedTopologyRequest = nil
             }
         }
+        .sheet(isPresented: $showKeyboardReference, onDismiss: restorePrefixModalFocus) {
+            HerdrKeyboardReferenceSheet(close: { showKeyboardReference = false })
+        }
         .confirmationDialog(
             shortcutClose?.title ?? "Close?",
-            isPresented: Binding(get: { shortcutClose != nil }, set: { if !$0 { cancelShortcutClose() } }),
+            isPresented: Binding(
+                get: { shortcutClose != nil },
+                set: { if !$0, shortcutClose != nil { cancelShortcutClose() } }
+            ),
             titleVisibility: .visible
         ) {
             if let shortcutClose {
                 Button(shortcutClose.buttonTitle, role: .destructive) {
-                    performConfirmedClose(shortcutClose)
                     self.shortcutClose = nil
-                    shortcutCloseConnectionID = nil
+                    performConfirmedClose(shortcutClose)
                 }
                 .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { cancelShortcutClose() }
-        } message: { Text(shortcutClose?.message(in: projection) ?? "") }
+        } message: { Text(shortcutClose?.message ?? "") }
         .confirmationDialog(
             "Close workspace?",
             isPresented: Binding(
@@ -1143,17 +1206,13 @@ struct BessieProductShell: View {
             ),
             titleVisibility: .visible
         ) {
-            if let item = topologyWorkspaceClose {
-                Button("Close \(item.summary.label)", role: .destructive) { closeTopologyWorkspace(item) }
+            if let close = topologyWorkspaceClose {
+                Button(close.buttonTitle, role: .destructive) { closeTopologyWorkspace(close) }
                     .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { topologyWorkspaceClose = nil }
         } message: {
-            Text(topologyWorkspaceClose.map { item in
-                topology.connections.first(where: { $0.connection.id == item.id.connectionID })?
-                    .projection.confirmationForClosingWorkspace(id: item.id.workspaceID).message
-                    ?? "This workspace is no longer available."
-            } ?? "")
+            Text(topologyWorkspaceClose?.message ?? "")
         }
         .confirmationDialog(
             "Close pane?",
@@ -1163,17 +1222,13 @@ struct BessieProductShell: View {
             ),
             titleVisibility: .visible
         ) {
-            if let item = topologyPaneClose {
-                Button("Close \(item.pane.presentationTitle)", role: .destructive) { closeTopologyPane(item) }
+            if let close = topologyPaneClose {
+                Button(close.buttonTitle, role: .destructive) { closeTopologyPane(close) }
                     .foregroundStyle(BessieDesign.destructive)
             }
             Button("Cancel", role: .cancel) { topologyPaneClose = nil }
         } message: {
-            Text(topologyPaneClose.map { item in
-                topology.connections.first(where: { $0.connection.id == item.id.connectionID })?
-                    .projection.confirmationForClosingPane(id: item.id.paneID).message
-                    ?? "This pane is no longer available."
-            } ?? "")
+            Text(topologyPaneClose?.message ?? "")
         }
         .alert("Take over this pane?", isPresented: Binding(
             get: { topologyPaneTakeover != nil },
@@ -1232,12 +1287,14 @@ struct BessieProductShell: View {
             },
             closeWorkspace: { row in
                 guard let item = freshHierarchyTopology.workspaces.first(where: { $0.id == row.id }) else { return }
-                topologyWorkspaceClose = item
+                requestTopologyWorkspaceClose(item)
             },
             createWorkspace: createWorkspace,
             focusTab: focusHierarchyTab,
             createTab: createHierarchyTab,
-            renameTab: { shortcutEditor = .renameTab(id: $0, value: $1) },
+            renameTab: {
+                presentShortcutEditor(.renameTab(id: $0, value: $1))
+            },
             closeTab: { requestClose(.tab($0)) }
         )
     }
@@ -1282,12 +1339,14 @@ struct BessieProductShell: View {
                 selectedWorkspaceID: $selectedWorkspaceID,
                 selectedPaneID: $selectedPaneID,
                 zenPaneID: zenPaneID,
+                prefixMode: herdrPrefixMode,
+                prefixOwnerPaneID: prefixOwnerPaneID,
                 paneGap: settings.preferences.paneGap,
                 terminalFontSize: settings.preferences.terminalFontSize,
                 fileBrowserEnabled: featureFlags.isEnabled(.fileBrowserEditor),
                 enterZen: enterZen,
                 createWorkspace: createWorkspace,
-                requestSplit: requestPaneName,
+                requestSplit: splitPane,
                 requestMoveToNewTab: requestMoveToNewTabName,
                 requestClose: requestClose
             )
@@ -1344,7 +1403,7 @@ struct BessieProductShell: View {
                 performPaneAction(item, action)
             },
             requestSplit: { target, direction in
-                requestPaneName(
+                splitPane(
                     connectionID: target.connectionID,
                     paneID: target.paneID,
                     direction: direction
@@ -1374,7 +1433,8 @@ struct BessieProductShell: View {
                 renameTopologyPane(item)
             },
             closePane: { target in
-                topologyPaneClose = scopedPane(for: target)
+                guard let item = scopedPane(for: target) else { return }
+                requestTopologyPaneClose(item)
             },
             setPinned: { incarnation, pinned in
                 _ = fleet.dispatchPanePresentationIntent(
@@ -1750,7 +1810,7 @@ struct BessieProductShell: View {
                 Button("Open session") { openWorkspace(item) }
                 Button("Rename") { renameWorkspace(item) }
                 Divider()
-                Button("Close session", role: .destructive) { topologyWorkspaceClose = item }
+                Button("Close session", role: .destructive) { requestTopologyWorkspaceClose(item) }
                     .foregroundStyle(BessieDesign.destructive)
             }
 
@@ -1894,7 +1954,7 @@ struct BessieProductShell: View {
             },
             action: { performPaneAction(item, $0) },
             requestSplit: { direction in
-                requestPaneName(connectionID: item.id.connectionID, paneID: item.pane.id, direction: direction)
+                splitPane(connectionID: item.id.connectionID, paneID: item.pane.id, direction: direction)
             },
             moveChoices: topologyPaneMoveChoices(item),
             requestMoveToNewTab: { workspaceID in
@@ -1907,7 +1967,7 @@ struct BessieProductShell: View {
             canTakeOver: controller?.sessionMode == .observe && controller?.hasReadyFrame == true,
             requestTakeover: { topologyPaneTakeover = item },
             rename: { renameTopologyPane(item) },
-            close: { topologyPaneClose = item }
+            close: { requestTopologyPaneClose(item) }
         )
     }
 
@@ -1994,10 +2054,10 @@ struct BessieProductShell: View {
     private var paneCreationMenu: some View {
         Menu {
             Button("Split right") {
-                if let pane = scopedTargetPane { requestPaneName(pane.pane.id, direction: .right) }
+                if let pane = scopedTargetPane { splitPane(pane.pane.id, direction: .right) }
             }
             Button("Split down") {
-                if let pane = scopedTargetPane { requestPaneName(pane.pane.id, direction: .down) }
+                if let pane = scopedTargetPane { splitPane(pane.pane.id, direction: .down) }
             }
         } label: {
             Image(systemName: "plus")
@@ -2180,6 +2240,13 @@ struct BessieProductShell: View {
                 return false
             }
             if zenState.isActive, paletteCommandExitsZen(command) { exitZen() }
+            switch command {
+            case .showKeyboardReference, .renameWorkspace, .closeWorkspace, .newTab,
+                 .renameTab, .closeTab, .renamePane, .closePane:
+                prefixModalOrigin = commandPaletteTerminalOrigin
+            default:
+                break
+            }
             isDispatchingPaletteCommand = true
             defer { isDispatchingPaletteCommand = false }
             handleShortcut(command)
@@ -2198,6 +2265,7 @@ struct BessieProductShell: View {
         }
         let window = NSApp.keyWindow
         commandPalettePreviousResponder = window?.firstResponder
+        commandPaletteTerminalOrigin = currentPrefixInputOwner()
         window?.makeFirstResponder(nil)
         commandPalette.open(input: commandPaletteIndexInput, initialQuery: initialQuery)
         shortcuts.enterCommandPalette(
@@ -2213,10 +2281,17 @@ struct BessieProductShell: View {
         showCommandPalette = false
         shortcuts.exitCommandPalette()
         let previousResponder = commandPalettePreviousResponder
+        let terminalOrigin = commandPaletteTerminalOrigin
         commandPalettePreviousResponder = nil
+        commandPaletteTerminalOrigin = nil
         refreshCommandPaletteAvailability()
-        if restoreFocus, let previousResponder, let window = NSApp.keyWindow {
-            DispatchQueue.main.async { window.makeFirstResponder(previousResponder) }
+        guard restoreFocus else { return }
+        if let terminalOrigin {
+            DispatchQueue.main.async { restorePrefixModalFocus(from: terminalOrigin) }
+        } else if let view = previousResponder as? NSView,
+                  let window = NSApp.keyWindow,
+                  view.window === window {
+            DispatchQueue.main.async { window.makeFirstResponder(view) }
         }
     }
 
@@ -2230,6 +2305,314 @@ struct BessieProductShell: View {
             commandPalette.activate(alternate: alternate)
         case .dismiss:
             commandPalette.dismiss()
+        }
+    }
+
+    private func sendLiteralHerdrPrefix() {
+        guard let terminal = NSApp.keyWindow?.firstResponder as? BessieTerminalView else { return }
+        _ = terminal.sendLiteralHerdrPrefix()
+    }
+
+    private func prefixModeChanged(_ mode: HerdrPrefixMode) {
+        herdrPrefixMode = mode
+        switch mode {
+        case .armed:
+            prefixOwnerPaneID = (NSApp.keyWindow?.firstResponder as? BessieTerminalView)?.paneID
+        case .resize:
+            resizeRun = currentPrefixInputOwner().map {
+                HerdrResizeDispatchRun<BessiePrefixInputOwner>(owner: $0)
+            }
+        case .idle:
+            resizeRun?.cancel()
+            resizeRun = nil
+            prefixOwnerPaneID = nil
+        }
+    }
+
+    private func announcePrefixAccessibility(_ announcement: BessiePrefixAccessibilityAnnouncement) {
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: announcement.message,
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ]
+        )
+    }
+
+    private func handleHerdrPrefixCommand(_ command: HerdrPrefixCommand) {
+        switch command {
+        case .newTab:
+            guard let workspaceID = projection.focusedWorkspace?.id else { return }
+            capturePrefixModalOrigin()
+            requestTabName(connectionID: model.activeConnection.id, workspaceID: workspaceID)
+        case .nextTab:
+            dispatchPrefixIntent(.nextTab)
+        case .previousTab:
+            dispatchPrefixIntent(.previousTab)
+        case .focusTab(let index):
+            dispatchPrefixIntent(.focusTab(index))
+        case .renameTab:
+            if let tab = projection.focusedTab {
+                capturePrefixModalOrigin()
+                presentShortcutEditor(.renameTab(id: tab.id, value: tab.label))
+            }
+        case .closeTab:
+            if let id = projection.focusedTab?.id {
+                capturePrefixModalOrigin()
+                requestClose(.tab(id))
+            }
+        case .splitPane(let direction):
+            dispatchPrefixIntent(.splitPane(direction))
+        case .focusPane(let direction):
+            dispatchPrefixIntent(.focusPane(direction))
+        case .swapPane(let direction):
+            dispatchPrefixIntent(.swapPane(direction))
+        case .cyclePane(let direction):
+            dispatchPrefixIntent(.cyclePane(direction))
+        case .closePane:
+            if let id = projection.focusedPane?.id {
+                capturePrefixModalOrigin()
+                requestClose(.pane(id))
+            }
+        case .toggleZoom:
+            dispatchPrefixIntent(.toggleZoom)
+        case .enterResize:
+            beginResizeMode()
+        case .resizePane(let direction):
+            enqueueResize(direction)
+        case .renamePane:
+            if let pane = projection.focusedPane {
+                capturePrefixModalOrigin()
+                presentShortcutEditor(.renamePane(id: pane.id, value: pane.label ?? ""))
+            }
+        case .newWorkspace:
+            dispatchPrefixIntent(.createWorkspace)
+        case .renameWorkspace:
+            if let workspace = projection.focusedWorkspace {
+                capturePrefixModalOrigin()
+                presentShortcutEditor(.renameWorkspace(id: workspace.id, value: workspace.label))
+            }
+        case .closeWorkspace:
+            if let id = projection.focusedWorkspace?.id {
+                capturePrefixModalOrigin()
+                requestClose(.workspace(id))
+            }
+        case .showKeyboardReference:
+            capturePrefixModalOrigin()
+            showKeyboardReference = true
+        case .showWorkspacePicker:
+            handleShortcut(.workspacePicker)
+        case .showCommandPalette:
+            handleShortcut(.showCommandPalette)
+        case .quitBessie:
+            NSApp.terminate(nil)
+        case .toggleSidebar:
+            handleShortcut(.toggleSidebar)
+        }
+    }
+
+    private func dispatchPrefixIntent(_ intent: HerdrDefaultTopologyIntent) {
+        guard !model.actionInFlight else {
+            fleet.reportRouteFailure("That command cannot run while another Herdr action is in flight.")
+            return
+        }
+        model.dispatchHerdrDefault(intent) { fresh in
+            applyPrefixReconciliation(fresh)
+        }
+    }
+
+    private func beginResizeMode() {
+        guard herdrPrefixMode == .resize,
+              let run = resizeRun,
+              run.owner == currentPrefixInputOwner(),
+              run.owner.connectionGeneration == model.herdrConnectionGeneration
+        else {
+            shortcuts.cancelPrefixSequence()
+            return
+        }
+        let runID = run.id
+        model.dispatchHerdrDefault(.beginResize) { fresh in
+            guard herdrPrefixMode == .resize,
+                  var current = resizeRun,
+                  current.id == runID,
+                  let owner = currentPrefixInputOwner(),
+                  let paneID = fresh.focusedPane?.id,
+                  current.activate(targetPaneID: paneID, currentOwner: owner),
+                  model.herdrConnectionGeneration == current.owner.connectionGeneration
+            else {
+                shortcuts.cancelPrefixSequence()
+                return
+            }
+            resizeRun = current
+            drainResizeQueue()
+        } failure: {
+            guard resizeRun?.id == runID else { return }
+            shortcuts.cancelPrefixSequence()
+        }
+    }
+
+    private func applyPrefixReconciliation(_ fresh: HerdrSessionProjection) {
+        selectedTopologyConnectionID = model.activeConnection.id
+        selectedWorkspaceID = fresh.focusedWorkspace?.id
+        selectedPaneID = fresh.focusedPane?.id
+        destination = fresh.focusedWorkspace == nil ? .herd : .workspace
+        if let selectedPaneID {
+            terminalRegistry.recordSwitchRequested(paneID: selectedPaneID)
+            terminalRegistry.focusWhenPresented(paneID: selectedPaneID, refresh: .full)
+        }
+    }
+
+    private func enqueueResize(_ direction: PaneDirection) {
+        guard herdrPrefixMode == .resize,
+              var run = resizeRun,
+              let owner = currentPrefixInputOwner(),
+              owner == run.owner,
+              run.owner.connectionGeneration == model.herdrConnectionGeneration
+        else {
+            shortcuts.cancelPrefixSequence()
+            return
+        }
+        guard run.enqueue(direction) else { return }
+        resizeRun = run
+        drainResizeQueue()
+    }
+
+    private func drainResizeQueue() {
+        guard herdrPrefixMode == .resize, var run = resizeRun else { return }
+        guard let owner = currentPrefixInputOwner(), owner == run.owner,
+              run.owner.connectionGeneration == model.herdrConnectionGeneration
+        else {
+            shortcuts.cancelPrefixSequence()
+            return
+        }
+        guard let step = run.nextStep(currentOwner: owner) else { return }
+        resizeRun = run
+        model.dispatchHerdrDefault(.resizePane(id: step.paneID, direction: step.direction)) { fresh in
+            guard var current = resizeRun, current.id == step.runID else { return }
+            let stillValid = currentPrefixInputOwner().map {
+                current.complete(
+                    step,
+                    currentOwner: $0,
+                    targetStillExists: fresh.panes.contains(where: { $0.id == step.paneID })
+                )
+            } ?? false
+            resizeRun = current
+            guard stillValid,
+                  herdrPrefixMode == .resize,
+                  model.herdrConnectionGeneration == current.owner.connectionGeneration
+            else {
+                shortcuts.cancelPrefixSequence()
+                return
+            }
+            drainResizeQueue()
+        } failure: {
+            guard var current = resizeRun,
+                  current.id == step.runID,
+                  current.fail(step)
+            else { return }
+            resizeRun = current
+            shortcuts.cancelPrefixSequence()
+        }
+    }
+
+    private func currentPrefixInputOwner() -> BessiePrefixInputOwner? {
+        guard let window = NSApp.keyWindow,
+              window.identifier == BessieWindowCoordinator.mainWindowIdentifier,
+              let terminal = window.firstResponder as? BessieTerminalView
+        else { return nil }
+        return prefixInputOwner(window: window, terminal: terminal)
+    }
+
+    private func prefixInputOwner(
+        window: NSWindow,
+        terminal: BessieTerminalView
+    ) -> BessiePrefixInputOwner? {
+        guard let connectionGeneration = model.herdrConnectionGeneration,
+              let controller = terminalRegistry.controllers[terminal.paneID],
+              controller.terminalView === terminal,
+              let pane = projection.panes.first(where: { $0.id == terminal.paneID })
+        else { return nil }
+        return BessiePrefixInputOwner(
+            window: window,
+            connectionID: model.activeConnection.id,
+            connectionGeneration: connectionGeneration,
+            paneID: pane.id,
+            terminalControllerID: ObjectIdentifier(controller),
+            terminalID: pane.terminalID
+        )
+    }
+
+    private func capturePrefixModalOrigin() {
+        guard let window = NSApp.keyWindow,
+              let terminal = window.firstResponder as? BessieTerminalView
+        else {
+            prefixModalOrigin = nil
+            return
+        }
+        prefixModalOrigin = prefixInputOwner(window: window, terminal: terminal)
+    }
+
+    private func presentShortcutEditor(
+        _ editor: ProductEditor,
+        connectionID: String? = nil
+    ) {
+        let connectionID = connectionID ?? model.activeConnection.id
+        guard let generation = fleet.model(connectionID: connectionID)?.herdrConnectionGeneration else {
+            fleet.reportRouteFailure("That command needs a connected Herdr session.")
+            restorePrefixModalFocus()
+            return
+        }
+        shortcutEditorLease = BessieTopologyModalLease(
+            connectionID: connectionID,
+            generation: generation
+        )
+        shortcutEditor = editor
+    }
+
+    private func performShortcutEditorAction(_ action: HerdrAction) {
+        guard let lease = shortcutEditorLease,
+              lease.matches(
+                  connectionID: model.activeConnection.id,
+                  generation: model.herdrConnectionGeneration
+              )
+        else {
+            fleet.reportRouteFailure("The Herdr connection changed while that editor was open.")
+            shortcutEditor = nil
+            return
+        }
+        model.perform(action)
+        shortcutEditor = nil
+    }
+
+    private func restorePrefixModalFocus() {
+        let origin = prefixModalOrigin
+        prefixModalOrigin = nil
+        restorePrefixModalFocus(from: origin)
+    }
+
+    private func restorePrefixModalFocus(from origin: BessiePrefixInputOwner?) {
+        guard let origin else { return }
+        let mainWindow = NSApp.windows.first {
+            $0.identifier == BessieWindowCoordinator.mainWindowIdentifier
+        }
+        if let mainWindow,
+           let pane = projection.panes.first(where: { $0.id == origin.paneID }),
+           let controller = terminalRegistry.controllers[origin.paneID],
+           BessiePrefixFocusRestoration.canRestore(
+               origin: origin,
+               window: mainWindow,
+               connectionID: model.activeConnection.id,
+               connectionGeneration: model.herdrConnectionGeneration,
+               paneID: pane.id,
+               controllerID: ObjectIdentifier(controller),
+               terminalID: pane.terminalID
+           ) {
+            controller.makeTerminalFirstResponder(refresh: .display)
+            return
+        }
+        if let paneID = selectedPaneID ?? projection.focusedPane?.id {
+            focusTerminal(paneID: paneID)
         }
     }
 
@@ -2252,19 +2635,15 @@ struct BessieProductShell: View {
             visiblePaneIDs: Set(paneIDs),
             projection: projection
         )
+        if let failure = BessiePaletteTopologyContext(
+            workspace: workspace,
+            tab: tab,
+            paneID: paneID,
+            projection: projection
+        ).failure(for: command) {
+            return failure
+        }
         switch command {
-        case .renameWorkspace, .closeWorkspace, .newTab:
-            return workspace == nil ? "That command needs a current Herdr workspace." : nil
-        case .renameTab, .previousTab, .nextTab, .closeTab:
-            return tab == nil ? "That command needs a current Herdr tab." : nil
-        case .renamePane, .previousPane, .nextPane, .swapPane, .splitPane,
-             .closePane, .zoomPane, .resizePane:
-            return paneID == nil ? "That command needs a current Herdr pane." : nil
-        case .focusPane(let direction):
-            guard let paneID, let tab, let layout = projection.layouts[tab.id],
-                  BessiePaneNavigation.target(from: paneID, direction: direction, in: layout.root) != nil
-            else { return "There is no pane in that direction." }
-            return nil
         case .previousRailPane, .nextRailPane:
             return herdRailProjection.rows.isEmpty ? "There are no fresh Herdr panes to open." : nil
         case .toggleZen:
@@ -2509,6 +2888,8 @@ struct BessieProductShell: View {
         switch command {
         case .showCommandPalette:
             if showCommandPalette { commandPalette.dismiss() } else { openCommandPalette() }
+        case .showKeyboardReference:
+            showKeyboardReference = true
         case .showHerd:
             destination = .herd
         case .showSettings:
@@ -2521,9 +2902,11 @@ struct BessieProductShell: View {
         case .saveCurrentWorkspaceAsProject:
             captureCurrentWorkspaceAsProject()
         case .newWorkspace:
-            shortcutEditor = .createWorkspace
+            dispatchPrefixIntent(.createWorkspace)
         case .renameWorkspace:
-            if let workspace { shortcutEditor = .renameWorkspace(id: workspace.id, value: workspace.label) }
+            if let workspace {
+                presentShortcutEditor(.renameWorkspace(id: workspace.id, value: workspace.label))
+            }
         case .closeWorkspace:
             if let workspace { requestClose(.workspace(workspace.id)) }
         case .workspacePicker:
@@ -2545,48 +2928,40 @@ struct BessieProductShell: View {
         case .newTab:
             if let workspace { requestTabName(connectionID: model.activeConnection.id, workspaceID: workspace.id) }
         case .renameTab:
-            if let tab { shortcutEditor = .renameTab(id: tab.id, value: tab.label) }
+            if let tab { presentShortcutEditor(.renameTab(id: tab.id, value: tab.label)) }
         case .previousTab:
-            focusTab(offset: -1, tabs: tabs, current: tab)
+            dispatchPrefixIntent(.previousTab)
         case .nextTab:
-            focusTab(offset: 1, tabs: tabs, current: tab)
+            dispatchPrefixIntent(.nextTab)
         case .previousPane:
-            focusPane(offset: -1, paneIDs: paneIDs, current: paneID)
+            dispatchPrefixIntent(.cyclePane(.previous))
         case .nextPane:
-            focusPane(offset: 1, paneIDs: paneIDs, current: paneID)
+            dispatchPrefixIntent(.cyclePane(.next))
         case .previousRailPane:
             openRailPane(offset: -1)
         case .nextRailPane:
             openRailPane(offset: 1)
         case .switchTab(let index):
-            guard tabs.indices.contains(index - 1) else { return }
-            focusTab(tabs[index - 1])
+            dispatchPrefixIntent(.focusTab(index))
         case .closeTab:
             if let tab { requestClose(.tab(tab.id)) }
         case .renamePane:
             if let paneID, let pane = projection.panes.first(where: { $0.id == paneID }) {
-                shortcutEditor = .renamePane(id: paneID, value: pane.label ?? "")
+                presentShortcutEditor(.renamePane(id: paneID, value: pane.label ?? ""))
             }
         case .focusPane(let direction):
-            guard let paneID, let tab, let layout = projection.layouts[tab.id],
-                  let target = BessiePaneNavigation.target(from: paneID, direction: direction, in: layout.root)
-            else { return }
-            recordLocalPaneUse(paneID: target)
-            selectedPaneID = target
-            terminalRegistry.recordSwitchRequested(paneID: target)
-            terminalRegistry.focusWhenPresented(paneID: target)
-            model.navigate([.paneFocus(id: target)])
+            dispatchPrefixIntent(.focusPane(direction))
         case .swapPane(let direction):
-            if let paneID { model.perform(.paneSwap(id: paneID, direction: direction)) }
+            dispatchPrefixIntent(.swapPane(direction))
 
         case .splitPane(let direction):
-            if let paneID { requestPaneName(paneID, direction: direction) }
+            dispatchPrefixIntent(.splitPane(direction))
         case .closePane:
             if let paneID { requestClose(.pane(paneID)) }
         case .zoomPane:
-            if let paneID { model.perform(.paneZoom(id: paneID, mode: .toggle)) }
+            dispatchPrefixIntent(.toggleZoom)
         case .resizePane(let direction):
-            if let paneID { model.perform(.paneResize(id: paneID, direction: direction, amount: 0.05)) }
+            if let paneID { dispatchPrefixIntent(.resizePane(id: paneID, direction: direction)) }
         case .toggleSidebar:
             if zenState.isActive {
                 exitZen(expandRail: true)
@@ -3010,7 +3385,15 @@ struct BessieProductShell: View {
             },
             onDismiss: closeCommandPalette
         )
-        shortcuts.start(isZenActive: { zenState.isActive }) { command in handleShortcut(command) }
+        shortcuts.start(
+            isZenActive: { zenState.isActive },
+            handler: { command in handleShortcut(command) },
+            prefixHandler: handleHerdrPrefixCommand,
+            sendLiteralPrefix: sendLiteralHerdrPrefix,
+            prefixOwner: prefixInputOwner,
+            modeChanged: prefixModeChanged,
+            accessibilityAnnouncement: announcePrefixAccessibility
+        )
         let environment = ProcessInfo.processInfo.environment
         if environment["BESSIE_COMMAND_PALETTE_PREVIEW"] != nil {
             commandPalettePreviewPending = true
@@ -3060,6 +3443,7 @@ struct BessieProductShell: View {
     }
 
     private func activeConnectionChanged() {
+        shortcuts.cancelPrefixSequence()
         guard BessieActiveConnectionSelection.shouldRestore(
             selectedConnectionID: selectedTopologyConnectionID,
             activeConnectionID: model.activeConnection.id
@@ -3320,13 +3704,19 @@ struct BessieProductShell: View {
     private func renameWorkspace(_ item: ScopedWorkspaceItem) {
         guard fleet.activate(connectionID: item.id.connectionID) != nil else { return }
         selectedTopologyConnectionID = item.id.connectionID
-        shortcutEditor = .renameWorkspace(id: item.id.workspaceID, value: item.summary.label)
+        presentShortcutEditor(
+            .renameWorkspace(id: item.id.workspaceID, value: item.summary.label),
+            connectionID: item.id.connectionID
+        )
     }
 
     private func renameTopologyPane(_ item: ScopedPaneItem) {
         guard fleet.activate(connectionID: item.id.connectionID) != nil else { return }
         selectedTopologyConnectionID = item.id.connectionID
-        shortcutEditor = .renamePane(id: item.pane.id, value: item.pane.label ?? "")
+        presentShortcutEditor(
+            .renamePane(id: item.pane.id, value: item.pane.label ?? ""),
+            connectionID: item.id.connectionID
+        )
     }
 
     private func scopedPane(for target: RoutedPaneTarget) -> ScopedPaneItem? {
@@ -3349,45 +3739,93 @@ struct BessieProductShell: View {
         return terminalRegistry.controllers[item.pane.id]
     }
 
-    private func closeTopologyWorkspace(_ item: ScopedWorkspaceItem) {
+    private func requestTopologyWorkspaceClose(_ item: ScopedWorkspaceItem) {
+        guard let owner = topology.connections.first(where: {
+            $0.connection.id == item.id.connectionID
+        }), let generation = fleet.model(connectionID: item.id.connectionID)?.herdrConnectionGeneration,
+              let close = PendingClose.workspace(item.id.workspaceID).captured(
+                  in: owner.projection,
+                  lease: BessieTopologyModalLease(
+                      connectionID: item.id.connectionID,
+                      generation: generation
+                  ),
+                  buttonTitle: "Close \(item.summary.label)"
+              )
+        else {
+            fleet.reportRouteFailure("That Herdr workspace is no longer available.")
+            return
+        }
+        topologyWorkspaceClose = close
+    }
+
+    private func requestTopologyPaneClose(_ item: ScopedPaneItem) {
+        guard let owner = topology.connections.first(where: {
+            $0.connection.id == item.id.connectionID
+        }), let generation = fleet.model(connectionID: item.id.connectionID)?.herdrConnectionGeneration,
+              let close = PendingClose.pane(item.pane.id).captured(
+                  in: owner.projection,
+                  lease: BessieTopologyModalLease(
+                      connectionID: item.id.connectionID,
+                      generation: generation
+                  ),
+                  buttonTitle: "Close \(item.pane.presentationTitle)"
+              )
+        else {
+            fleet.reportRouteFailure("That Herdr pane is no longer available.")
+            return
+        }
+        topologyPaneClose = close
+    }
+
+    private func closeTopologyWorkspace(_ close: CapturedPendingClose) {
         topologyWorkspaceClose = nil
-        guard let targetModel = fleet.activate(connectionID: item.id.connectionID) else { return }
-        targetModel.perform(.workspaceClose(id: item.id.workspaceID), confirmDestructive: true) { fresh in
+        guard let targetModel = fleet.model(connectionID: close.lease.connectionID),
+              close.lease.matches(
+                  connectionID: targetModel.activeConnection.id,
+                  generation: targetModel.herdrConnectionGeneration
+              ),
+              fleet.activate(connectionID: close.lease.connectionID) != nil
+        else {
+            fleet.reportRouteFailure("The Herdr connection changed while that confirmation was open.")
+            return
+        }
+        targetModel.dispatchHerdrDefault(close.intent) { fresh in
             applyCloseReconciliation(
                 BessieCloseReconciliation(
-                    connectionID: item.id.connectionID,
+                    connectionID: close.lease.connectionID,
                     projection: fresh,
-                    preferredWorkspaceID: nil
+                    preferredWorkspaceID: close.preferredWorkspaceID
                 )
             )
         }
     }
 
-    private func closeTopologyPane(_ item: ScopedPaneItem) {
+    private func closeTopologyPane(_ close: CapturedPendingClose) {
         topologyPaneClose = nil
-        guard let owner = topology.connections.first(where: { $0.connection.id == item.id.connectionID }),
-              let targetModel = fleet.activate(connectionID: item.id.connectionID)
-        else { return }
+        guard let targetModel = fleet.model(connectionID: close.lease.connectionID),
+              close.lease.matches(
+                  connectionID: targetModel.activeConnection.id,
+                  generation: targetModel.herdrConnectionGeneration
+              ),
+              fleet.activate(connectionID: close.lease.connectionID) != nil
+        else {
+            fleet.reportRouteFailure("The Herdr connection changed while that confirmation was open.")
+            return
+        }
         let operation = UUID()
         topologySelectionInFlight = operation
-        let close = PendingClose.pane(item.pane.id)
-        targetModel.perform(
-            close.resolvedAction(in: owner.projection),
-            confirmDestructive: close.requiresIntentConfirmation(in: owner.projection)
-        ) { fresh in
+        targetModel.dispatchHerdrDefault(close.intent) { fresh in
             guard topologySelectionInFlight == operation,
-                  fleet.activeConnectionID == item.id.connectionID
+                  fleet.activeConnectionID == close.lease.connectionID
             else { return }
-            settings.removePanePresentation(BessiePaneIncarnation(
-                connectionID: item.id.connectionID,
-                paneID: item.pane.id,
-                terminalID: item.pane.terminalID
-            ))
+            if let paneIncarnation = close.paneIncarnation {
+                settings.removePanePresentation(paneIncarnation)
+            }
             applyCloseReconciliation(
                 BessieCloseReconciliation(
-                    connectionID: item.id.connectionID,
+                    connectionID: close.lease.connectionID,
                     projection: fresh,
-                    preferredWorkspaceID: item.pane.workspaceID
+                    preferredWorkspaceID: close.preferredWorkspaceID
                 )
             )
         }
@@ -3424,45 +3862,62 @@ struct BessieProductShell: View {
         BessieDiagnosticLog.append("Zen entered pane=\(pane.id) effect=presentation_only")
     }
 
-    private func performConfirmedClose(_ close: PendingClose) {
-        guard shortcutCloseConnectionID == model.activeConnection.id else {
+    private func performConfirmedClose(_ close: CapturedPendingClose) {
+        let modalOrigin = prefixModalOrigin
+        prefixModalOrigin = nil
+        guard close.lease.matches(
+            connectionID: model.activeConnection.id,
+            generation: model.herdrConnectionGeneration
+        )
+        else {
             shortcutClose = nil
-            shortcutCloseConnectionID = nil
+            restorePrefixModalFocus(from: modalOrigin)
             return
         }
-        let preferredWorkspaceID = close.parentWorkspaceID(in: projection)
-        model.perform(
-            close.resolvedAction(in: projection),
-            confirmDestructive: close.requiresIntentConfirmation(in: projection)
-        ) { fresh in
-            if case .pane(let paneID) = close,
-               let pane = projection.panes.first(where: { $0.id == paneID }) {
-                settings.removePanePresentation(BessiePaneIncarnation(
-                    connectionID: model.activeConnection.id,
-                    paneID: pane.id,
-                    terminalID: pane.terminalID
-                ))
+        model.dispatchHerdrDefault(close.intent) { fresh in
+            if let paneIncarnation = close.paneIncarnation {
+                settings.removePanePresentation(paneIncarnation)
             }
             applyCloseReconciliation(
                 BessieCloseReconciliation(
-                    connectionID: model.activeConnection.id,
+                    connectionID: close.lease.connectionID,
                     projection: fresh,
-                    preferredWorkspaceID: preferredWorkspaceID
+                    preferredWorkspaceID: close.preferredWorkspaceID
                 )
             )
+            restorePrefixModalFocus(from: modalOrigin)
+        } failure: {
+            restorePrefixModalFocus(from: modalOrigin)
         }
     }
 
     private func cancelShortcutClose() {
+        let modalOrigin = prefixModalOrigin
+        prefixModalOrigin = nil
         let paneID = selectedPaneID ?? projection.focusedPane?.id
         shortcutClose = nil
-        shortcutCloseConnectionID = nil
-        if let paneID { terminalRegistry.focusWhenPresented(paneID: paneID) }
+        if let modalOrigin {
+            restorePrefixModalFocus(from: modalOrigin)
+        } else if let paneID {
+            terminalRegistry.focusWhenPresented(paneID: paneID)
+        }
     }
 
     private func requestClose(_ close: PendingClose) {
-        shortcutCloseConnectionID = model.activeConnection.id
-        shortcutClose = close
+        guard let generation = model.herdrConnectionGeneration,
+              let captured = close.captured(
+                  in: projection,
+                  lease: BessieTopologyModalLease(
+                      connectionID: model.activeConnection.id,
+                      generation: generation
+                  )
+              )
+        else {
+            fleet.reportRouteFailure("That Herdr target is no longer available.")
+            restorePrefixModalFocus()
+            return
+        }
+        shortcutClose = captured
     }
 
     private func applyCloseReconciliation(_ result: BessieCloseReconciliation) {
@@ -3503,19 +3958,30 @@ struct BessieProductShell: View {
     }
 
     private func requestTabName(connectionID: String, workspaceID: String) {
+        guard let generation = fleet.model(connectionID: connectionID)?.herdrConnectionGeneration else {
+            fleet.reportRouteFailure("That command needs a connected Herdr session.")
+            restorePrefixModalFocus()
+            return
+        }
         namedTopologyRequest = NamedTopologyRequest(
-            target: .tab(connectionID: connectionID, workspaceID: workspaceID)
+            target: .tab(connectionID: connectionID, workspaceID: workspaceID),
+            lease: BessieTopologyModalLease(connectionID: connectionID, generation: generation)
         )
     }
 
-    private func requestPaneName(_ paneID: String, direction: SplitDirection) {
-        requestPaneName(connectionID: model.activeConnection.id, paneID: paneID, direction: direction)
+    private func splitPane(_ paneID: String, direction: SplitDirection) {
+        splitPane(connectionID: model.activeConnection.id, paneID: paneID, direction: direction)
     }
 
-    private func requestPaneName(connectionID: String, paneID: String, direction: SplitDirection) {
-        namedTopologyRequest = NamedTopologyRequest(
-            target: .pane(connectionID: connectionID, targetPaneID: paneID, direction: direction)
-        )
+    private func splitPane(connectionID: String, paneID: String, direction: SplitDirection) {
+        guard let targetModel = fleet.activate(connectionID: connectionID) else { return }
+        targetModel.dispatchHerdrDefault(.splitPaneTarget(id: paneID, direction: direction)) { fresh in
+            guard fleet.activeConnectionID == connectionID else { return }
+            selectedTopologyConnectionID = connectionID
+            selectedWorkspaceID = fresh.focusedWorkspace?.id
+            selectedPaneID = fresh.focusedPane?.id
+            destination = .workspace
+        }
     }
 
     private func requestMoveToNewTabName(_ paneID: String, workspaceID: String) {
@@ -3527,23 +3993,35 @@ struct BessieProductShell: View {
     }
 
     private func requestMoveToNewTabName(connectionID: String, paneID: String, workspaceID: String) {
+        guard let generation = fleet.model(connectionID: connectionID)?.herdrConnectionGeneration else {
+            fleet.reportRouteFailure("That command needs a connected Herdr session.")
+            return
+        }
         namedTopologyRequest = NamedTopologyRequest(
             target: .movedPaneTab(
                 connectionID: connectionID,
                 paneID: paneID,
                 workspaceID: workspaceID
-            )
+            ),
+            lease: BessieTopologyModalLease(connectionID: connectionID, generation: generation)
         )
     }
 
     private func performNamedTopologyRequest(_ request: NamedTopologyRequest, name: String) {
+        guard let targetModel = fleet.model(connectionID: request.lease.connectionID),
+              request.lease.matches(
+                  connectionID: targetModel.activeConnection.id,
+                  generation: targetModel.herdrConnectionGeneration
+              )
+        else {
+            fleet.reportRouteFailure("The Herdr connection changed while that editor was open.")
+            return
+        }
         switch request.target {
         case .tab(let connectionID, let workspaceID):
             createTab(connectionID: connectionID, workspaceID: workspaceID, name: name)
-        case .pane(let connectionID, let targetPaneID, let direction):
-            createPane(connectionID: connectionID, targetPaneID: targetPaneID, direction: direction, name: name)
         case .movedPaneTab(let connectionID, let paneID, let workspaceID):
-            guard let targetModel = fleet.activate(connectionID: connectionID) else { return }
+            guard fleet.activate(connectionID: connectionID) != nil else { return }
             targetModel.perform(
                 .paneMove(
                     id: paneID,
@@ -3572,42 +4050,6 @@ struct BessieProductShell: View {
             if let selectedPaneID {
                 terminalRegistry.recordSwitchRequested(paneID: selectedPaneID)
                 terminalRegistry.focusWhenPresented(paneID: selectedPaneID, refresh: .full)
-            }
-        }
-    }
-
-    private func createPane(
-        connectionID: String,
-        targetPaneID: String,
-        direction: SplitDirection,
-        name: String
-    ) {
-        guard let owner = topology.connections.first(where: { $0.connection.id == connectionID }),
-              let targetPane = owner.projection.panes.first(where: { $0.id == targetPaneID }),
-              let targetModel = fleet.activate(connectionID: connectionID)
-        else { return }
-        let priorPaneIDs = Set(owner.projection.panes.map(\.id))
-        let creation = TopologyCreation.pane(targetPaneID: targetPaneID, direction: direction, name: name)
-        let operation = UUID()
-        topologySelectionInFlight = operation
-        targetModel.perform(creation.action) { fresh in
-            guard topologySelectionInFlight == operation,
-                  fleet.activeConnectionID == connectionID
-            else { return }
-            let createdPane = fresh.panes.first { !priorPaneIDs.contains($0.id) }
-            selectedTopologyConnectionID = connectionID
-            selectedWorkspaceID = targetPane.workspaceID
-            selectedPaneID = createdPane?.id ?? fresh.focusedPane?.id
-            destination = .workspace
-            guard let createdPane,
-                  let renameAction = creation.followUpAction(createdPaneID: createdPane.id)
-            else { return }
-            targetModel.perform(renameAction) { renamed in
-                guard topologySelectionInFlight == operation,
-                      fleet.activeConnectionID == connectionID
-                else { return }
-                selectedPaneID = renamed.panes.first(where: { $0.id == createdPane.id })?.id
-                    ?? renamed.focusedPane?.id
             }
         }
     }
@@ -3803,7 +4245,6 @@ private struct BessieZenSurface: View {
                             Button { openAgent(card.paneTarget) } label: {
                                 HStack(spacing: 5) {
                                     BessieStatusGlyph(state: card.state)
-                                    BessieProviderMark(provider: card.agentKind)
                                 }
                                 .frame(width: 40, height: 28)
                                 .background(isSelected(card) ? BessieDesign.selected : BessieSemanticColor.clear)
@@ -4163,6 +4604,7 @@ private struct AgentDetailSurface: View {
     let openWorkspace: () -> Void
     @State private var prompt = ""
     @State private var editor: ProductEditor?
+    @State private var editorLease: BessieTopologyModalLease?
     @Environment(\.bessieDensity) private var density
     @State private var workbenchSection: WorkbenchSection = .details
     @StateObject private var followFiles = FollowFilesViewModel()
@@ -4184,7 +4626,14 @@ private struct AgentDetailSurface: View {
                 title: pane?.presentationTitle ?? "Pane"
             ) {
                 if let pane {
-                    Button("Rename") { editor = .renamePane(id: pane.id, value: pane.label ?? "") }
+                    Button("Rename") {
+                        guard let generation = model.herdrConnectionGeneration else { return }
+                        editorLease = BessieTopologyModalLease(
+                            connectionID: model.activeConnection.id,
+                            generation: generation
+                        )
+                        editor = .renamePane(id: pane.id, value: pane.label ?? "")
+                    }
                         .buttonStyle(BessieSecondaryButtonStyle())
                     Button("Open workspace", action: openWorkspace)
                         .buttonStyle(BessiePrimaryButtonStyle())
@@ -4273,7 +4722,20 @@ private struct AgentDetailSurface: View {
         }
         .onAppear { selectedPaneID = pane?.id }
         .onDisappear { followFiles.stop() }
-        .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
+        .sheet(item: $editor, onDismiss: { editorLease = nil }) {
+            ProductEditorSheet(editor: $0) { action in
+                guard editorLease?.matches(
+                    connectionID: model.activeConnection.id,
+                    generation: model.herdrConnectionGeneration
+                ) == true else {
+                    model.reportRouteFailure("The Herdr connection changed while that editor was open.")
+                    editor = nil
+                    return
+                }
+                model.perform(action)
+                editor = nil
+            }
+        }
     }
 
     private func agentWorkbench(_ pane: PaneProjection) -> some View {
@@ -4639,6 +5101,8 @@ private struct WorkspaceSurface: View {
     @Binding var selectedWorkspaceID: String?
     @Binding var selectedPaneID: String?
     let zenPaneID: String?
+    let prefixMode: HerdrPrefixMode
+    let prefixOwnerPaneID: String?
     let paneGap: Double
     let terminalFontSize: Double
     let fileBrowserEnabled: Bool
@@ -4648,6 +5112,7 @@ private struct WorkspaceSurface: View {
     let requestMoveToNewTab: (String, String) -> Void
     let requestClose: (PendingClose) -> Void
     @State private var editor: ProductEditor?
+    @State private var editorLease: BessieTopologyModalLease?
     @State private var focusState = TerminalFocusStateMachine()
     @Environment(\.bessieDensity) private var density
 
@@ -4685,6 +5150,8 @@ private struct WorkspaceSurface: View {
                     selectedPaneID: $selectedPaneID,
                     outlinedPaneID: focusState.outlinedPaneID,
                     zenPaneID: zenPaneID,
+                    prefixMode: prefixMode,
+                    prefixOwnerPaneID: prefixOwnerPaneID,
                     registry: registry,
                     gap: paneGap,
                     terminalFontSize: terminalFontSize,
@@ -4693,7 +5160,14 @@ private struct WorkspaceSurface: View {
                     responderChanged: { paneID, isFirstResponder in
                         focusState.responderChanged(paneID: paneID, isFirstResponder: isFirstResponder)
                     },
-                    edit: { editor = $0 },
+                    edit: {
+                        guard let generation = model.herdrConnectionGeneration else { return }
+                        editorLease = BessieTopologyModalLease(
+                            connectionID: model.activeConnection.id,
+                            generation: generation
+                        )
+                        editor = $0
+                    },
                     action: { model.perform($0) },
                     requestSplit: requestSplit,
                     moveChoices: { PaneMoveChoices(projection: projection, paneID: $0) },
@@ -4725,7 +5199,20 @@ private struct WorkspaceSurface: View {
         .onChange(of: projection.focusedPane?.id) { _, paneID in
             focusState.reconcile(authoritativePaneID: paneID)
         }
-        .sheet(item: $editor) { ProductEditorSheet(editor: $0) { action in model.perform(action); editor = nil } }
+        .sheet(item: $editor, onDismiss: { editorLease = nil }) {
+            ProductEditorSheet(editor: $0) { action in
+                guard editorLease?.matches(
+                    connectionID: model.activeConnection.id,
+                    generation: model.herdrConnectionGeneration
+                ) == true else {
+                    model.reportRouteFailure("The Herdr connection changed while that editor was open.")
+                    editor = nil
+                    return
+                }
+                model.perform(action)
+                editor = nil
+            }
+        }
     }
 
     private func requestPaneFocus(_ paneID: String) {
@@ -5044,6 +5531,8 @@ private struct ProductPaneLayout: View {
     @Binding var selectedPaneID: String?
     let outlinedPaneID: String?
     let zenPaneID: String?
+    let prefixMode: HerdrPrefixMode
+    let prefixOwnerPaneID: String?
     @ObservedObject var registry: TerminalControllerRegistry
     let gap: Double
     let terminalFontSize: Double
@@ -5066,6 +5555,7 @@ private struct ProductPaneLayout: View {
                 pane: panes.first { $0.id == leaf.paneID },
                 selected: outlinedPaneID == leaf.paneID,
                 zenActive: zenPaneID == leaf.paneID,
+                prefixMode: prefixOwnerPaneID == leaf.paneID ? prefixMode : .idle,
                 controller: registry.controllers[leaf.paneID],
                 terminalFontSize: terminalFontSize,
                 select: { selectedPaneID = leaf.paneID; focus(leaf.paneID) },
@@ -5086,6 +5576,8 @@ private struct ProductPaneLayout: View {
                 selectedPaneID: $selectedPaneID,
                 outlinedPaneID: outlinedPaneID,
                 zenPaneID: zenPaneID,
+                prefixMode: prefixMode,
+                prefixOwnerPaneID: prefixOwnerPaneID,
                 registry: registry,
                 gap: gap,
                 terminalFontSize: terminalFontSize,
@@ -5111,6 +5603,8 @@ private struct ProductSplitBranch: View {
     @Binding var selectedPaneID: String?
     let outlinedPaneID: String?
     let zenPaneID: String?
+    let prefixMode: HerdrPrefixMode
+    let prefixOwnerPaneID: String?
     @ObservedObject var registry: TerminalControllerRegistry
     let gap: Double
     let terminalFontSize: Double
@@ -5171,6 +5665,8 @@ private struct ProductSplitBranch: View {
             selectedPaneID: $selectedPaneID,
             outlinedPaneID: outlinedPaneID,
             zenPaneID: zenPaneID,
+            prefixMode: prefixMode,
+            prefixOwnerPaneID: prefixOwnerPaneID,
             registry: registry,
             gap: gap,
             terminalFontSize: terminalFontSize,
@@ -5263,6 +5759,7 @@ private struct ProductPane: View {
     let pane: PaneProjection?
     let selected: Bool
     let zenActive: Bool
+    let prefixMode: HerdrPrefixMode
     let controller: PaneTerminalController?
     let terminalFontSize: Double
     let select: () -> Void
@@ -5289,9 +5786,6 @@ private struct ProductPane: View {
                         if pane?.agent == nil {
                             BessieIconView(icon: .terminalWindow, size: 13)
                                 .accessibilityHidden(true)
-                        } else {
-                            BessieProviderMark(provider: pane?.agent)
-                                .accessibilityHidden(true)
                         }
                         Text(pane?.presentationTitle ?? "Shell")
                             .font(.system(size: 11, weight: .medium))
@@ -5304,6 +5798,7 @@ private struct ProductPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("Focus \(pane?.presentationTitle ?? "pane"), \(HerdPresentationStatus(state: AgentSemanticState(herdrValue: pane?.agentStatus ?? "unknown")).rawValue)")
                 .accessibilityValue(selected ? "Focused pane" : "Not focused")
+                HerdrPrefixModeIndicator(mode: prefixMode)
                 Button { enterZen(leaf.paneID) } label: {
                     BessieIconView(icon: .cornersOut, size: 12)
                         .frame(width: 24, height: 24)
@@ -5714,8 +6209,65 @@ struct BessiePopoverActionRow: View {
     }
 }
 
+struct CapturedPendingClose {
+    let pending: PendingClose
+    let lease: BessieTopologyModalLease
+    let intent: HerdrDefaultTopologyIntent
+    let preferredWorkspaceID: String?
+    let paneIncarnation: BessiePaneIncarnation?
+    let message: String
+    let buttonTitle: String
+
+    var title: String { pending.title }
+}
+
 enum PendingClose {
     case workspace(String), tab(String), pane(String)
+
+    func captured(
+        in projection: HerdrSessionProjection,
+        lease: BessieTopologyModalLease,
+        buttonTitle: String? = nil
+    ) -> CapturedPendingClose? {
+        let target: HerdrDefaultCapturedCloseTarget
+        let preferredWorkspaceID: String?
+        let paneIncarnation: BessiePaneIncarnation?
+        switch self {
+        case .workspace(let id):
+            guard projection.workspaces.contains(where: { $0.id == id }) else { return nil }
+            target = .workspace(id: id)
+            preferredWorkspaceID = nil
+            paneIncarnation = nil
+        case .tab(let id):
+            guard let tab = projection.tabs.first(where: { $0.id == id }) else { return nil }
+            target = .tab(id: id, workspaceID: tab.workspaceID)
+            preferredWorkspaceID = tab.workspaceID
+            paneIncarnation = nil
+        case .pane(let id):
+            guard let pane = projection.panes.first(where: { $0.id == id }) else { return nil }
+            target = .pane(
+                id: id,
+                workspaceID: pane.workspaceID,
+                terminalID: pane.terminalID
+            )
+            preferredWorkspaceID = pane.workspaceID
+            paneIncarnation = BessiePaneIncarnation(
+                connectionID: lease.connectionID,
+                paneID: pane.id,
+                terminalID: pane.terminalID
+            )
+        }
+        return CapturedPendingClose(
+            pending: self,
+            lease: lease,
+            intent: .capturedClose(target: target, action: resolvedAction(in: projection)),
+            preferredWorkspaceID: preferredWorkspaceID,
+            paneIncarnation: paneIncarnation,
+            message: message(in: projection),
+            buttonTitle: buttonTitle ?? self.buttonTitle
+        )
+    }
+
     func resolvedAction(in projection: HerdrSessionProjection) -> HerdrAction {
         switch self {
         case .workspace(let id): .workspaceClose(id: id)

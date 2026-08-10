@@ -103,11 +103,20 @@ if grep -Fq 'case settled = "Settled"' Sources/BessieCore/HerdList.swift; then
     echo 'Synthetic user-facing Settled status remains.' >&2
     exit 1
 fi
-grep -Fq '.sendBytes(Data([0x02]))' Sources/BessieCore/KeyboardShortcuts.swift
+grep -Fq 'case .sendLiteralPrefix:' Sources/BessieApp/KeyboardShortcutCoordinator.swift
+grep -Fq 'sendOperation?(.keys(["ctrl+b"]))' Sources/BessieApp/TerminalPaneController.swift
+grep -Fq 'static let runtimeIdentity = HerdrPrefixRuntimeIdentity(' Sources/BessieCore/HerdrPrefixCommands.swift
+grep -Fq 'case showKeyboardReference' Sources/BessieCore/KeyboardShortcuts.swift
+grep -Fq 'struct HerdrPrefixModeIndicator: View' Sources/BessieApp/HerdrPrefixModeIndicator.swift
+grep -Fq 'Ctrl-B Shift-N' docs/v1/getting-started.md
+if rg -n '\.sendBytes\(Data\(\[0x02\]\)\)|Ghostty-style terminal shortcuts coexist|Cmd\+B.*(prefix|Ctrl\+B)' Sources docs/v1; then
+    echo 'A stale raw Cmd+B prefix path or duplicate native topology claim remains.' >&2
+    exit 1
+fi
 grep -Fq 'builder.withCustom("macos-option-as-alt", "left")' Sources/BessieApp/TerminalPaneController.swift
 grep -Fq '.keyboardShortcut("p", modifiers: [.command, .shift])' Sources/BessieApp/BessieApp.swift
 if grep -Fq '.keyboardShortcut("b", modifiers: .command)' Sources/BessieApp/BessieApp.swift; then
-    echo 'Cmd+B must remain terminal input; command palette cannot claim it.' >&2
+    echo 'Cmd+B must remain AppKit-owned; Bessie cannot claim it as a prefix mapping.' >&2
     exit 1
 fi
 grep -Fq 'public var requiresUserAction: Bool { self == .blocked }' Sources/BessieCore/SurfaceProjection.swift
@@ -138,29 +147,27 @@ grep -Fq 'bessie_terminate_installation_owners' scripts/rebuild-install-shortcut
 grep -Fq 'for screen_number in {1..15}' scripts/capture-redesign-matrix.sh
 grep -Fq "screen=\$(printf '%02d' \"\$screen_number\")" scripts/capture-redesign-matrix.sh
 grep -Fq 'len(entries) != 30' scripts/capture-redesign-matrix.sh
-agent_assets=(
-    AgentClaude AgentCodex AgentGrok AgentAmp AgentGeneric
-    AgentHermes AgentGemini AgentOpenCode AgentCopilot
-    AgentPi AgentOmp AgentCursor AgentDevin AgentAgy
-    AgentCline AgentMastraCode AgentKimi AgentKiro AgentDroid
-    AgentKilo AgentQodercli AgentMaki AgentOpenClaw
-)
-for asset in "${agent_assets[@]}"; do
-    path="Sources/BessieApp/Resources/${asset}.svg"
-    test -s "$path"
-    grep -Fq '<svg' "$path"
-    grep -Fq '<title>' "$path"
-    grep -Eq '<(path|circle|rect|polygon|image)[ >]' "$path"
-done
-# Mastra must remain true vector (no PNG-in-SVG regression).
-if grep -Eq 'data:image|<image[ >]' Sources/BessieApp/Resources/AgentMastraCode.svg; then
-    echo 'AgentMastraCode.svg must be vector paths, not an embedded raster.' >&2
+if compgen -G 'Sources/BessieApp/Resources/Agent*.svg' >/dev/null; then
+    echo 'Third-party agent artwork must not be packaged.' >&2
     exit 1
 fi
-grep -Fq 'AgentPi' Sources/BessieApp/BessieDesignSystem.swift
-grep -Fq 'AgentOpenClaw' Sources/BessieApp/BessieDesignSystem.swift
+if compgen -G 'Sources/BessieApp/Resources/Agent*.svg' >/dev/null; then
+    echo 'Agent artwork must not be packaged by the app.' >&2
+    exit 1
+fi
+if grep -R 'BessieProviderMark' Sources/BessieApp --include='*.swift'; then
+    echo 'Agent artwork must not be referenced by app code.' >&2
+    exit 1
+fi
 grep -Fq 'case "qodercli"' Sources/BessieCore/AgentLaunch.swift
 test -s Sources/BessieApp/Resources/ATTRIBUTION.md
+test -s LICENSE
+cmp LICENSE Sources/BessieApp/Resources/Herdr-LICENSE.txt
+grep -Fq 'Bessie-LICENSE.txt' scripts/package-app.sh
+grep -Fq 'cmp "$repo_root/LICENSE" "$bessie_license_path"' scripts/package-app.sh
+[[ $(shasum -a 256 Sources/BessieApp/Resources/libghostty-spm-LICENSE.txt | awk '{print $1}') == 1f4b38df6a142e678a85d84c3a7ec4d1db328a556483241df714156134e81615 ]]
+[[ $(shasum -a 256 Sources/BessieApp/Resources/Ghostty-LICENSE.txt | awk '{print $1}') == 386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1 ]]
+[[ $(shasum -a 256 Sources/BessieApp/Resources/Sparkle-LICENSE.txt | awk '{print $1}') == 389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe ]]
 test -s Sources/BessieApp/CatppuccinPalette.swift
 test -x scripts/check-theme-color-escapes.py
 test -x scripts/rebuild-install-catppuccin-themes.sh
@@ -170,13 +177,7 @@ grep -Fq '5a58926563ddacbde4a12b4a347464c2c6945393' Sources/BessieApp/Resources/
 grep -Fq 'Copyright (c) 2021 Catppuccin' Sources/BessieApp/Resources/ATTRIBUTION.md
 grep -Fq 'do not endorse Bessie' Sources/BessieApp/Resources/ATTRIBUTION.md
 grep -Fq 'madeofbees' Sources/BessieApp/Resources/ATTRIBUTION.md
-for asset_id in \
-    d4fadd6a-e121-4ced-85ae-4023a3f84a7f \
-    a4d7865e-8453-4e93-9207-659294800903 \
-    6e6995e3-9398-4b45-8fbb-441934ad34a1 \
-    33f2f2a8-be73-4be4-b812-b7eb69a35fbb; do
-    grep -Fq "$asset_id" Sources/BessieApp/Resources/ATTRIBUTION.md
-done
+grep -Fq 'does not package or display third-party agent or service marks' Sources/BessieApp/Resources/ATTRIBUTION.md
 video='Sources/BessieApp/Resources/bessie-cold-open.mp4'
 test -s "$video" || { echo 'Missing packaged U8 cold-open video.' >&2; exit 1; }
 [[ $(shasum -a 256 "$video" | awk '{print $1}') == 'f68f09d8b31cd6b5af0483c50fb79dd33fbe619a358c81c8438d04ab9f67b871' ]] \
@@ -223,9 +224,7 @@ grep -Fq 'static let motionExplanatoryDuration: TimeInterval = 0.20' Sources/Bes
 grep -Fq 'static let motionStrongEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionFastDuration)' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'static let motionExplanatoryEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionExplanatoryDuration)' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'struct BessieOnboardingSurface: View' Sources/BessieApp/BessieDesignSystem.swift
-test -s docs/reports/mac-v1-alpha.md
 grep -Fq './scripts/mac-verify.sh' README.md
-grep -Fq '/Users/jordanstella/GitHub/bessie/dist/Bessie.app' docs/reports/mac-v1-alpha.md
 
 ./scripts/check-ui-copy.sh
 

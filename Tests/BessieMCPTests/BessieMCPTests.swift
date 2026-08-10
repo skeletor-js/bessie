@@ -32,6 +32,7 @@ struct BessieMCPTests {
             #expect(tool["description"] as? String == intent.description)
             let schema = try JSONDecoder().decode(BessieJSONSchema.self, from: JSONSerialization.data(withJSONObject: tool["inputSchema"] as Any))
             #expect(schema.properties?.keys.contains("confirm_token") == (intent.risk == .destructive))
+            #expect(schema.properties?.keys.contains("request_id") == true)
             #expect(schema.required == intent.paramsSchema.required)
         }
     }
@@ -60,7 +61,8 @@ struct BessieMCPTests {
             received = request
             return .success(id: request.id, value: .string("done"))
         }
-        let output = try output(adapter, #"{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"workspace.close","arguments":{"connection_id":"c1","workspace_id":"w1","confirm_token":"token"}}}"#)
+        let output = try output(adapter, #"{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"workspace.close","arguments":{"connection_id":"c1","workspace_id":"w1","confirm_token":"token","request_id":"retry-42"}}}"#)
+        #expect(received?.id == "retry-42")
         #expect(received?.intent.rawValue == "workspace.close")
         #expect(received?.params == ["connection_id": .string("c1"), "workspace_id": .string("w1")])
         #expect(received?.confirmToken == "token")
