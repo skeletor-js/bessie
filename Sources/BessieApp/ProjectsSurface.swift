@@ -7,38 +7,14 @@ struct ProjectsSurface: View {
     @State private var deleteCandidate: BessieStoredProject?
 
     var body: some View {
-        VStack(spacing: 0) {
-            BessieTopBar(title: "Projects") {
-                captureButton
-                Button("New Project") { model.beginCreate() }
-                    .buttonStyle(BessiePrimaryButtonStyle())
-                    .accessibilityHint("Create a reusable local Project recipe")
-            }
-
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(BessieDesign.subtle)
-                TextField("Search names, descriptions, groups, folders, and commands", text: $model.searchQuery)
-                    .textFieldStyle(.plain)
-            }
-            .padding(.horizontal, 11)
-            .frame(height: 36)
-            .background(BessieDesign.inset)
-            .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-
-            if model.isLoading {
-                ProgressView("Loading Projects…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.projects.isEmpty && model.issues.isEmpty {
-                emptyState
+        ProjectModeRegion(mode: model.draft != nil) {
+            if model.draft != nil {
+                ProjectEditorView(model: model)
             } else {
-                catalog
+                projectsList
             }
         }
-        .background(BessieDesign.background)
         .task { model.load() }
-        .sheet(item: $model.draft) { _ in ProjectEditorView(model: model) }
         .confirmationDialog(
             "Move Project to Trash?",
             isPresented: Binding(get: { deleteCandidate != nil }, set: { if !$0 { deleteCandidate = nil } }),
@@ -59,31 +35,40 @@ struct ProjectsSurface: View {
         } message: { Text(model.errorMessage ?? model.notice ?? "") }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 11) {
-            Image(systemName: "folder.badge.plus")
-                .font(.system(size: 30, weight: .thin))
-                .foregroundStyle(BessieDesign.faint)
-            Text("Create your first Project")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(BessieDesign.strong)
-            Text("Projects are local reusable layouts. They can be authored while Herdr is disconnected.")
-                .font(.system(size: 11.5))
-                .foregroundStyle(BessieDesign.subtle)
-                .multilineTextAlignment(.center)
-            Button("New Project") { model.beginCreate() }
-                .buttonStyle(BessiePrimaryButtonStyle())
-            captureButton
+    private var projectsList: some View {
+        VStack(spacing: 0) {
+            BessieTopBar(title: "Projects") {
+                Button { model.beginCreate() } label: {
+                    HStack(spacing: 6) {
+                        BessieIconView(icon: .plus, size: 13)
+                        Text("New project")
+                    }
+                }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+                    .accessibilityHint("Create a reusable local Project recipe")
+            }
+
+            if model.isLoading {
+                ProgressView("Loading Projects…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.projects.isEmpty && model.issues.isEmpty {
+                emptyState
+            } else {
+                catalog
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var captureButton: some View {
-        let unavailableReason = model.captureUnavailableReason
-        return Button("Save current workspace as project…") { model.beginCaptureCurrentWorkspace() }
-            .buttonStyle(BessieSecondaryButtonStyle())
-            .disabled(unavailableReason != nil)
-            .help(unavailableReason ?? "Capture the focused Herdr workspace as a new Project draft")
+    private var emptyState: some View {
+        ProductEmptyState(
+            symbol: "folder.badge.plus",
+            title: "No projects yet",
+            detail: "Projects are launch recipes. They remember tabs, panes, folders, and commands without becoming live workspaces.",
+            actionTitle: "New project",
+            action: { model.beginCreate() }
+        )
+        .padding(.horizontal, 44)
+        .padding(.top, 34)
     }
 
     private var catalog: some View {
@@ -93,10 +78,15 @@ struct ProjectsSurface: View {
                 if !model.issues.isEmpty { issuePanel }
 
                 if sections.allSatisfy(\.projects.isEmpty) {
-                    Text("No Projects match this search.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(BessieDesign.subtle)
-                        .frame(maxWidth: .infinity, minHeight: 180)
+                    VStack(spacing: 5) {
+                        Text("No projects match this search.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(BessieDesign.strong)
+                        Text("Change or clear the search to see other projects.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(BessieDesign.subtle)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 180)
                 }
 
                 ForEach(sections) { section in
@@ -106,14 +96,16 @@ struct ProjectsSurface: View {
                     }
                 }
             }
-            .padding(16)
-            .padding(.bottom, 40)
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.top, 26)
+            .padding(.bottom, 60)
         }
     }
 
     private var issuePanel: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Label("Catalog issues", systemImage: "exclamationmark.triangle")
+            Text("Catalog issues")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(BessieDesign.strong)
             ForEach(Array(model.issues.enumerated()), id: \.offset) { _, issue in
@@ -142,74 +134,84 @@ struct ProjectsSurface: View {
 
     private func projectRow(_ stored: BessieStoredProject) -> some View {
         let project = stored.project
-        let paneCount = project.tabs.reduce(0) { $0 + $1.panes.count }
-        let commands = project.tabs.flatMap(\.panes).compactMap(\.command).filter { !$0.isEmpty }
-        return HStack(alignment: .top, spacing: 13) {
-            Image(systemName: project.archivedAt == nil ? "folder" : "archivebox")
-                .font(.system(size: 17, weight: .light))
+        return HStack(alignment: .center, spacing: 13) {
+            BessieIconView(icon: .stack, size: 17)
                 .foregroundStyle(BessieDesign.subtle)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 6) {
+                .frame(width: 30, height: 30)
+                .background(BessieDesign.inset)
+                .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(project.name)
                         .font(.system(size: 13.5, weight: .semibold))
                         .foregroundStyle(BessieDesign.strong)
                     if project.archivedAt != nil {
-                        Text("ARCHIVED")
+                        Text("Archived")
                             .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(BessieDesign.subtle)
                     }
-                }
-                Text(project.workingDirectory)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(BessieDesign.subtle)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-                HStack(spacing: 12) {
-                    Text("\(project.tabs.count) tab\(project.tabs.count == 1 ? "" : "s")")
-                    Text("\(paneCount) pane\(paneCount == 1 ? "" : "s")")
-                    if model.runningInstance(for: project.id) != nil { Text("Running") }
-                    if let command = commands.first {
-                        Text(command)
-                            .font(.system(size: 10, design: .monospaced))
-                            .lineLimit(1)
-                    } else {
-                        Text("Shell only")
+                    if model.runningInstance(for: project.id) != nil {
+                        Text("running now")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(BessieDesign.strong)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(BessieDesign.selected)
+                            .clipShape(Capsule())
                     }
                 }
-                .font(.system(size: 10.5))
-                .foregroundStyle(BessieDesign.faint)
+                Text(projectSubtitle(project))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(BessieDesign.faint)
+                    .lineLimit(1)
             }
             Spacer(minLength: 10)
-            Button("Open") { model.requestOpen(project.id) }
+            Button(model.isOpening(project.id) ? "Launching…" : "Launch") { model.requestOpen(project.id) }
                 .buttonStyle(BessiePrimaryButtonStyle())
                 .disabled(!model.canOpenProject(project.id))
                 .help(model.canOpenProject(project.id)
-                    ? "Open in \(project.workingDirectory)"
+                    ? "Launch in \(project.workingDirectory)"
                     : model.openUnavailableReason(for: project.id))
-            Button("Edit") { model.beginEdit(stored) }
-                .buttonStyle(BessieSecondaryButtonStyle())
             Menu {
-                Button("Duplicate") { model.duplicate(project.id) }
-                Button(project.archivedAt == nil ? "Archive" : "Unarchive") {
-                    model.setArchived(project.archivedAt == nil, projectID: project.id)
+                if model.runningInstance(for: project.id) != nil {
+                    Button("Open running workspace") { model.openRunningWorkspace(project.id) }
+                    Divider()
                 }
-                Divider()
-                Button("Reveal Project Folder") { reveal(project.workingDirectory) }
-                Button("Copy Folder Path") { copy(project.workingDirectory) }
-                Divider()
-                Button("Delete…", role: .destructive) { deleteCandidate = stored }
+                Button("Open editor") { model.beginEdit(stored) }
+                Button("Duplicate") { model.duplicate(project.id) }
+                Button("Delete", role: .destructive) { deleteCandidate = stored }
             } label: {
-                Image(systemName: "ellipsis").frame(width: 26, height: 26)
+                BessieIconView(icon: .dotsThree, size: 15).frame(width: 26, height: 26)
             }
             .menuStyle(.borderlessButton)
             .accessibilityLabel("Actions for \(project.name)")
         }
         .padding(13)
         .background(BessieDesign.panel)
-        .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
+        .overlay {
+            RoundedRectangle(cornerRadius: BessieDesign.controlRadius)
+                .stroke(BessieDesign.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: BessieDesign.controlRadius))
         .opacity(project.archivedAt == nil ? 1 : 0.7)
+        .contentShape(Rectangle())
+        .onTapGesture { model.beginEdit(stored) }
+        .focusable()
+        .onKeyPress(phases: .down) { press in
+            guard press.key == .return || press.key == .space else { return .ignored }
+            model.beginEdit(stored)
+            return .handled
+        }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(project.name), \(projectSubtitle(project))")
+        .accessibilityHint("Open the Project editor")
+        .accessibilityAction(named: "Open editor") { model.beginEdit(stored) }
+    }
+
+    private func projectSubtitle(_ project: BessieProject) -> String {
+        let workspace = project.primaryFolder.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "workspace"
+        let tabs = project.tabs.map(\.name).joined(separator: ", ")
+        return tabs.isEmpty ? workspace : "\(workspace) · \(tabs)"
     }
 
     private func reveal(_ path: String) {
@@ -233,10 +235,9 @@ struct ProjectsSurface: View {
 extension View {
     func projectConnectionSync(
         model: ProjectsViewModel,
-        connection: BessieProjectMaterializationConnection?,
-        snapshot: HerdrSnapshot
+        fleet: ConnectionFleetViewModel
     ) -> some View {
-        modifier(ProjectConnectionSyncModifier(model: model, connection: connection, snapshot: snapshot))
+        modifier(ProjectConnectionSyncModifier(model: model, fleet: fleet))
     }
 
     func projectLaunchPresentation(
@@ -249,19 +250,50 @@ extension View {
 
 private struct ProjectConnectionSyncModifier: ViewModifier {
     @ObservedObject var model: ProjectsViewModel
-    let connection: BessieProjectMaterializationConnection?
-    let snapshot: HerdrSnapshot
+    @ObservedObject var fleet: ConnectionFleetViewModel
+    @EnvironmentObject private var settings: BessieSettingsModel
 
     func body(content: Content) -> some View {
         content
-            .onAppear { model.updateConnection(connection, snapshot: snapshot) }
-            .onDisappear { model.updateConnection(nil, snapshot: nil) }
-            .onChange(of: connection) { _, connection in
-                model.updateConnection(connection, snapshot: snapshot)
+            .onAppear {
+                model.configureLaunchTargetReadiness(
+                    resolve: { [weak fleet] connectionID in
+                        guard let fleet else {
+                            throw ProjectLaunchTargetReadinessError.notConfigured(
+                                connectionID: connectionID
+                            )
+                        }
+                        return try await fleet.waitForProjectLaunchTarget(
+                            connectionID: connectionID
+                        )
+                    },
+                    reportFailure: { [weak fleet] message in
+                        fleet?.reportRouteFailure(message)
+                    }
+                )
+                synchronize()
             }
-            .onChange(of: snapshot) { _, snapshot in
-                model.updateConnection(connection, snapshot: snapshot)
+            .onReceive(fleet.objectWillChange) { _ in
+                Task { @MainActor in
+                    await Task.yield()
+                    synchronize()
+                }
             }
+            .onReceive(settings.objectWillChange) { _ in
+                Task { @MainActor in
+                    await Task.yield()
+                    synchronize()
+                }
+            }
+    }
+
+    private func synchronize() {
+        model.updateConnections(
+            definitions: settings.connections,
+            targets: fleet.projectLaunchTargets,
+            activeConnectionID: fleet.activeConnectionID,
+            defaultProjectConnectionID: settings.defaultProjectConnectionID
+        )
     }
 }
 
@@ -273,11 +305,15 @@ private struct ProjectLaunchPresentationModifier: ViewModifier {
         content
             .overlay(alignment: .bottomTrailing) {
                 if let opening = model.opening {
-                    ProjectLaunchProgressCard(model: model, opening: opening).padding(18)
+                    ProjectLaunchEntrance(initialOffset: 10) {
+                        ProjectLaunchProgressCard(model: model, opening: opening)
+                    }
+                    .id(opening.projectID)
+                    .padding(18)
                 }
             }
             .sheet(item: reviewBinding) { review in
-                ProjectLaunchReviewView(model: model, review: review)
+                ProjectLaunchReviewView(model: model, presentation: review)
             }
             .sheet(item: failureBinding) { failure in
                 ProjectLaunchFailureView(model: model, presentation: failure)
@@ -289,12 +325,113 @@ private struct ProjectLaunchPresentationModifier: ViewModifier {
             }
     }
 
-    private var reviewBinding: Binding<ProjectLaunchReview?> {
-        Binding(get: { model.launchReview }, set: { if $0 == nil { model.cancelLaunchReview() } })
-    }
-
     private var failureBinding: Binding<ProjectLaunchFailurePresentation?> {
         Binding(get: { model.launchFailure }, set: { if $0 == nil { model.clearLaunchFailure() } })
+    }
+
+    private var reviewBinding: Binding<ProjectLaunchReviewPresentation?> {
+        Binding(get: { model.launchReview }, set: { if $0 == nil { model.cancelLaunchReview() } })
+    }
+}
+
+private struct ProjectLaunchReviewView: View {
+    @ObservedObject var model: ProjectsViewModel
+    let presentation: ProjectLaunchReviewPresentation
+
+    private struct CommandRow: Identifiable {
+        let id: UUID
+        let location: String
+        let command: String
+    }
+
+    private var commands: [CommandRow] {
+        presentation.project.tabs.flatMap { tab in
+            tab.panes.compactMap { pane in
+                pane.command.map {
+                    CommandRow(
+                        id: pane.id,
+                        location: "\(tab.name) / \(pane.label ?? "Shell")",
+                        command: $0
+                    )
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Review project launch")
+                    .font(.system(size: 20, weight: .semibold))
+                Text("Bessie will create ordinary Herdr tabs and panes, then submit these exact commands.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(BessieDesign.subtle)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                reviewFact("Project", presentation.project.name)
+                reviewFact("Herd", presentation.connectionLabel)
+                reviewFact("Folder", presentation.project.workingDirectory)
+                reviewFact(
+                    "Layout",
+                    "\(presentation.project.tabs.count) tabs · \(presentation.project.tabs.flatMap(\.panes).count) panes"
+                )
+            }
+
+            Text("Startup commands")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(BessieDesign.faint)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(commands) { item in
+                        commandRow(item)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.cancelLaunchReview() }
+                    .buttonStyle(BessieSecondaryButtonStyle())
+                Button("Open project") { model.confirmLaunchReview() }
+                    .buttonStyle(BessiePrimaryButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 560, height: 500)
+        .background(BessieDesign.panel)
+        .background(BessieWindowSnapshotProbe(role: "sheet"))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func reviewFact(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(BessieDesign.faint)
+                .frame(width: 58, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func commandRow(_ item: CommandRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(item.location)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(BessieDesign.subtle)
+            Text(item.command)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(BessieDesign.background)
+        .overlay { Rectangle().stroke(BessieDesign.border, lineWidth: 1) }
     }
 }
 
@@ -316,64 +453,109 @@ private struct ProjectLaunchProgressCard: View {
         .padding(12)
         .background(BessieDesign.panel)
         .overlay { Rectangle().stroke(BessieDesign.borderStrong, lineWidth: 1) }
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("Opening \(opening.projectName)")
+        .accessibilityValue(model.progress.map { projectStageName($0.stage) } ?? "Preparing launch")
+        .onAppear {
+            announceProjectLaunch("Opening \(opening.projectName)")
+        }
+        .onChange(of: model.progress?.stage) { _, stage in
+            guard let stage else { return }
+            announceProjectLaunch(projectStageName(stage))
+        }
     }
 }
 
-private struct ProjectLaunchReviewView: View {
-    @ObservedObject var model: ProjectsViewModel
-    let review: ProjectLaunchReview
+private struct ProjectModeRegion<Content: View>: View {
+    let mode: Bool
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 1.0
+
+    init(mode: Bool, @ViewBuilder content: () -> Content) {
+        self.mode = mode
+        self.content = content()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Review Project launch").font(.system(size: 18, weight: .semibold))
-            launchFact("Connection", review.connectionName)
-            launchFact("Working directory", review.project.workingDirectory, monospaced: true)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(review.project.tabs) { tab in
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(tab.name).font(.system(size: 12, weight: .semibold))
-                            ForEach(tab.panes) { pane in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(pane.label ?? "Shell").font(.system(size: 10.5, weight: .medium))
-                                    if let command = pane.command {
-                                        Text(command)
-                                            .font(.system(size: 10.5, design: .monospaced))
-                                            .textSelection(.enabled)
-                                    } else {
-                                        Text("Shell only").font(.system(size: 10.5)).foregroundStyle(BessieDesign.subtle)
-                                    }
-                                }
-                                .padding(9)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(BessieDesign.inset)
-                            }
-                        }
+        content
+            .id(mode)
+            .opacity(reduceMotion ? 1 : opacity)
+            .onChange(of: mode) { _, _ in
+                guard !reduceMotion else {
+                    opacity = 1
+                    return
+                }
+                opacity = 0
+                Task { @MainActor in
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    withAnimation(BessieDesign.motionStrongEaseOut) {
+                        opacity = 1
                     }
                 }
             }
-            HStack {
-                Spacer()
-                Button("Cancel") { model.cancelLaunchReview() }.buttonStyle(BessieSecondaryButtonStyle())
-                Button("Confirm and Open") { model.confirmLaunch() }.buttonStyle(BessiePrimaryButtonStyle())
+            .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                if shouldReduceMotion {
+                    opacity = 1
+                }
             }
-        }
-        .padding(22)
-        .frame(width: 560, height: 520)
-        .background(BessieDesign.background)
-        .background(BessieWindowSnapshotProbe(role: "sheet"))
+    }
+}
+
+private struct ProjectLaunchEntrance<Content: View>: View {
+    let initialOffset: CGFloat
+    let content: Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var opacity = 0.0
+    @State private var verticalOffset: CGFloat
+
+    init(initialOffset: CGFloat, @ViewBuilder content: () -> Content) {
+        self.initialOffset = initialOffset
+        self.content = content()
+        _verticalOffset = State(initialValue: initialOffset)
     }
 
-    private func launchFact(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            BessieSectionLabel(label)
-            Text(value)
-                .font(.system(size: 11.5, design: monospaced ? .monospaced : .default))
-                .textSelection(.enabled)
-        }
+    var body: some View {
+        content
+            .opacity(reduceMotion ? 1 : opacity)
+            .offset(y: reduceMotion ? 0 : verticalOffset)
+            .task {
+                guard !reduceMotion else {
+                    opacity = 1
+                    verticalOffset = 0
+                    return
+                }
+                opacity = 0
+                verticalOffset = initialOffset
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                withAnimation(BessieDesign.motionStrongEaseOut) {
+                    opacity = 1
+                    verticalOffset = 0
+                }
+            }
+            .onChange(of: reduceMotion) { _, shouldReduceMotion in
+                if shouldReduceMotion {
+                    opacity = 1
+                    verticalOffset = 0
+                }
+            }
     }
+}
+
+@MainActor
+private func announceProjectLaunch(_ message: String) {
+    NSAccessibility.post(
+        element: NSApplication.shared,
+        notification: .announcementRequested,
+        userInfo: [
+            .announcement: message,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ]
+    )
 }
 
 private struct ProjectLaunchFailureView: View {
@@ -385,10 +567,11 @@ private struct ProjectLaunchFailureView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(partial.workspaceID == nil ? "Project did not open" : "Project opened partially")
                 .font(.system(size: 18, weight: .semibold))
-            Text("Bessie stopped at \(projectStageName(presentation.failure.stage)). Herdr objects that were created remain alive.")
+            Text(presentation.actionableMessage)
                 .font(.system(size: 11.5))
                 .foregroundStyle(BessieDesign.subtle)
-            failureFact("Owner error", String(describing: presentation.failure.ownerError))
+            failureFact("Stopped at", projectStageName(presentation.failure.stage))
+            failureFact("Technical detail", String(describing: presentation.failure.ownerError))
             failureFact("Attempt", String(describing: presentation.failure.attempt))
             failureFact("Workspace ID", partial.workspaceID ?? "Not returned")
             failureFact("Known tab IDs", partial.tabIDsByRecipeID.values.sorted().joined(separator: ", ").nilIfEmpty ?? "None")

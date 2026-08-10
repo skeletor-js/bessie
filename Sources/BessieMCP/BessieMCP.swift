@@ -63,11 +63,21 @@ struct BessieMCPRunner {
             }
             var arguments = rawArguments
             let confirmToken = arguments.removeValue(forKey: "confirm_token") as? String
+            let explicitRequestID: String?
+            if let suppliedRequestID = arguments.removeValue(forKey: "request_id") {
+                guard let suppliedRequestID = suppliedRequestID as? String, !suppliedRequestID.isEmpty else {
+                    return try error(id: id, code: -32602, message: "request_id must be a non-empty string")
+                }
+                explicitRequestID = suppliedRequestID
+            } else {
+                explicitRequestID = nil
+            }
             guard let values = try? decodeValues(arguments) else {
                 return try error(id: id, code: -32602, message: "Tool arguments must be valid JSON values")
             }
             let result = call(BessieIntentRequest(
-                id: requestID(), intent: name, params: values, confirmToken: confirmToken
+                id: explicitRequestID ?? requestID(), intent: name,
+                params: values, confirmToken: confirmToken
             ))
             let encoded = try JSONEncoder().encode(result)
             let text = String(decoding: encoded, as: UTF8.self)
@@ -95,9 +105,11 @@ struct BessieMCPRunner {
     }
 
     private func toolSchema(for intent: BessieIntentDefinition) -> BessieJSONSchema {
-        guard intent.risk == .destructive else { return intent.paramsSchema }
         var properties = intent.paramsSchema.properties ?? [:]
-        properties["confirm_token"] = .string("One-shot confirmation token returned by needs_confirmation.")
+        properties["request_id"] = .string("Stable correlation ID to reuse when retrying an ambiguous mutation.")
+        if intent.risk == .destructive {
+            properties["confirm_token"] = .string("One-shot confirmation token returned by needs_confirmation.")
+        }
         return BessieJSONSchema(
             type: .object,
             properties: properties,

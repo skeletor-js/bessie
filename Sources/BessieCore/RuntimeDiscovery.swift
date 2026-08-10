@@ -235,7 +235,7 @@ public enum HerdrCompatibility {
             return "Herdr uses protocol \(identity.protocolVersion). Bessie requires protocol \(BessieCompatibility.protocolVersion)."
         }
         guard identity.version == BessieCompatibility.herdrVersion else {
-            return "Herdr \(identity.version) isn't supported. Bessie requires \(BessieCompatibility.herdrVersion)."
+            return "This Herdr runtime isn't supported."
         }
         return nil
     }

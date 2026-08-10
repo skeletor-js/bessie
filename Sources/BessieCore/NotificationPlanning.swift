@@ -2,6 +2,7 @@ import Foundation
 
 public struct BessieNotificationPane: Equatable, Sendable {
     public let paneID: String
+    public let terminalID: String
     public let state: AgentSemanticState
     public let revision: UInt64
     public let identity: String
@@ -10,6 +11,7 @@ public struct BessieNotificationPane: Equatable, Sendable {
 
     public init(
         paneID: String,
+        terminalID: String? = nil,
         state: AgentSemanticState,
         revision: UInt64,
         identity: String,
@@ -17,6 +19,7 @@ public struct BessieNotificationPane: Equatable, Sendable {
         target: PaneOpenTarget
     ) {
         self.paneID = paneID
+        self.terminalID = terminalID ?? paneID
         self.state = state
         self.revision = revision
         self.identity = identity
@@ -27,12 +30,23 @@ public struct BessieNotificationPane: Equatable, Sendable {
 
 public struct BessieNotificationEvent: Identifiable, Equatable, Sendable {
     public let id: String
+    public let terminalID: String
+    public let state: AgentSemanticState
     public let title: String
     public let body: String
     public let target: PaneOpenTarget
 
-    public init(id: String, title: String, body: String, target: PaneOpenTarget) {
+    public init(
+        id: String,
+        terminalID: String,
+        state: AgentSemanticState,
+        title: String,
+        body: String,
+        target: PaneOpenTarget
+    ) {
         self.id = id
+        self.terminalID = terminalID
+        self.state = state
         self.title = title
         self.body = body
         self.target = target
@@ -98,8 +112,13 @@ public enum BessieNotificationRoute {
 }
 
 public struct BessieNotificationPlanner: Sendable {
+    private struct PaneIncarnation: Hashable, Sendable {
+        let paneID: String
+        let terminalID: String
+    }
+
     private var seeded = false
-    private var previousStates: [String: AgentSemanticState] = [:]
+    private var previousStates: [PaneIncarnation: AgentSemanticState] = [:]
 
     public init() {}
 
@@ -107,9 +126,12 @@ public struct BessieNotificationPlanner: Sendable {
         for panes: [BessieNotificationPane],
         policy: BessieNotifications,
         activePaneID: String?,
+        suppressedPaneIDs: Set<String> = [],
         connectionLabel: String? = nil
     ) -> [BessieNotificationEvent] {
-        let nextStates = Dictionary(uniqueKeysWithValues: panes.map { ($0.paneID, $0.state) })
+        let nextStates = Dictionary(uniqueKeysWithValues: panes.map {
+            (PaneIncarnation(paneID: $0.paneID, terminalID: $0.terminalID), $0.state)
+        })
         defer {
             previousStates = nextStates
             seeded = true
@@ -118,9 +140,12 @@ public struct BessieNotificationPlanner: Sendable {
         guard seeded else { return [] }
 
         return panes.compactMap { pane in
-            guard previousStates[pane.paneID] != pane.state,
+            let incarnation = PaneIncarnation(paneID: pane.paneID, terminalID: pane.terminalID)
+            guard let previous = previousStates[incarnation],
+                  previous != pane.state,
                   pane.paneID != activePaneID,
-                  policy.allows(pane.state)
+                  !suppressedPaneIDs.contains(pane.paneID),
+                  policy.shouldNotify(transitioningTo: pane.state, from: previous)
             else { return nil }
 
             let title: String
@@ -129,12 +154,16 @@ public struct BessieNotificationPlanner: Sendable {
                 title = "\(pane.identity) needs you"
             case .done:
                 title = "\(pane.identity) is done"
+            case .idle:
+                title = "\(pane.identity) is idle"
             default:
                 return nil
             }
 
             return BessieNotificationEvent(
-                id: "bessie.\(pane.paneID).\(pane.state.rawValue).\(pane.revision)",
+                id: "bessie.\(pane.paneID).\(pane.terminalID).\(pane.state.rawValue).\(pane.revision)",
+                terminalID: pane.terminalID,
+                state: pane.state,
                 title: title,
                 body: connectionLabel.map { "\(pane.location) · \($0)" } ?? pane.location,
                 target: pane.target
@@ -144,12 +173,24 @@ public struct BessieNotificationPlanner: Sendable {
 }
 
 private extension BessieNotifications {
-    func allows(_ state: AgentSemanticState) -> Bool {
-        switch (self, state) {
-        case (.blockedOnly, .blocked), (.blockedAndDone, .blocked), (.blockedAndDone, .done):
-            true
-        default:
-            false
+    /// Preserve the existing `blockedAndDone` trigger contract: blocked, plus done or idle
+    /// when leaving an active state. Idle↔done churn does not emit another notification.
+    func shouldNotify(transitioningTo state: AgentSemanticState, from previous: AgentSemanticState?) -> Bool {
+        switch self {
+        case .off:
+            return false
+        case .blockedOnly:
+            return state == .blocked
+        case .blockedAndDone:
+            switch state {
+            case .blocked:
+                return true
+            case .done, .idle:
+                guard let previous else { return false }
+                return previous == .working || previous == .blocked
+            default:
+                return false
+            }
         }
     }
 }

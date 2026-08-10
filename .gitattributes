@@ -1,0 +1,2 @@
+# Preserve exact upstream legal text even when its canonical bytes contain trailing spaces.
+Sources/BessieApp/Resources/Sparkle-LICENSE.txt -whitespace

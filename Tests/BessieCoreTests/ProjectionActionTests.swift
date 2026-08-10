@@ -3,6 +3,18 @@ import XCTest
 @testable import BessieCore
 
 final class ProjectionActionTests: XCTestCase {
+    func testV1FeatureFlagsDefaultOffAndDeveloperEnvironmentOverrideIsTyped() {
+        let defaults = BessieFeatureFlags.v1
+        XCTAssertFalse(defaults.isEnabled(.fileBrowserEditor))
+        XCTAssertFalse(defaults.isEnabled(.followFiles))
+
+        let override = BessieFeatureFlags(environment: [
+            BessieFeatureFlags.developerEnvironmentKey: "followFiles, fileBrowserEditor,unknown"
+        ])
+        XCTAssertTrue(override.isEnabled(.fileBrowserEditor))
+        XCTAssertTrue(override.isEnabled(.followFiles))
+        XCTAssertEqual(BessieFeature.allCases, [.fileBrowserEditor, .followFiles])
+    }
     func testProjectionDecodesAuthoritativeFocusAndRecursiveSplitPaths() throws {
         let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
 
@@ -32,6 +44,8 @@ final class ProjectionActionTests: XCTestCase {
             (.tabClose(id: "t1"), "tab.close", ["tab_id": .string("t1")]),
             (.paneSplit(targetPaneID: "p1", direction: .down, ratio: 0.4, cwd: nil, focus: true), "pane.split", ["target_pane_id": .string("p1"), "direction": .string("down"), "ratio": .number(0.4), "focus": .bool(true)]),
             (.paneFocus(id: "p1"), "pane.focus", ["pane_id": .string("p1")]),
+            (.paneFocusDirection(sourcePaneID: "p1", direction: .left), "pane.focus_direction", ["pane_id": .string("p1"), "direction": .string("left")]),
+            (.paneFocusDirection(sourcePaneID: nil, direction: .right), "pane.focus_direction", ["direction": .string("right")]),
             (.paneResize(id: "p1", direction: .right, amount: 0.1), "pane.resize", ["pane_id": .string("p1"), "direction": .string("right"), "amount": .number(0.1)]),
             (.paneSwap(id: "p1", direction: .left), "pane.swap", ["pane_id": .string("p1"), "direction": .string("left")]),
             (.paneSwapExplicit(sourceID: "p1", targetID: "p2"), "pane.swap", ["source_pane_id": .string("p1"), "target_pane_id": .string("p2")]),
@@ -73,6 +87,47 @@ final class ProjectionActionTests: XCTestCase {
         XCTAssertEqual(api.calls, ["workspace.focus", "tab.focus", "pane.focus", "session.snapshot"])
     }
 
+    func testStagedActionAttemptPreservesCompletedCountAndUnknownDisposition() throws {
+        let api = StagedRecordingMutationAPI(
+            snapshot: .projectionFixture,
+            outcomes: [
+                .success(.object([:])),
+                .failure(.init(
+                    disposition: .mutationOutcomeUnknown,
+                    underlying: HerdrClientError.connectionClosed
+                )),
+            ]
+        )
+        let client = HerdrActionClient(api: api)
+
+        let result = client.performRequests([
+            .paneFocus(id: "p1"),
+            .paneResize(id: "p1", direction: .right, amount: 0.05),
+        ])
+
+        guard case .failure(let failure) = result else { return XCTFail("expected staged failure") }
+        XCTAssertEqual(failure.disposition, .mutationOutcomeUnknown)
+        XCTAssertEqual(failure.completedRequestCount, 1)
+        XCTAssertEqual(api.calls, ["pane.focus", "pane.resize"])
+    }
+
+    func testStagedActionAttemptKeepsDefinitelyUnsentFirstRequestDistinct() {
+        let api = StagedRecordingMutationAPI(
+            snapshot: .projectionFixture,
+            outcomes: [.failure(.init(
+                disposition: .definitelyUnsent,
+                underlying: HerdrClientError.socket(path: "/tmp/test", message: "connect failed")
+            ))]
+        )
+        let client = HerdrActionClient(api: api)
+
+        let result = client.performRequests([.paneFocus(id: "p1")])
+
+        guard case .failure(let failure) = result else { return XCTFail("expected staged failure") }
+        XCTAssertEqual(failure.disposition, .definitelyUnsent)
+        XCTAssertEqual(failure.completedRequestCount, 0)
+    }
+
     func testCloseConfirmationAndFallbackComeFromAuthoritativeProjection() throws {
         let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
         let confirmation = projection.confirmationForClosingWorkspace(id: "w1")
@@ -84,6 +139,39 @@ final class ProjectionActionTests: XCTestCase {
         XCTAssertEqual(projection.focusFallback(preferredWorkspaceID: "missing").workspaceID, "w1")
         XCTAssertEqual(projection.focusFallback(preferredWorkspaceID: "w1").paneID, "p2")
     }
+
+    func testPrunedNavigationActionsSkipAlreadyFocusedTargets() throws {
+        let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
+        // Fixture focus is w1/t1/p2.
+        XCTAssertEqual(
+            projection.prunedNavigationActions([
+                .workspaceFocus(id: "w1"),
+                .tabFocus(id: "t1"),
+                .paneFocus(id: "p2"),
+            ]),
+            []
+        )
+        XCTAssertEqual(
+            projection.prunedNavigationActions([
+                .workspaceFocus(id: "w1"),
+                .tabFocus(id: "t1"),
+                .paneFocus(id: "p1"),
+            ]),
+            [.paneFocus(id: "p1")]
+        )
+    }
+
+    func testApplyingLocalFocusRewritesFocusFlagsWithoutInventingEntities() throws {
+        let projection = try HerdrSessionProjection(snapshot: .projectionFixture)
+        let focused = try projection.applyingLocalFocus(paneID: "p1")
+
+        XCTAssertEqual(focused.focusedPane?.id, "p1")
+        XCTAssertEqual(focused.focusedTab?.id, "t1")
+        XCTAssertEqual(focused.focusedWorkspace?.id, "w1")
+        XCTAssertEqual(focused.panes.first { $0.id == "p1" }?.focused, true)
+        XCTAssertEqual(focused.panes.first { $0.id == "p2" }?.focused, false)
+        XCTAssertEqual(Set(focused.panes.map(\.id)), Set(projection.panes.map(\.id)))
+    }
 }
 
 private final class RecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable {
@@ -94,9 +182,37 @@ private final class RecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable 
     func snapshot() throws -> HerdrSnapshot { calls.append("session.snapshot"); return snapshotValue }
 }
 
+private final class StagedRecordingMutationAPI: HerdrMutationAPI, @unchecked Sendable {
+    var calls: [String] = []
+    let snapshotValue: HerdrSnapshot
+    var outcomes: [Result<JSONValue, HerdrMutationRequestFailure>]
+
+    init(
+        snapshot: HerdrSnapshot,
+        outcomes: [Result<JSONValue, HerdrMutationRequestFailure>]
+    ) {
+        snapshotValue = snapshot
+        self.outcomes = outcomes
+    }
+
+    func request(method: String, params: [String: JSONValue]) throws -> JSONValue {
+        try stagedMutationRequest(method: method, params: params).get()
+    }
+
+    func stagedMutationRequest(
+        method: String,
+        params: [String: JSONValue]
+    ) -> Result<JSONValue, HerdrMutationRequestFailure> {
+        calls.append(method)
+        return outcomes.removeFirst()
+    }
+
+    func snapshot() throws -> HerdrSnapshot { snapshotValue }
+}
+
 private extension HerdrSnapshot {
     static let projectionFixture = HerdrSnapshot(
-        version: "0.7.5", protocolVersion: 17,
+        version: "0.8.0", protocolVersion: 19,
         focusedWorkspaceID: "w1", focusedTabID: "t1", focusedPaneID: "p2",
         workspaces: [.object(["workspace_id": .string("w1"), "number": .number(1), "label": .string("main"), "focused": .bool(true), "pane_count": .number(2), "tab_count": .number(1), "active_tab_id": .string("t1"), "agent_status": .string("idle")])],
         tabs: [.object(["tab_id": .string("t1"), "workspace_id": .string("w1"), "number": .number(1), "label": .string("shell"), "focused": .bool(true), "pane_count": .number(2), "agent_status": .string("idle")])],

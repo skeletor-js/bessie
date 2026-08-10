@@ -10,7 +10,7 @@ final class AgentIntentRegistryTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BessieIntentCatalog.self, from: data)
 
         XCTAssertEqual(decoded, catalog)
-        XCTAssertEqual(catalog.version, 1)
+        XCTAssertEqual(catalog.version, 3)
     }
 
     func testPilotIntentNamesAreCompleteUniqueAndMCPCompatible() throws {
@@ -19,8 +19,14 @@ final class AgentIntentRegistryTests: XCTestCase {
             "intents.list",
             "app.status",
             "connection.status",
+            "connection.context",
             "session.projection",
             "pane.focus",
+            "pane.presentation.list",
+            "pane.pin",
+            "pane.unpin",
+            "pane.snooze",
+            "pane.wake",
             "workspace.focus",
             "workspace.close",
             "project.list",
@@ -58,6 +64,20 @@ final class AgentIntentRegistryTests: XCTestCase {
         XCTAssertEqual(projectShow?.risk, .read)
         XCTAssertEqual(projectShow?.offlineOK, true)
         XCTAssertEqual(projectShow?.paramsSchema.required, ["project_id"])
+
+        let connectionContext = BessieIntentRegistry.definition(for: "connection.context")
+        XCTAssertEqual(connectionContext?.owner, .bessie)
+        XCTAssertEqual(connectionContext?.risk, .read)
+        XCTAssertEqual(connectionContext?.requiresLiveConnection, false)
+        XCTAssertEqual(connectionContext?.paramsSchema.required, [])
+
+        let snooze = BessieIntentRegistry.definition(for: "pane.snooze")
+        XCTAssertEqual(snooze?.owner, .bessie)
+        XCTAssertEqual(snooze?.risk, .mutate)
+        XCTAssertEqual(
+            snooze?.paramsSchema.required,
+            ["connection_id", "pane_id", "terminal_id", "expected_revision", "preset"]
+        )
     }
 
     func testSchemaExportUsesJSONSchemaFieldNames() throws {

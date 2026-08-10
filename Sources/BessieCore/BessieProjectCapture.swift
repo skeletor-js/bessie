@@ -15,6 +15,7 @@ public enum BessieProjectCapture {
 
     public static func capture(
         from projection: HerdrSessionProjection?,
+        targetConnectionID: String = BessieConnectionDefinition.localBessie.id,
         now: Date = Date()
     ) throws -> BessieProject {
         let source = try source(from: projection)
@@ -43,6 +44,7 @@ public enum BessieProjectCapture {
         return BessieProject(
             id: UUID(),
             name: name.isEmpty ? "Untitled project" : name,
+            targetConnectionID: targetConnectionID,
             workingDirectory: workingDirectory,
             tabs: tabs,
             createdAt: now,

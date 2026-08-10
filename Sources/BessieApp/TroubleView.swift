@@ -8,24 +8,50 @@ struct TroubleView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Trouble").font(.system(size: 28, weight: .medium))
-            Text(message).foregroundStyle(BessieDesign.text)
-            Group {
-                fact("Runtime", diagnostic.runtime?.source.rawValue ?? "Unresolved")
-                fact("Path", diagnostic.runtime?.url.path ?? "Unavailable")
-                fact("Version", diagnostic.observedVersion ?? "Unknown")
-                fact("Protocol", diagnostic.observedProtocol.map(String.init) ?? "Unknown")
-                fact("Session", diagnostic.session)
-                fact("API", diagnostic.apiHealthy ? "Healthy" : "Unavailable")
-                fact("Terminal controller", diagnostic.terminalControllerHealthy ? "Healthy" : "Unavailable")
-            }
-            HStack {
-                ForEach(diagnostic.availableActions, id: \.self) { action in
-                    actionButton(action)
+        ZStack {
+            HStack(spacing: BessieDesign.cardGap) {
+                VStack(alignment: .leading, spacing: 0) {
+                    BessieBrandMark().padding(.bottom, 24)
+                    BessieSectionLabel("Trouble")
+                    troubleRailFact("Connection", diagnostic.apiHealthy ? "Connected" : "Unavailable")
+                    troubleRailFact("Runtime", diagnostic.runtime?.source.rawValue.capitalized ?? "Unresolved")
+                    troubleRailFact("Session", diagnostic.session)
+                    Spacer()
+                    Text("Herdr may still be running even when Bessie cannot connect.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(BessieDesign.subtle)
                 }
+                .padding(20)
+                .frame(width: 210)
+                .frame(maxHeight: .infinity, alignment: .topLeading)
+                .bessieSurface(base: BessieDesign.rail)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Trouble").font(.system(size: 28, weight: .medium))
+                    Text(message).foregroundStyle(BessieDesign.text)
+                    VStack(alignment: .leading, spacing: 10) {
+                        fact("Runtime", diagnostic.runtime?.source.rawValue ?? "Unresolved")
+                        fact("Path", diagnostic.runtime?.url.path ?? "Unavailable")
+                        fact("Protocol", diagnostic.observedProtocol.map(String.init) ?? "Unknown")
+                        fact("Session", diagnostic.session)
+                        fact("API", diagnostic.apiHealthy ? "Healthy" : "Unavailable")
+                        fact("Terminal controller", diagnostic.terminalControllerHealthy ? "Healthy" : "Unavailable")
+                    }
+                    .padding(14)
+                    .bessieSurface(base: BessieDesign.panel)
+                    Spacer()
+                    HStack {
+                        ForEach(diagnostic.availableActions, id: \.self) { action in
+                            actionButton(action)
+                        }
+                    }
+                }
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .bessieSurface(base: BessieDesign.background)
             }
-        }.padding(32).bessieSurface(base: BessieDesign.background, crop: .connect)
+            .padding(BessieDesign.cardGap)
+        }
     }
 
     private var message: String {
@@ -33,6 +59,13 @@ struct TroubleView: View {
     }
     private func fact(_ label: String, _ value: String) -> some View {
         HStack { Text(label).foregroundStyle(BessieDesign.subtle); Spacer(); Text(value).font(.system(size: 11, design: .monospaced)).lineLimit(1) }
+    }
+    private func troubleRailFact(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.system(size: 9.5, weight: .medium)).foregroundStyle(BessieDesign.faint)
+            Text(value).font(.system(size: 11, design: .monospaced)).lineLimit(1)
+        }
+        .padding(.top, 14)
     }
 
     @ViewBuilder
@@ -51,7 +84,7 @@ struct TroubleView: View {
                 NSPasteboard.general.setString(diagnostic.sanitizedReport, forType: .string)
             }.buttonStyle(BessieSecondaryButtonStyle())
         case .openSettings:
-            Button("Open Settings") { openSettings() }.buttonStyle(BessieSecondaryButtonStyle())
+            Button("Open settings") { openSettings() }.buttonStyle(BessieSecondaryButtonStyle())
         }
     }
 }

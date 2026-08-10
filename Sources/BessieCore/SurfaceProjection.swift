@@ -7,9 +7,9 @@ public enum AgentSemanticState: String, Codable, CaseIterable, Equatable, Sendab
         self = Self(rawValue: herdrValue.lowercased()) ?? .unknown
     }
 
-    public var needsAttention: Bool { self == .blocked || self == .done }
+    public var requiresUserAction: Bool { self == .blocked }
 
-    var sortRank: Int {
+    public var sortRank: Int {
         switch self {
         case .blocked: 0
         case .working: 1
@@ -19,9 +19,6 @@ public enum AgentSemanticState: String, Codable, CaseIterable, Equatable, Sendab
         }
     }
 }
-
-public enum AttentionProvenance: String, Codable, Equatable, Sendable { case herdr }
-public enum AttentionAction: Equatable, Sendable { case openPane(paneID: String) }
 
 public struct PaneOpenTarget: Equatable, Sendable {
     public let workspaceID: String
@@ -127,23 +124,12 @@ public struct WorkspaceSurfaceSummary: Identifiable, Equatable, Sendable {
     public let tabCount: Int
     public let paneCount: Int
     public let rolledState: AgentSemanticState
-    public let attentionCount: Int
+    public let requiresUserActionCount: Int
     public let focused: Bool
-}
-
-public struct AttentionSurfaceItem: Identifiable, Equatable, Sendable {
-    public var id: String { paneID }
-    public let paneID: String
-    public let state: AgentSemanticState
-    public let identity: String
-    public let location: String
-    public let provenance: AttentionProvenance
-    public let action: AttentionAction
 }
 
 public struct BessieSurfaceProjection: Equatable, Sendable {
     public let workspaces: [WorkspaceSurfaceSummary]
-    public let attention: [AttentionSurfaceItem]
     public let notificationPanes: [BessieNotificationPane]
     private let targets: [String: PaneOpenTarget]
 
@@ -151,10 +137,13 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
         let tabsByID = Dictionary(uniqueKeysWithValues: projection.tabs.map { ($0.id, $0) })
         let workspacesByID = Dictionary(uniqueKeysWithValues: projection.workspaces.map { ($0.id, $0) })
         let panesByWorkspace = Dictionary(grouping: projection.panes, by: \.workspaceID)
+        let agentsByWorkspace = Dictionary(grouping: projection.agents, by: \.workspaceID)
 
         workspaces = projection.workspaces.map { workspace in
             let panes = panesByWorkspace[workspace.id] ?? []
             let states = panes.map { AgentSemanticState(herdrValue: $0.agentStatus) }
+            let authoritativeAgentStates = (agentsByWorkspace[workspace.id] ?? [])
+                .map { AgentSemanticState(herdrValue: $0.agentStatus) }
             return WorkspaceSurfaceSummary(
                 id: workspace.id,
                 number: workspace.number,
@@ -163,42 +152,27 @@ public struct BessieSurfaceProjection: Equatable, Sendable {
                 paneCount: workspace.paneCount,
                 rolledState: states.min(by: { $0.sortRank < $1.sortRank })
                     ?? AgentSemanticState(herdrValue: workspace.agentStatus),
-                attentionCount: states.filter(\.needsAttention).count,
+                requiresUserActionCount: authoritativeAgentStates.filter(\.requiresUserAction).count,
                 focused: workspace.focused
             )
         }
 
-        notificationPanes = projection.panes.compactMap { pane in
-            guard let workspace = workspacesByID[pane.workspaceID],
-                  let tab = tabsByID[pane.tabID]
+        let panesByID = Dictionary(projection.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        notificationPanes = projection.agents.compactMap { agent in
+            guard let workspace = workspacesByID[agent.workspaceID],
+                  let tab = tabsByID[agent.tabID]
             else { return nil }
-            let paneLabel = pane.label ?? pane.title ?? pane.agent ?? "Untitled pane"
+            let paneLabel = panesByID[agent.id]?.presentationTitle ?? agent.identity
             return BessieNotificationPane(
-                paneID: pane.id,
-                state: AgentSemanticState(herdrValue: pane.agentStatus),
-                revision: pane.revision,
-                identity: pane.agent ?? pane.label ?? pane.title ?? "Untitled pane",
+                paneID: agent.id,
+                terminalID: agent.terminalID,
+                state: AgentSemanticState(herdrValue: agent.agentStatus),
+                revision: agent.revision,
+                identity: agent.identity,
                 location: "\(workspace.label) / \(tab.label) / \(paneLabel)",
-                target: PaneOpenTarget(workspaceID: pane.workspaceID, tabID: pane.tabID, paneID: pane.id)
+                target: PaneOpenTarget(workspaceID: agent.workspaceID, tabID: agent.tabID, paneID: agent.id)
             )
         }
-
-        attention = projection.panes.compactMap { pane in
-            let state = AgentSemanticState(herdrValue: pane.agentStatus)
-            guard state.needsAttention,
-                  let workspace = workspacesByID[pane.workspaceID],
-                  let tab = tabsByID[pane.tabID]
-            else { return nil }
-            let paneLabel = pane.label ?? pane.title ?? pane.agent ?? "Untitled pane"
-            return AttentionSurfaceItem(
-                paneID: pane.id,
-                state: state,
-                identity: pane.agent ?? pane.label ?? pane.title ?? "Untitled pane",
-                location: "\(workspace.label) / \(tab.label) / \(paneLabel)",
-                provenance: .herdr,
-                action: .openPane(paneID: pane.id)
-            )
-        }.sorted { $0.state.sortRank < $1.state.sortRank }
 
         targets = Dictionary(uniqueKeysWithValues: projection.panes.map {
             ($0.id, PaneOpenTarget(workspaceID: $0.workspaceID, tabID: $0.tabID, paneID: $0.id))

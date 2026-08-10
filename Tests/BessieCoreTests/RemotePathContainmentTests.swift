@@ -24,4 +24,52 @@ final class RemotePathContainmentTests: XCTestCase {
             return XCTFail("expected remoteUnsupported")
         }
     }
+
+    func testContainedRemoteReadIsBoundedAndRejectsSymlinkEscape() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bessie-remote-read-\(UUID().uuidString)", isDirectory: true)
+        let root = directory.appendingPathComponent("root", isDirectory: true)
+        let outside = directory.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let payload = Data(repeating: 0x5a, count: 256 * 1_024)
+        try payload.write(to: root.appendingPathComponent("image.png"))
+        try payload.write(to: outside.appendingPathComponent("secret.png"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("escape.png"),
+            withDestinationURL: outside.appendingPathComponent("secret.png")
+        )
+        let fakeSSH = directory.appendingPathComponent("ssh")
+        try Data("#!/bin/sh\nexec /bin/sh -s\n".utf8).write(to: fakeSSH)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeSSH.path)
+        let client = SSHRemoteFileClient(access: SSHRemoteFileAccess(
+            host: "fixture",
+            controlPath: "/tmp/unused",
+            sshExecutablePath: fakeSSH.path
+        ))
+
+        XCTAssertEqual(
+            try client.readContainedFile(
+                rootPath: root.path,
+                relativePath: "image.png",
+                maximumByteSize: payload.count
+            ),
+            payload
+        )
+        XCTAssertThrowsError(try client.readContainedFile(
+            rootPath: root.path,
+            relativePath: "image.png",
+            maximumByteSize: payload.count - 1
+        )) {
+            XCTAssertEqual($0 as? WorkspacePathError, .tooLarge)
+        }
+        XCTAssertThrowsError(try client.readContainedFile(
+            rootPath: root.path,
+            relativePath: "escape.png",
+            maximumByteSize: payload.count
+        )) {
+            XCTAssertEqual($0 as? WorkspacePathError, .pathEscape)
+        }
+    }
 }

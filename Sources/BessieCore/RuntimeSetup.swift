@@ -229,10 +229,10 @@ public struct RuntimeDiagnosticSnapshot: Equatable, Sendable {
 
     public var sanitizedReport: String {
         ["Bessie Setup Doctor", "stage=\(stage.rawValue)", "finding=\(finding?.rawValue ?? "none")",
-         "source=\(runtime?.source.rawValue ?? "unresolved")", "path=\(runtime?.url.path ?? "unresolved")",
+         "source=\(runtime?.source.rawValue ?? "unresolved")", "runtime_location=\(runtime?.source == .bundled ? "bundled" : runtime == nil ? "unresolved" : "external")",
          "expected_version=\(BessieCompatibility.herdrVersion)", "observed_version=\(observedVersion ?? "unknown")",
          "expected_protocol=\(BessieCompatibility.protocolVersion)", "observed_protocol=\(observedProtocol.map(String.init) ?? "unknown")",
-         "session=\(session)", "socket=\(apiSocketPath ?? "unknown")", "api_healthy=\(apiHealthy)",
+         "session_configured=\(!session.isEmpty)", "socket_configured=\(apiSocketPath?.isEmpty == false)", "api_healthy=\(apiHealthy)",
          "terminal_controller_healthy=\(terminalControllerHealthy)"].joined(separator: "\n")
     }
 
@@ -256,18 +256,108 @@ public struct RuntimeDiagnosticSnapshot: Equatable, Sendable {
 }
 
 public struct OnboardingState: Codable, Equatable, Sendable {
-    public enum Step: Int, Codable, CaseIterable, Sendable { case welcome = 1, runtime, session, workspace, terminal }
+    public enum Step: Int, Codable, CaseIterable, Sendable { case connect = 1, howItWorks, readTheRail, notifications }
     public var step: Step
     public var completed: Bool
-    public init(step: Step = .welcome, completed: Bool = false) { self.step = step; self.completed = completed }
+    public init(step: Step = .connect, completed: Bool = false) { self.step = step; self.completed = completed }
     public mutating func advance(runtimeReady: Bool, sessionReady: Bool, workspaceReady: Bool, terminalControllerReady: Bool) {
         switch step {
-        case .welcome: step = .runtime
-        case .runtime: if runtimeReady { step = .session }
-        case .session: if sessionReady { step = .workspace }
-        case .workspace: if workspaceReady { step = .terminal }
-        case .terminal: if terminalControllerReady { completed = true }
+        case .connect: if runtimeReady && sessionReady { step = .howItWorks }
+        case .howItWorks: step = .readTheRail
+        case .readTheRail: step = .notifications
+        case .notifications: if terminalControllerReady { completed = true }
         }
     }
-    public mutating func runAgain() { step = .welcome; completed = false }
+    public mutating func goBack() {
+        guard !completed, let previous = Step(rawValue: step.rawValue - 1) else { return }
+        step = previous
+    }
+    public mutating func runAgain() { step = .connect; completed = false }
+}
+
+public enum OnboardingCompletionStage: String, Codable, CaseIterable, Sendable {
+    case idle, validating, startingSession, connecting, creatingWorkspace, adoptingWorkspace, waitingForFirstFrame, completed, failed
+
+    public var hasMaterialized: Bool {
+        switch self {
+        case .startingSession, .connecting, .creatingWorkspace, .adoptingWorkspace, .waitingForFirstFrame, .completed, .failed: true
+        case .idle, .validating: false
+        }
+    }
+}
+
+public struct PendingOnboardingAttempt: Codable, Equatable, Sendable {
+    public static let schemaVersion = 1
+    public let schemaVersion: Int
+    public let attemptID: String
+    public var connectionID: String
+    public let sessionName: String
+    public let path: String
+    public var stage: OnboardingCompletionStage
+    public var workspaceID: String?
+    public var tabID: String?
+    public var paneID: String?
+
+    public init(attemptID: String = "bessie-\(UUID().uuidString.lowercased())", connectionID: String,
+                sessionName: String = "bessie-onboarding-\(UUID().uuidString.lowercased())", path: String,
+                stage: OnboardingCompletionStage = .idle, workspaceID: String? = nil,
+                tabID: String? = nil, paneID: String? = nil, schemaVersion: Int = Self.schemaVersion) throws {
+        guard schemaVersion == Self.schemaVersion else { throw OnboardingPersistenceError.unsupportedSchema(schemaVersion) }
+        guard BessieConnectionDefinition.isSafeSession(attemptID), BessieConnectionDefinition.isSafeSession(sessionName) else {
+            throw OnboardingPersistenceError.invalidIdentifier
+        }
+        self.schemaVersion = schemaVersion; self.attemptID = attemptID; self.connectionID = connectionID
+        self.sessionName = sessionName; self.path = try OnboardingPathValidator.absolute(path)
+        self.stage = stage; self.workspaceID = workspaceID; self.tabID = tabID; self.paneID = paneID
+    }
+}
+
+public enum OnboardingPersistenceError: Error, Equatable, LocalizedError {
+    case unsupportedSchema(Int), invalidIdentifier, pathMustBeAbsolute
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema(let version): "This setup attempt uses unsupported schema version \(version). Update Bessie before retrying."
+        case .invalidIdentifier: "The setup attempt identifier is invalid. Start setup again."
+        case .pathMustBeAbsolute: "Choose an absolute folder path."
+        }
+    }
+}
+
+public enum OnboardingPathValidator {
+    public static func absolute(_ value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/"), !trimmed.contains("\0") else { throw OnboardingPersistenceError.pathMustBeAbsolute }
+        return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL.path
+    }
+
+    public static func localPathsAreEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        canonicalLocalURL(lhs) == canonicalLocalURL(rhs)
+    }
+
+    private static func canonicalLocalURL(_ path: String) -> URL {
+        URL(fileURLWithPath: path, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+    }
+}
+
+public struct PendingOnboardingAttemptStore: Sendable {
+    public let url: URL
+    public init(url: URL) { self.url = url }
+    public func load() throws -> PendingOnboardingAttempt? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        let probe = try JSONDecoder().decode(SchemaProbe.self, from: data)
+        guard probe.schemaVersion == PendingOnboardingAttempt.schemaVersion else {
+            throw OnboardingPersistenceError.unsupportedSchema(probe.schemaVersion)
+        }
+        return try JSONDecoder().decode(PendingOnboardingAttempt.self, from: data)
+    }
+    public func save(_ attempt: PendingOnboardingAttempt) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(attempt).write(to: url, options: .atomic)
+    }
+    public func clear() throws { if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) } }
+    private struct SchemaProbe: Decodable { let schemaVersion: Int }
 }

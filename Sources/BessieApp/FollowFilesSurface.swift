@@ -8,7 +8,7 @@ struct FollowFilesSurface: View {
         Group {
             switch model.availability {
             case .loading:
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity)
             case .remoteUnsupported:
                 message(
                     symbol: "externaldrive.badge.xmark",
@@ -27,21 +27,23 @@ struct FollowFilesSurface: View {
     private var localSurface: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Toggle(
-                    "Follow latest",
-                    isOn: Binding(
-                        get: { model.touchState.followEnabled },
-                        set: { model.setFollowEnabled($0) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .controlSize(.small)
+                Text(followStatus)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(BessieDesign.subtle)
                 Spacer()
-                Button(model.touchState.pinnedPath == nil ? "Pin" : "Unpin") {
-                    model.togglePin()
+                Menu {
+                    Button(model.touchState.followEnabled ? "Pause following" : "Follow latest") {
+                        model.setFollowEnabled(!model.touchState.followEnabled)
+                    }
+                    Button(model.touchState.pinnedPath == nil ? "Pin selected" : "Unpin") {
+                        model.togglePin()
+                    }
+                    .disabled(model.touchState.pinnedPath == nil && model.touchState.selectedPath == nil)
+                } label: {
+                    Label(followControlLabel, systemImage: model.touchState.pinnedPath == nil ? "arrow.down.to.line" : "pin.fill")
                 }
-                .buttonStyle(BessieSecondaryButtonStyle())
-                .disabled(model.touchState.selectedPath == nil)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .padding(.horizontal, 12)
             .frame(height: 42)
@@ -60,6 +62,16 @@ struct FollowFilesSurface: View {
                 .frame(height: 30)
                 .overlay(alignment: .top) { Rectangle().fill(BessieDesign.border).frame(height: 1) }
         }
+    }
+
+    private var followStatus: String {
+        if model.touchState.pinnedPath != nil { return "Keeping pinned file" }
+        return model.touchState.followEnabled ? "Following workspace changes" : "Following paused"
+    }
+
+    private var followControlLabel: String {
+        if model.touchState.pinnedPath != nil { return "Pinned" }
+        return model.touchState.followEnabled ? "Following" : "Paused"
     }
 
     private var touchedList: some View {
@@ -95,7 +107,7 @@ struct FollowFilesSurface: View {
                                 .background(
                                     model.touchState.selectedPath == path.relativePath
                                         ? BessieDesign.selected
-                                        : Color.clear
+                                        : BessieSemanticColor.clear
                                 )
                             }
                             .buttonStyle(.plain)
@@ -108,7 +120,7 @@ struct FollowFilesSurface: View {
 
     @ViewBuilder private var preview: some View {
         if model.previewLoading {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            ProgressView().tint(BessieDesign.running).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let preview = model.preview {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -132,7 +144,7 @@ struct FollowFilesSurface: View {
                         if text.isEmpty {
                             Text("No changes from the locked baseline.")
                                 .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(BessieDesign.subtle)
+                                .foregroundStyle(BessieDesign.codeSubtle)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(10)
                         } else {
@@ -195,24 +207,24 @@ struct DiffTextView: View {
         }
     }
 
-    private func color(for line: String) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") { return BessieDesign.subtle }
-        if line.hasPrefix("@@") { return Color(red: 0.45, green: 0.72, blue: 0.95) }
-        if line.hasPrefix("+") { return Color(red: 0.45, green: 0.82, blue: 0.52) }
-        if line.hasPrefix("-") { return Color(red: 0.95, green: 0.48, blue: 0.48) }
-        return BessieDesign.text
+    private func color(for line: String) -> BessieSemanticColor {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return BessieDesign.codeSubtle }
+        if line.hasPrefix("@@") { return BessieDesign.diffHunk }
+        if line.hasPrefix("+") { return BessieDesign.diffAdded }
+        if line.hasPrefix("-") { return BessieDesign.diffRemoved }
+        return BessieDesign.codeText
     }
 
-    private func background(for line: String) -> Color {
+    private func background(for line: String) -> BessieSemanticColor {
         if line.hasPrefix("+") && !line.hasPrefix("+++") {
-            return Color(red: 0.18, green: 0.42, blue: 0.22).opacity(0.28)
+            return BessieDesign.diffAddedPlate
         }
         if line.hasPrefix("-") && !line.hasPrefix("---") {
-            return Color(red: 0.45, green: 0.16, blue: 0.16).opacity(0.28)
+            return BessieDesign.diffRemovedPlate
         }
         if line.hasPrefix("@@") {
-            return Color(red: 0.15, green: 0.28, blue: 0.42).opacity(0.35)
+            return BessieDesign.diffHunkPlate
         }
-        return Color.clear
+        return BessieSemanticColor.clear
     }
 }

@@ -1,15 +1,52 @@
 import AppKit
 import AVKit
 import BessieCore
+import ImageIO
 import SwiftUI
+
+struct WorkspaceDecodedImage: @unchecked Sendable {
+    let cgImage: CGImage
+    let size: CGSize
+}
+
+enum WorkspaceImageLoader {
+    static let maximumSourcePixelCount = 40_000_000
+    static let maximumPreviewDimension = 4_096
+
+    static func decode(_ data: Data) throws -> WorkspaceDecodedImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              CGImageSourceGetType(source) != nil,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0,
+              height > 0
+        else { throw WorkspacePathError.invalidImage }
+        guard width <= maximumSourcePixelCount / height else { throw WorkspacePathError.tooLarge }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPreviewDimension,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw WorkspacePathError.invalidImage
+        }
+        return WorkspaceDecodedImage(
+            cgImage: image,
+            size: CGSize(width: image.width, height: image.height)
+        )
+    }
+}
 
 @MainActor
 final class WorkspaceFilesViewModel: ObservableObject {
-    enum Selection: Equatable, Sendable {
+    enum Selection: Sendable {
         case none
         case markdown(path: String, document: WorkspaceTextDocument)
         case text(path: String, document: WorkspaceTextDocument)
-        case image(URL)
+        case image(WorkspaceDecodedImage)
         case video(URL)
         case unsupported(URL)
     }
@@ -27,6 +64,9 @@ final class WorkspaceFilesViewModel: ObservableObject {
 
     func load(_ path: String = "") {
         loadTask?.cancel()
+        selectionTask?.cancel()
+        selectedPath = nil
+        selection = .none
         let root = self.root
         loadTask = Task {
             do {
@@ -44,6 +84,7 @@ final class WorkspaceFilesViewModel: ObservableObject {
 
     func open(_ item: WorkspaceBrowserItem) {
         selectionTask?.cancel()
+        errorMessage = nil
         if item.isDirectory {
             selectedPath = nil
             selection = .none
@@ -69,11 +110,12 @@ final class WorkspaceFilesViewModel: ObservableObject {
                             document: try WorkspaceFileOps.loadText(root: root, relativePath: item.relativePath)
                         )
                     case .image:
-                        return .image(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
+                        let data = try WorkspaceFS.loadImageData(root: root, relativePath: item.relativePath).get()
+                        return .image(try WorkspaceImageLoader.decode(data))
                     case .video:
                         return .video(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
                     default:
-                        return .unsupported(try WorkspaceFS.materializeLocalURL(root: root, relativePath: item.relativePath).get())
+                        throw WorkspacePathError.unsupportedType
                     }
                 }.value
                 try Task.checkCancellation()
@@ -82,6 +124,7 @@ final class WorkspaceFilesViewModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                guard selectedPath == item.relativePath else { return }
                 errorMessage = error.localizedDescription
             }
         }
@@ -105,11 +148,34 @@ final class WorkspaceFilesViewModel: ObservableObject {
         }.value
     }
 
+    func loadMarkdownImage(markdownPath: String, reference: URL) async throws -> WorkspaceDecodedImage {
+        guard reference.scheme == nil,
+              !reference.path.isEmpty,
+              !reference.path.hasPrefix("/"),
+              reference.query == nil,
+              reference.fragment == nil
+        else { throw WorkspacePathError.unsupportedType }
+        let parent = (markdownPath as NSString).deletingLastPathComponent
+        let relativePath = parent == "." || parent.isEmpty
+            ? reference.path
+            : (parent as NSString).appendingPathComponent(reference.path)
+        let root = self.root
+        return try await Task.detached {
+            let data = try WorkspaceFS.loadImageData(root: root, relativePath: relativePath).get()
+            return try WorkspaceImageLoader.decode(data)
+        }.value
+    }
+
     func reloadSelection() {
         guard let selectedPath,
               let item = items.first(where: { $0.relativePath == selectedPath })
         else { return }
         open(item)
+    }
+
+    var hasValidSelection: Bool {
+        guard let selectedPath else { return false }
+        return items.contains { $0.relativePath == selectedPath }
     }
 
     func moveSelected(to destination: String) async throws {
@@ -199,6 +265,10 @@ struct WorkspaceFilesSurface: View {
             return "That file or folder was not found."
         case .tooLarge:
             return "That file is too large to open here."
+        case .unsupportedType:
+            return "That file type is not supported for preview."
+        case .invalidImage:
+            return "That image is damaged or uses an unsupported encoding."
         }
     }
 }
@@ -208,6 +278,7 @@ private struct WorkspaceFilesBrowser: View {
     @State private var moveDestination = ""
     @State private var showMove = false
     @State private var showDelete = false
+    @State private var isRenaming = false
 
     init(root: WorkspaceFileRoot) { _model = StateObject(wrappedValue: WorkspaceFilesViewModel(root: root)) }
 
@@ -219,8 +290,9 @@ private struct WorkspaceFilesBrowser: View {
                 Text(model.directory.isEmpty ? model.root.rootURL.lastPathComponent : model.directory)
                     .font(.system(size: 12, design: .monospaced)).lineLimit(1)
                 Spacer()
-                Button("Rename / Move") { moveDestination = model.selectedPath ?? ""; showMove = true }.disabled(model.selectedPath == nil)
-                Button("Move to Trash", role: .destructive) { showDelete = true }.disabled(model.selectedPath == nil)
+                Button("Rename") { beginRename() }.disabled(!model.hasValidSelection)
+                Button("Move") { beginMove() }.disabled(!model.hasValidSelection)
+                Button("Move to Trash", role: .destructive) { showDelete = true }.disabled(!model.hasValidSelection)
             }
             .padding(10)
             Divider()
@@ -243,10 +315,16 @@ private struct WorkspaceFilesBrowser: View {
         }
         .sheet(isPresented: $showMove) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Rename or move").font(.headline)
-                Text("Enter a path relative to this workspace.").foregroundStyle(BessieDesign.subtle)
-                TextField("docs/new-name.md", text: $moveDestination)
-                HStack { Spacer(); Button("Cancel") { showMove = false }; Button("Move") { performMove() }.disabled(moveDestination.isEmpty) }
+                Text(isRenaming ? "Rename" : "Move").font(.system(size: 16, weight: .medium))
+                Text(isRenaming ? "Enter a new name." : "Enter a path relative to the open folder.")
+                    .foregroundStyle(BessieDesign.subtle)
+                TextField(isRenaming ? "new-name.md" : "docs/new-name.md", text: $moveDestination)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showMove = false }
+                    Button(isRenaming ? "Rename" : "Move") { performMove() }
+                        .disabled(moveActionDisabled)
+                }
             }.padding(20).frame(width: 440)
         }
         .confirmationDialog("Move this item to Trash?", isPresented: $showDelete, titleVisibility: .visible) {
@@ -272,15 +350,20 @@ private struct WorkspaceFilesBrowser: View {
                         allowOverwrite: overwrite
                     )
                 },
+                loadImage: { reference in
+                    try await model.loadMarkdownImage(markdownPath: path, reference: reference)
+                },
                 reload: model.reloadSelection
             )
             .id("\(path):\(document.revision.contentFingerprint)")
         case .text(_, let document):
             ScrollView { Text(document.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(16) }
                 .overlay(alignment: .topTrailing) { Text("Read only").font(.caption).padding(8).background(BessieDesign.inset) }
-        case .image(let url):
-            if let image = NSImage(contentsOf: url) { Image(nsImage: image).resizable().scaledToFit().padding(18) }
-            else { fallback(url, message: "This image couldn’t be previewed.") }
+        case .image(let image):
+            Image(decorative: image.cgImage, scale: 1)
+                .resizable()
+                .scaledToFit()
+                .padding(18)
         case .video(let url):
             VStack(spacing: 10) {
                 VideoPlayer(player: AVPlayer(url: url))
@@ -292,6 +375,20 @@ private struct WorkspaceFilesBrowser: View {
     }
 
     private var parentPath: String { (model.directory as NSString).deletingLastPathComponent == "." ? "" : (model.directory as NSString).deletingLastPathComponent }
+    private var moveActionDisabled: Bool {
+        let value = moveDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty || (isRenaming && (value == "." || value == ".." || value.contains("/")))
+    }
+    private func beginRename() {
+        isRenaming = true
+        moveDestination = model.selectedPath.map { ($0 as NSString).lastPathComponent } ?? ""
+        showMove = true
+    }
+    private func beginMove() {
+        isRenaming = false
+        moveDestination = model.selectedPath ?? ""
+        showMove = true
+    }
     private func fallback(_ url: URL, message: String) -> some View {
         VStack(spacing: 12) {
             ContentUnavailableView(
@@ -303,6 +400,25 @@ private struct WorkspaceFilesBrowser: View {
                 .buttonStyle(BessieSecondaryButtonStyle())
         }
     }
-    private func performMove() { Task { do { try await model.moveSelected(to: moveDestination); showMove = false } catch { model.errorMessage = error.localizedDescription } } }
+    private func performMove() {
+        let value = moveDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        let destination: String
+        if isRenaming, let selectedPath = model.selectedPath {
+            let parent = (selectedPath as NSString).deletingLastPathComponent
+            destination = parent == "." || parent.isEmpty
+                ? value
+                : (parent as NSString).appendingPathComponent(value)
+        } else {
+            destination = value
+        }
+        Task {
+            do {
+                try await model.moveSelected(to: destination)
+                showMove = false
+            } catch {
+                model.errorMessage = error.localizedDescription
+            }
+        }
+    }
     private func performDelete() { Task { do { try await model.deleteSelected() } catch { model.errorMessage = error.localizedDescription } } }
 }

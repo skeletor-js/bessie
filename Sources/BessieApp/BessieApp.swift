@@ -5,49 +5,326 @@ import Foundation
 import GhosttyTerminal
 import SwiftUI
 
+enum BessieWindowPolicy {
+    static let controllerSceneID = "main"
+    static let maximumControllerWindowCount = 1
+}
+
+@MainActor
+struct BessieCheckForUpdatesCommand {
+    let coordinator: BessieUpdateCoordinator
+
+    var isEnabled: Bool { coordinator.canCheckForUpdates }
+
+    @discardableResult
+    func perform() -> Bool {
+        guard isEnabled else { return false }
+        return coordinator.checkForUpdates()
+    }
+}
+
+private struct BessieUpdateCommands: Commands {
+    @ObservedObject var coordinator: BessieUpdateCoordinator
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            let command = BessieCheckForUpdatesCommand(coordinator: coordinator)
+            Button("Check for Updates…") { command.perform() }
+                .disabled(!command.isEnabled)
+        }
+    }
+}
+
+enum BessiePerformance {
+    static let recorder: BessiePerformanceRecorder = {
+        let recorder = BessiePerformanceRecorder.configured()
+        let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let launchUptime = NSRunningApplication.current.launchDate.map {
+            uptime - max(0, now.timeIntervalSince($0))
+        } ?? uptime
+        recorder.markProcessStart(atSystemUptime: max(0, launchUptime))
+        return recorder
+    }()
+}
+
+private enum BessieStartupMainThreadProbe {
+    private static let sampleCount = 25
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var claimed = false
+
+    static func runIfRequested(recorder: BessiePerformanceRecorder) {
+        guard ProcessInfo.processInfo.environment["BESSIE_STARTUP_PERFORMANCE_PROBE"] == "1",
+              lock.withLock({
+                  guard !claimed else { return false }
+                  claimed = true
+                  return true
+              })
+        else { return }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for _ in 0..<sampleCount {
+                let sequence = recorder.nextSequence()
+                let completed = DispatchSemaphore(value: 0)
+                recorder.mark(.startupMainThreadProbeScheduled, sequence: sequence)
+                DispatchQueue.main.async {
+                    recorder.mark(.startupMainThreadProbeCompleted, sequence: sequence)
+                    completed.signal()
+                }
+                guard completed.wait(timeout: .now() + 2) == .success else {
+                    BessieDiagnosticLog.append("Performance startup probe failed stage=main_thread")
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            try? recorder.flushEvidence()
+            BessieDiagnosticLog.append("Performance startup probe complete main_thread_samples=\(sampleCount)")
+        }
+    }
+}
+
+extension Notification.Name {
+    static let bessieCommand = Notification.Name("Bessie.command")
+    static let bessieMainWindowWillClose = Notification.Name("Bessie.mainWindowWillClose")
+}
+
+enum BessieOperationalStartupPolicy {
+    static func permitsOperationalSurfaces(connectionConfigurationLoadFailed: Bool) -> Bool {
+        !connectionConfigurationLoadFailed
+    }
+}
+
 @main
 struct BessieApp: App {
     @NSApplicationDelegateAdaptor(BessieAppDelegate.self) private var appDelegate
-    @StateObject private var settings = BessieSettingsModel()
-    @StateObject private var notifications = BessieNotificationCoordinator()
-    @StateObject private var fleet = ConnectionFleetViewModel()
+    @StateObject private var settings: BessieSettingsModel
+    @StateObject private var notifications: BessieNotificationCoordinator
+    @StateObject private var fleet: ConnectionFleetViewModel
+    @StateObject private var terminalRegistry: TerminalControllerRegistry
+    @StateObject private var themeCoordinator: BessieThemeCoordinator
+    @StateObject private var updates: BessieUpdateCoordinator
+    @StateObject private var commandPaletteAvailability = BessieCommandPaletteAvailability()
+    private let featureFlags: BessieFeatureFlags
+
+    init() {
+        let recorder = BessiePerformance.recorder
+        recorder.mark(.appStart)
+        featureFlags = BessieFeatureFlags(environment: ProcessInfo.processInfo.environment)
+        let settings = BessieSettingsModel()
+        let notifications = BessieNotificationCoordinator()
+        settings.paneDidBecomeSnoozed = { [weak notifications] incarnation in
+            notifications?.suppressImmediately(incarnation)
+        }
+        let terminalRegistry = TerminalControllerRegistry()
+        let fleet = ConnectionFleetViewModel(performanceRecorder: recorder)
+        let updates = BessieUpdateCoordinator()
+        _settings = StateObject(wrappedValue: settings)
+        _notifications = StateObject(wrappedValue: notifications)
+        _fleet = StateObject(wrappedValue: fleet)
+        _terminalRegistry = StateObject(wrappedValue: terminalRegistry)
+        _updates = StateObject(wrappedValue: updates)
+        _themeCoordinator = StateObject(wrappedValue: BessieThemeCoordinator(
+            settings: settings,
+            terminalRegistry: terminalRegistry,
+            initialSystemScheme: Self.currentSystemScheme,
+            applyTerminalTheme: { [weak fleet, weak terminalRegistry] theme in
+                guard let fleet, let terminalRegistry else { return .rejectedAndRestored }
+                return fleet.applyTerminalTheme(theme, activeRegistry: terminalRegistry)
+            }
+        ))
+        updates.start()
+    }
 
     var body: some Scene {
-        WindowGroup {
-            ConnectView(fleet: fleet)
-                .environmentObject(settings)
-                .environmentObject(notifications)
-                .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
-                .onChange(of: settings.preferences.appIcon) { _, icon in
-                    BessieAppIconController.apply(icon)
+        Window("Bessie", id: BessieWindowPolicy.controllerSceneID) {
+            Group {
+                if BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+                    connectionConfigurationLoadFailed: settings.connectionConfigurationLoadFailed
+                ) {
+                    BessieWindowRoot {
+                        ConnectView(
+                            fleet: fleet,
+                            featureFlags: featureFlags,
+                            terminalRegistry: terminalRegistry,
+                            commandPaletteAvailability: commandPaletteAvailability,
+                            initiallyShowsColdOpen: !Self.isOnboardingStepArtboard
+                        )
+                            .onAppear { BessieAppIconController.apply(settings.preferences.appIcon) }
+                            .onAppear {
+                                BessiePerformance.recorder.mark(.firstWindowContent)
+                                BessieStartupMainThreadProbe.runIfRequested(recorder: BessiePerformance.recorder)
+                                Self.applyOnboardingArtboardAppearance(settings.preferences.appearance)
+                            }
+                            .onChange(of: settings.preferences.appIcon) { _, icon in
+                                BessieAppIconController.apply(icon)
+                            }
+                    }
+                        .overlay(alignment: .top) {
+                            BessieWindowChromeRegion(action: .toggleFullScreen)
+                                .frame(height: BessieDesign.titlebarHeight)
+                                .ignoresSafeArea(edges: .top)
+                        }
+                        .background(BessieMainWindowProbe(coordinator: appDelegate.windowCoordinator))
+                        .background(BessieLifecycleInstaller(
+                            appDelegate: appDelegate,
+                            fleet: fleet,
+                            settings: settings,
+                            notifications: notifications
+                        ))
+                        .task { fleet.startIntentServer() }
+                        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                            fleet.stopIntentServer()
+                        }
+                } else {
+                    BessieConfigurationBlockedView(message: settings.connectionError)
                 }
+            }
+                .modifier(BessieThemeAppearanceIngress())
+                .environmentObject(settings)
+                .environmentObject(themeCoordinator)
+                .environmentObject(notifications)
+                .environmentObject(updates)
                 .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
-                .frame(minWidth: 1080, minHeight: 680)
-                .background(BessieDesign.window)
-                .task { fleet.startIntentServer() }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    fleet.stopIntentServer()
-                }
+                .frame(
+                    minWidth: BessieAccessibilityContract.minimumContentWidth,
+                    minHeight: ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "09"
+                        ? 0
+                        : BessieAccessibilityContract.minimumContentHeight
+                )
         }
-        // Real titlebar (above content) so traffic-light row can double-click to full screen.
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        // Keep native window controls without AppKit's separate titlebar backing.
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 740)
         .commands {
+            BessieUpdateCommands(coordinator: updates)
             CommandGroup(replacing: .appTermination) {
-                Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                Button("Quit Bessie") { appDelegate.quitBessie() }
                     .keyboardShortcut("q", modifiers: .command)
+            }
+            CommandMenu("Bessie") {
+                Button("Keyboard Reference…") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.showKeyboardReference)
+                }
+                Button("Command Palette…") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.showCommandPalette)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(!commandPaletteAvailability.canToggle)
+            }
+            CommandMenu("Zen") {
+                Button("Toggle Zen") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.toggleZen)
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                Button("Exit Zen") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.exitZen)
+                }
+                Divider()
+                Button("Previous agent") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.previousAgent)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .option, .shift])
+                Button("Next agent") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.nextAgent)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .option, .shift])
+                Button("Next agent that needs you") {
+                    NotificationCenter.default.post(name: .bessieCommand, object: BessieShortcutCommand.openNextNeedsYou)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .option])
             }
         }
 
         Settings {
-            BessieSettingsView()
+            Group {
+                if BessieOperationalStartupPolicy.permitsOperationalSurfaces(
+                    connectionConfigurationLoadFailed: settings.connectionConfigurationLoadFailed
+                ) {
+                    BessieWindowRoot {
+                        BessieSettingsView()
+                    }
+                } else {
+                    BessieConfigurationBlockedView(message: settings.connectionError)
+                }
+            }
+                .modifier(BessieThemeAppearanceIngress())
                 .environmentObject(settings)
+                .environmentObject(themeCoordinator)
                 .environmentObject(notifications)
+                .environmentObject(updates)
                 .environment(\.bessieDensity, .metrics(for: settings.preferences.density))
                 .preferredColorScheme(settings.preferences.appearance.preferredColorScheme)
                 .environmentObject(fleet)
+        }
+    }
+
+    private static var isOnboardingStepArtboard: Bool {
+        guard let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] else { return false }
+        return (10...13).contains(Int(artboard) ?? 0)
+    }
+
+    private static var currentSystemScheme: ColorScheme {
+        NSApplication.shared.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua
+            ? .light
+            : .dark
+    }
+
+    private static func applyOnboardingArtboardAppearance(_ appearance: BessieAppearance) {
+        guard let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
+              let artboardNumber = Int(artboard), (9...13).contains(artboardNumber)
+        else { return }
+        let scheme: ColorScheme
+        if artboardNumber == 9 {
+            scheme = .dark
+        } else {
+            scheme = BessieThemeRegistry.scheme(for: appearance, systemScheme: .dark)
+        }
+        NSApp.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
+        let background = NSColor(BessieThemeRegistry.definition(for: appearance, systemScheme: scheme).palette.background)
+        NSApp.windows.forEach { $0.backgroundColor = background }
+    }
+}
+
+private struct BessieConfigurationBlockedView: View {
+    let message: String?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Bessie stayed closed")
+                .font(.title2.weight(.semibold))
+            Text(message ?? "Bessie could not safely load its herd configuration.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(BessieDesign.subtle)
+                .frame(maxWidth: 520)
+            Button("Quit Bessie") { NSApplication.shared.terminate(nil) }
+                .tint(BessieDesign.controlTint)
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(40)
+        .frame(minWidth: 640, minHeight: 360)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct BessieLifecycleInstaller: View {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    let appDelegate: BessieAppDelegate
+    let fleet: ConnectionFleetViewModel
+    let settings: BessieSettingsModel
+    let notifications: BessieNotificationCoordinator
+
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0).onAppear {
+            fleet.configurePanePresentationIntents(settings: settings)
+            appDelegate.configure(
+                fleet: fleet,
+                settings: settings,
+                notifications: notifications,
+                openWindow: { openWindow(id: BessieWindowPolicy.controllerSceneID) },
+                openSettings: { openSettings() }
+            )
         }
     }
 }
@@ -61,7 +338,9 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var actionError: String?
     @Published private(set) var runtimeDiagnostic = RuntimeDiagnosticSnapshot(stage: .runtimeResolution)
     @Published private(set) var actionInFlight = false
+    @Published private(set) var navigationInFlight = false
     @Published private(set) var activeConnection: BessieConnectionDefinition = .localBessie
+    @Published private(set) var herdrConnectionGeneration: UUID?
     @Published private(set) var projectMaterializationConnection: BessieProjectMaterializationConnection?
     @Published private(set) var remoteFileAccess: SSHRemoteFileAccess?
     private var connectionTask: Task<Void, Never>?
@@ -71,23 +350,29 @@ final class ConnectionViewModel: ObservableObject {
     private var actionClient: HerdrActionClient?
     private let intentDispatcher: BessieIntentActionDispatcher
     private var openPaneToken: UUID?
+    private var navigationToken: UUID?
     private var catalogSocketPath: String?
     private var catalogLoadInFlight = false
     private var projectHandoffToken: UUID?
+    private var herdrDispatchToken: UUID?
     @Published private(set) var catalogLoaded = false
     private let runtimeSelection: HerdrRuntimeSelection
     private let bundledRuntimeURL: URL?
     private let runtimeValidator: HerdrRuntimeValidator?
     private let bundledRuntimeLock: BundledRuntimeLock?
+    private let performanceRecorder: BessiePerformanceRecorder
+    private(set) var performanceSequence: UInt64?
 
     init(
         runtimeSelection: HerdrRuntimeSelection = .bundled,
         bundledRuntimeURL: URL? = nil,
-        intentDispatcher: BessieIntentActionDispatcher = BessieIntentActionDispatcher()
+        intentDispatcher: BessieIntentActionDispatcher = BessieIntentActionDispatcher(),
+        performanceRecorder: BessiePerformanceRecorder = BessiePerformance.recorder
     ) {
         self.runtimeSelection = runtimeSelection
         self.bundledRuntimeURL = bundledRuntimeURL
         self.intentDispatcher = intentDispatcher
+        self.performanceRecorder = performanceRecorder
         let validation = bundledRuntimeURL.map(Self.runtimeValidation(for:))
         runtimeValidator = validation?.validator
         bundledRuntimeLock = validation?.lock
@@ -96,6 +381,9 @@ final class ConnectionViewModel: ObservableObject {
     func start(connection: BessieConnectionDefinition = .localBessie) {
         guard connectionTask == nil else { return }
         activeConnection = connection
+        let performanceSequence = performanceRecorder.nextSequence()
+        self.performanceSequence = performanceSequence
+        performanceRecorder.mark(.connectionStart, sequence: performanceSequence)
         let token = UUID()
         connectionToken = token
         if let runToken = ProcessInfo.processInfo.environment["BESSIE_RUN_TOKEN"] {
@@ -111,7 +399,9 @@ final class ConnectionViewModel: ObservableObject {
                 do {
                     let bridge = try RemoteHerdrBridge(connection: connection)
                     self.remoteBridge = bridge
+                    performanceRecorder.mark(.remoteBridgeStart, sequence: performanceSequence)
                     let socketPath = try await Task.detached { try bridge.start() }.value
+                    performanceRecorder.mark(.remoteTunnelReady, sequence: performanceSequence)
                     guard !Task.isCancelled, self.connectionToken == token else { bridge.stop(); return }
                     self.remoteFileAccess = bridge.fileAccess
                     environment["BESSIE_HERDR_SOCKET_PATH"] = socketPath
@@ -136,7 +426,9 @@ final class ConnectionViewModel: ObservableObject {
                 runtimeSelection: runtimeSelection,
                 bundledRuntimeURL: bundledRuntimeURL,
                 validator: runtimeValidator,
-                bundledRuntimeLock: bundledRuntimeLock
+                bundledRuntimeLock: bundledRuntimeLock,
+                performanceRecorder: performanceRecorder,
+                performanceSequence: performanceSequence
             )
             connectionRunner = runner
             await runner.run { [weak self] state in
@@ -161,6 +453,30 @@ final class ConnectionViewModel: ObservableObject {
                 }
                 Task { @MainActor in
                     guard self?.connectionToken == token else { return }
+                    if let endpoint {
+                        if self?.terminalEndpoint != endpoint
+                            || self?.actionClient == nil
+                            || self?.herdrConnectionGeneration == nil
+                        {
+                            let client = HerdrActionClient(api: HerdrSocketAPI(socketPath: endpoint.socketPath))
+                            self?.installHerdrActionClient(client, projection: projection)
+                        } else if let projection, let generation = self?.herdrConnectionGeneration {
+                            self?.intentDispatcher.refreshProjection(
+                                projection,
+                                connectionID: connection.id,
+                                generation: generation
+                            )
+                        }
+                    } else {
+                        self?.intentDispatcher.disconnect(
+                            connectionID: connection.id,
+                            generation: self?.herdrConnectionGeneration
+                        )
+                        self?.actionClient = nil
+                        self?.herdrConnectionGeneration = nil
+                        self?.herdrDispatchToken = nil
+                        self?.actionInFlight = false
+                    }
                     if case .connected(_, let socketPath, let snapshot) = state {
                         let identity = HerdrServerIdentity(
                             version: snapshot.version,
@@ -174,7 +490,7 @@ final class ConnectionViewModel: ObservableObject {
                             self?.projectMaterializationConnection = BessieProjectMaterializationConnection(
                                 definition: connection,
                                 socketPath: socketPath,
-                                generation: UUID(),
+                                generation: self?.herdrConnectionGeneration ?? UUID(),
                                 identity: identity
                             )
                         }
@@ -189,12 +505,9 @@ final class ConnectionViewModel: ObservableObject {
                     self?.presentation = ConnectPresentation(connectionState: state)
                     self?.projection = projection
                     self?.terminalEndpoint = endpoint
-                    self?.actionClient = endpoint.map { HerdrActionClient(api: HerdrSocketAPI(socketPath: $0.socketPath)) }
-                    self?.intentDispatcher.update(
-                        client: self?.actionClient,
-                        connectionID: connection.id,
-                        projection: projection
-                    )
+                    if projection != nil {
+                        self?.performanceRecorder.mark(.snapshotInstalled, sequence: performanceSequence)
+                    }
                     if let endpoint { self?.ensureAgentCatalog(socketPath: endpoint.socketPath) }
                 }
             }
@@ -225,10 +538,27 @@ final class ConnectionViewModel: ObservableObject {
         start(connection: connection)
     }
 
+    func installHerdrActionClient(
+        _ client: HerdrActionClient,
+        projection: HerdrSessionProjection?
+    ) {
+        actionClient = client
+        self.projection = projection
+        herdrConnectionGeneration = intentDispatcher.connect(
+            client: client,
+            connectionID: activeConnection.id,
+            projection: projection
+        )
+        herdrDispatchToken = nil
+        actionInFlight = false
+    }
+
     func stop() {
         connectionToken = UUID()
         openPaneToken = nil
+        navigationToken = nil
         actionInFlight = false
+        navigationInFlight = false
         connectionRunner?.cancel()
         connectionTask?.cancel()
         connectionTask = nil
@@ -239,18 +569,29 @@ final class ConnectionViewModel: ObservableObject {
         projection = nil
         terminalEndpoint = nil
         actionClient = nil
-        intentDispatcher.update(client: nil, connectionID: activeConnection.id, projection: nil)
+        intentDispatcher.disconnect(
+            connectionID: activeConnection.id,
+            generation: herdrConnectionGeneration
+        )
+        herdrConnectionGeneration = nil
+        herdrDispatchToken = nil
         catalogSocketPath = nil
         catalogLoaded = false
         agentCatalog = AgentCatalog(items: [])
         projectMaterializationConnection = nil
+        performanceSequence = nil
     }
 
     func perform(
         _ action: HerdrAction,
         confirmDestructive: Bool = false,
-        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
+        failure: (@MainActor () -> Void)? = nil
     ) {
+        if let intent = HerdrDefaultTopologyIntent(action: action) {
+            dispatchHerdrDefault(intent, completion: completion, failure: failure)
+            return
+        }
         let connectionGeneration = connectionToken
         let connectionID = activeConnection.id
         actionInFlight = true
@@ -273,7 +614,78 @@ final class ConnectionViewModel: ObservableObject {
                     guard self.connectionToken == connectionGeneration else { return }
                     self.actionInFlight = false
                     self.actionError = error.localizedDescription
+                    failure?()
                 }
+            }
+        }
+    }
+
+    static func obsoleteGenerationUncertaintyMessage(
+        for result: HerdrDefaultDispatchResult
+    ) -> String? {
+        guard case .failed(let failure, _) = result,
+              failure.disposition == .mutationOutcomeUnknown
+        else { return nil }
+        return "Herdr may have applied a command on the previous connection, but Bessie could not confirm the result. The command was not retried."
+    }
+
+    func dispatchHerdrDefault(
+        _ intent: HerdrDefaultTopologyIntent,
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
+        failure: (@MainActor () -> Void)? = nil
+    ) {
+        guard !actionInFlight, let expectedGeneration = herdrConnectionGeneration else {
+            failure?()
+            return
+        }
+        let token = UUID()
+        herdrDispatchToken = token
+        let connectionID = activeConnection.id
+        actionInFlight = true
+        actionError = nil
+        Task {
+            let result = await intentDispatcher.dispatchHerdrDefault(
+                intent,
+                connectionID: connectionID
+            )
+            guard herdrDispatchToken == token,
+                  herdrConnectionGeneration == expectedGeneration,
+                  activeConnection.id == connectionID
+            else {
+                if let message = Self.obsoleteGenerationUncertaintyMessage(for: result) {
+                    actionError = message
+                }
+                return
+            }
+            herdrDispatchToken = nil
+            actionInFlight = false
+            switch result {
+            case .applied(let fresh):
+                projection = fresh
+                completion?(fresh)
+            case .noOp(let fresh):
+                if let fresh { projection = fresh }
+                if let projection { completion?(projection) }
+            case .rejected(let rejection):
+                switch rejection {
+                case .disconnected:
+                    actionError = "Herdr is disconnected."
+                case .generationChanged:
+                    actionError = "The Herdr connection changed before the command was sent."
+                case .supersededAfterAcknowledgement:
+                    actionError = "Herdr acknowledged the command, but this connection was replaced before Bessie could reconcile it."
+                case .preflightFailed(let message), .invalidTarget(let message):
+                    actionError = message
+                }
+                failure?()
+            case .failed(let dispatchFailure, let recovered):
+                if let recovered { projection = recovered }
+                if dispatchFailure.disposition == .mutationOutcomeUnknown {
+                    actionError = "Herdr may have applied that command, but Bessie could not confirm the result. The session was refreshed without retrying."
+                } else {
+                    actionError = dispatchFailure.message
+                }
+                failure?()
             }
         }
     }
@@ -283,33 +695,75 @@ final class ConnectionViewModel: ObservableObject {
         completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
         failure: (@MainActor () -> Void)? = nil
     ) {
+        let actions = (projection?.prunedNavigationActions([
+            .workspaceFocus(id: target.workspaceID),
+            .tabFocus(id: target.tabID),
+            .paneFocus(id: target.paneID),
+        ]) ?? [
+            .workspaceFocus(id: target.workspaceID),
+            .tabFocus(id: target.tabID),
+            .paneFocus(id: target.paneID),
+        ])
+        if actions.isEmpty, let projection {
+            completion?(projection)
+            return
+        }
+        navigate(actions, completion: completion, failure: failure)
+    }
+
+    /// Focus changes are intentionally independent from mutation actions. The newest
+    /// navigation request wins, so rapid sidebar/tab clicks never wait behind stale focus work.
+    func navigate(
+        _ actions: [HerdrAction],
+        completion: (@MainActor (HerdrSessionProjection) -> Void)? = nil,
+        failure: (@MainActor () -> Void)? = nil
+    ) {
+        let pruned = projection?.prunedNavigationActions(actions) ?? actions
+        if pruned.isEmpty {
+            if let projection { completion?(projection) }
+            return
+        }
+
         let connectionGeneration = connectionToken
         let connectionID = activeConnection.id
         let requestToken = UUID()
+        let navigationStartedAt = ProcessInfo.processInfo.systemUptime
         openPaneToken = requestToken
-        actionInFlight = true
+        navigationToken = requestToken
+        navigationInFlight = true
         actionError = nil
+
+        // Paint local focus immediately so pane/tab chrome does not wait on Herdr RPC + snapshot.
+        if let current = projection,
+           let optimistic = try? current.applyingNavigationActions(pruned)
+        {
+            projection = optimistic
+            intentDispatcher.installProjection(optimistic, connectionID: connectionID)
+        }
+
         Task.detached {
             do {
-                let projection = try self.intentDispatcher.perform([
-                    .workspaceFocus(id: target.workspaceID),
-                    .tabFocus(id: target.tabID),
-                    .paneFocus(id: target.paneID),
-                ], connectionID: connectionID)
+                let projection = try self.intentDispatcher.perform(pruned, connectionID: connectionID)
                 await MainActor.run {
                     guard self.connectionToken == connectionGeneration,
-                          self.openPaneToken == requestToken
+                          self.navigationToken == requestToken
                     else { return }
                     self.projection = projection
-                    self.actionInFlight = false
+                    self.navigationInFlight = false
+                    let elapsed = (ProcessInfo.processInfo.systemUptime - navigationStartedAt) * 1_000
+                    BessieDiagnosticLog.append(String(
+                        format: "Terminal switch stage=herdr_confirmed elapsed_ms=%.1f action_count=%d",
+                        elapsed,
+                        pruned.count
+                    ))
                     completion?(projection)
                 }
             } catch {
                 await MainActor.run {
                     guard self.connectionToken == connectionGeneration,
-                          self.openPaneToken == requestToken
+                          self.navigationToken == requestToken
                     else { return }
-                    self.actionInFlight = false
+                    self.navigationInFlight = false
                     self.actionError = error.localizedDescription
                     failure?()
                 }
@@ -366,6 +820,14 @@ final class ConnectionViewModel: ObservableObject {
     }
 
     func clearActionError() { actionError = nil }
+
+    func markShellReady() {
+        performanceRecorder.mark(.shellReady, sequence: performanceSequence)
+    }
+
+    func reportRouteFailure(_ message: String) {
+        actionError = message
+    }
 
     func updateTerminalDiagnostic(_ facts: TerminalControllerFacts) {
         runtimeDiagnostic.terminalControllerHealthy = facts.healthy
@@ -609,19 +1071,72 @@ enum FleetNotificationConnectionState: String {
 final class ConnectionFleetViewModel: ObservableObject {
     @Published private(set) var activeModel: ConnectionViewModel?
     @Published private(set) var agents: [ConnectedAgentProjection] = []
-    @Published private(set) var attentionAgents: [ConnectedAgentProjection] = []
+    @Published private(set) var connectedConnectionIDs: Set<String> = []
+    @Published private(set) var herdScope: ConnectionScope = .all
+    @Published private(set) var routeFailure: String?
     @Published private(set) var connectedCount = 0
     @Published private(set) var connectionIssues: [FleetConnectionIssue] = []
     @Published private(set) var connectionHealth: [ConnectionHealth] = []
 
     private var models: [String: ConnectionViewModel] = [:]
+    private var supplementalTerminalRegistries: [String: TerminalControllerRegistry] = [:]
     private var subscriptions: [String: AnyCancellable] = [:]
-    private let intentServer = AppIntentServer()
-    private var configuredConnectionIDs: Set<String> = []
+    private lazy var intentServer = AppIntentServer()
+    private let defaults: UserDefaults
+    private let performanceRecorder: BessiePerformanceRecorder
+    private let scopeDefaultsKey = "Bessie.connectionScope"
+    private var configuredConnections: [BessieConnectionDefinition] = []
+    private var runtimeSelection: HerdrRuntimeSelection = .bundled
+    private var bundledRuntimeURL: URL?
+    private var preferredSelectedConnectionID: String = BessieConnectionDefinition.localBessie.id
     private var hasStarted = false
+    private var refreshTask: Task<Void, Never>?
+    private(set) var refreshPassCount = 0
+    /// Connection IDs the fleet has been asked to start this process (launch set + on-demand).
+    private(set) var startedConnectionIDs: Set<String> = []
+
+    init(
+        defaults: UserDefaults = .standard,
+        performanceRecorder: BessiePerformanceRecorder = BessiePerformance.recorder
+    ) {
+        self.defaults = defaults
+        self.performanceRecorder = performanceRecorder
+        if let connectionID = defaults.string(forKey: scopeDefaultsKey), !connectionID.isEmpty {
+            herdScope = .connection(id: connectionID)
+        }
+    }
 
     var activeConnectionID: String? { activeModel?.activeConnection.id }
     var presentation: ConnectPresentation { activeModel?.presentation ?? .initial }
+    var connectionDefinitions: [BessieConnectionDefinition] { configuredConnections }
+    var projectLaunchTargets: [String: ProjectLaunchTarget] {
+        var targets: [String: ProjectLaunchTarget] = [:]
+        for model in models.values {
+            guard let connection = model.projectMaterializationConnection,
+                  let snapshot = model.projection?.snapshot
+            else { continue }
+            targets[connection.definition.id] = ProjectLaunchTarget(
+                connection: connection,
+                snapshot: snapshot,
+                remoteFileAccess: model.remoteFileAccess
+            )
+        }
+        return targets
+    }
+    var topologyConnections: [ConnectionTopologyProjection] {
+        configuredConnections.compactMap { connection in
+            guard let projection = models[connection.id]?.projection else { return nil }
+            return ConnectionTopologyProjection(connection: connection, projection: projection)
+        }
+    }
+    var scopeLabel: String {
+        switch herdScope {
+        case .all: return "All"
+        case .connection(let id):
+            guard let connection = configuredConnections.first(where: { $0.id == id }) else { return "All" }
+            return connection.kind == .local ? "Local" : ConnectionDisplayLabel(connection: connection).short
+        }
+    }
     var notificationSources: [FleetNotificationSource] {
         models.values.compactMap { model in
             guard let projection = model.projection else { return nil }
@@ -639,47 +1154,298 @@ final class ConnectionFleetViewModel: ObservableObject {
 
     func stopIntentServer() { intentServer.stop() }
 
+    func configurePanePresentationIntents(settings: BessieSettingsModel) {
+        intentServer.configurePresentationHandler { [weak self, weak settings] request in
+            guard let self, let settings else {
+                return .failure(id: request.id, code: .unsupported, message: "Pane presentation state is unavailable.")
+            }
+            return self.executePanePresentationIntent(request, settings: settings)
+        }
+    }
+
+    func dispatchPanePresentationIntent(
+        _ intent: String,
+        incarnation: BessiePaneIncarnation,
+        preset: BessiePaneSnoozePreset? = nil,
+        settings: BessieSettingsModel
+    ) -> BessieIntentResult {
+        var params: [String: JSONValue] = [
+            "connection_id": .string(incarnation.connectionID),
+            "pane_id": .string(incarnation.paneID),
+            "terminal_id": .string(incarnation.terminalID),
+            "expected_revision": .number(Double(settings.panePresentationLedger.revision)),
+        ]
+        if let preset { params["preset"] = .string(preset.rawValue) }
+        return executePanePresentationIntent(
+            BessieIntentRequest(id: UUID().uuidString, intent: intent, params: params),
+            settings: settings
+        )
+    }
+
+    private func executePanePresentationIntent(
+        _ request: BessieIntentRequest,
+        settings: BessieSettingsModel
+    ) -> BessieIntentResult {
+        if request.intent.rawValue == "pane.presentation.list" {
+            let connectionID = request.params.stringValue("connection_id")
+            let records = settings.panePresentationLedger.records.filter {
+                connectionID == nil || $0.connectionID == connectionID
+            }.compactMap { record -> JSONValue? in
+                guard let projection = models[record.connectionID]?.projection,
+                      connectedConnectionIDs.contains(record.connectionID),
+                      projection.panes.contains(where: {
+                          $0.id == record.paneID && $0.terminalID == record.terminalID
+                      }) else { return nil }
+                return panePresentationValue(record.incarnation, settings: settings)
+            }
+            return .success(id: request.id, value: .object([
+                "revision": .number(Double(settings.panePresentationLedger.revision)),
+                "panes": .array(records),
+            ]))
+        }
+
+        guard let connectionID = request.params.stringValue("connection_id"),
+              let paneID = request.params.stringValue("pane_id"),
+              let terminalID = request.params.stringValue("terminal_id"),
+              let expectedRevision = request.params.uint64Value("expected_revision")
+        else {
+            return .failure(id: request.id, code: .invalidParams, message: "Pane presentation identity and expected revision are required.")
+        }
+        guard expectedRevision == settings.panePresentationLedger.revision else {
+            return .failure(
+                id: request.id,
+                code: .conflict,
+                message: "Pane presentation revision changed; refresh current state before retrying.",
+                value: panePresentationValue(
+                    BessiePaneIncarnation(connectionID: connectionID, paneID: paneID, terminalID: terminalID),
+                    settings: settings
+                )
+            )
+        }
+        guard connectedConnectionIDs.contains(connectionID),
+              let projection = models[connectionID]?.projection,
+              projection.panes.contains(where: { $0.id == paneID && $0.terminalID == terminalID })
+        else {
+            return .failure(id: request.id, code: .conflict, message: "The exact fresh pane incarnation is no longer available.")
+        }
+
+        let incarnation = BessiePaneIncarnation(connectionID: connectionID, paneID: paneID, terminalID: terminalID)
+        let beforeRevision = settings.panePresentationLedger.revision
+        var desiredStateMatches = false
+        switch request.intent.rawValue {
+        case "pane.pin":
+            _ = settings.setPanePinned(true, incarnation: incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.pinned == true
+        case "pane.unpin":
+            _ = settings.setPanePinned(false, incarnation: incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.pinned != true
+        case "pane.wake":
+            _ = settings.wakePane(incarnation)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.snooze == nil
+        case "pane.snooze":
+            guard let rawPreset = request.params.stringValue("preset"),
+                  let preset = BessiePaneSnoozePreset(rawValue: rawPreset)
+            else {
+                return .failure(id: request.id, code: .invalidParams, message: "Unknown snooze preset.")
+            }
+            let now = Date()
+            let desiredSnooze = preset.snooze(now: now)
+            _ = settings.setPaneSnooze(preset, incarnation: incarnation, now: now)
+            desiredStateMatches = settings.panePresentationLedger.preference(for: incarnation)?.snooze == desiredSnooze
+        default:
+            return .failure(id: request.id, code: .unknownIntent, message: "Unknown pane presentation intent.")
+        }
+        guard settings.panePresentationLedger.revision != beforeRevision || desiredStateMatches else {
+            return .failure(
+                id: request.id,
+                code: .conflict,
+                message: "Pane presentation mutation could not be applied; refresh current state before retrying.",
+                value: panePresentationValue(incarnation, settings: settings)
+            )
+        }
+        return .success(id: request.id, value: panePresentationValue(incarnation, settings: settings))
+    }
+
+    private func panePresentationValue(
+        _ incarnation: BessiePaneIncarnation,
+        settings: BessieSettingsModel
+    ) -> JSONValue {
+        let preference = settings.panePresentationLedger.preference(for: incarnation)
+        let snoozeKind: JSONValue
+        let wakeAt: JSONValue
+        switch preference?.snooze {
+        case nil:
+            snoozeKind = .null
+            wakeAt = .null
+        case .indefinite?:
+            snoozeKind = .string(BessiePaneSnoozePreset.untilFurtherNotice.rawValue)
+            wakeAt = .null
+        case .until(let deadline, let provenance)?:
+            snoozeKind = .string(provenance.intentPreset.rawValue)
+            wakeAt = .string(ISO8601DateFormatter().string(from: deadline))
+        }
+        return .object([
+            "connection_id": .string(incarnation.connectionID),
+            "pane_id": .string(incarnation.paneID),
+            "terminal_id": .string(incarnation.terminalID),
+            "pinned": .bool(preference?.pinned == true),
+            "snooze": snoozeKind,
+            "wake_at": wakeAt,
+            "revision": .number(Double(settings.panePresentationLedger.revision)),
+        ])
+    }
+
+    func updateIntentConnectionContext(
+        connections: [BessieConnectionDefinition],
+        selectedConnectionID: String,
+        defaultProjectConnectionID: String
+    ) {
+        intentServer.updateConnectionContext(
+            connections: connections,
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID
+        )
+    }
+
     func start(
         connections: [BessieConnectionDefinition],
         selectedConnectionID: String,
         runtimeSelection: HerdrRuntimeSelection,
         bundledRuntimeURL: URL?
     ) {
-        sync(connections: connections, runtimeSelection: runtimeSelection, bundledRuntimeURL: bundledRuntimeURL)
-        _ = activate(connectionID: selectedConnectionID)
+        preferredSelectedConnectionID = selectedConnectionID
+        applyConfiguration(
+            connections: connections,
+            runtimeSelection: runtimeSelection,
+            bundledRuntimeURL: bundledRuntimeURL
+        )
+        let startup = BessieLaunchConnections.startupConnections(
+            connections: configuredConnections,
+            selectedConnectionID: selectedConnectionID
+        )
+        for connection in startup {
+            ensureStarted(connection)
+        }
+        let preferredID = BessieLaunchConnections.preferredActiveConnectionID(
+            startupConnections: startup,
+            selectedConnectionID: selectedConnectionID
+        )
+        if let preferredID {
+            _ = setActiveConnection(id: preferredID)
+        }
+        if case .connection(let id) = herdScope, startedConnectionIDs.contains(id) {
+            _ = setActiveConnection(id: id)
+        }
+        refresh()
+        BessieDiagnosticLog.append(
+            "Fleet launch start ids=\(startup.map(\.id).sorted().joined(separator: ",")) active=\(activeConnectionID ?? "-")"
+        )
     }
 
     func sync(connections: [BessieConnectionDefinition], runtimeSelection: HerdrRuntimeSelection, bundledRuntimeURL: URL?) {
-        let desired = Set(connections.map(\.id))
-        configuredConnectionIDs = desired
+        applyConfiguration(
+            connections: connections,
+            runtimeSelection: runtimeSelection,
+            bundledRuntimeURL: bundledRuntimeURL
+        )
+        // Newly enabled launch herds start immediately; turning launch off does not disconnect.
+        for connection in configuredConnections where connection.connectAtLaunch {
+            ensureStarted(connection)
+        }
+        if activeModel == nil,
+           let preferredID = BessieLaunchConnections.preferredActiveConnectionID(
+               startupConnections: configuredConnections.filter { startedConnectionIDs.contains($0.id) },
+               selectedConnectionID: preferredSelectedConnectionID
+           ) {
+            _ = setActiveConnection(id: preferredID)
+        }
+        if case .connection(let id) = herdScope, startedConnectionIDs.contains(id) {
+            _ = setActiveConnection(id: id)
+        }
+        refresh()
+    }
+
+    private func applyConfiguration(
+        connections: [BessieConnectionDefinition],
+        runtimeSelection: HerdrRuntimeSelection,
+        bundledRuntimeURL: URL?
+    ) {
+        let enabledConnections = connections.filter(\.enabled)
+        let desired = Set(enabledConnections.map(\.id))
+        configuredConnections = enabledConnections
+        self.runtimeSelection = runtimeSelection
+        self.bundledRuntimeURL = bundledRuntimeURL
         hasStarted = true
         for id in models.keys where !desired.contains(id) {
             models[id]?.stop()
             models[id] = nil
             subscriptions[id] = nil
+            startedConnectionIDs.remove(id)
         }
         if let activeConnectionID, !desired.contains(activeConnectionID) {
             activeModel = nil
         }
-        for connection in connections where models[connection.id] == nil {
-            let model = ConnectionViewModel(
-                runtimeSelection: runtimeSelection,
-                bundledRuntimeURL: bundledRuntimeURL,
-                intentDispatcher: intentServer.dispatcher
-            )
-            models[connection.id] = model
-            subscriptions[connection.id] = model.objectWillChange.sink { [weak self] _ in
-                Task { @MainActor in
-                    await Task.yield()
-                    self?.refresh()
-                }
+        if case .connection(let id) = herdScope, !desired.contains(id) {
+            herdScope = .all
+            defaults.removeObject(forKey: scopeDefaultsKey)
+        }
+    }
+
+    @discardableResult
+    private func ensureStarted(_ connection: BessieConnectionDefinition) -> ConnectionViewModel {
+        if let existing = models[connection.id] {
+            startedConnectionIDs.insert(connection.id)
+            return existing
+        }
+        let model = ConnectionViewModel(
+            runtimeSelection: runtimeSelection,
+            bundledRuntimeURL: bundledRuntimeURL,
+            intentDispatcher: intentServer.dispatcher,
+            performanceRecorder: performanceRecorder
+        )
+        models[connection.id] = model
+        subscriptions[connection.id] = model.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in
+                self?.scheduleRefresh()
             }
-            model.start(connection: connection)
         }
-        if activeModel == nil {
-            activeModel = connections.compactMap { models[$0.id] }.first
+        startedConnectionIDs.insert(connection.id)
+        model.start(connection: connection)
+        return model
+    }
+
+    @discardableResult
+    private func setActiveConnection(id: String) -> ConnectionViewModel? {
+        guard let model = models[id] else { return nil }
+        activeModel = model
+        preferredSelectedConnectionID = id
+        return model
+    }
+
+    func setScope(_ scope: ConnectionScope) {
+        switch scope {
+        case .all:
+            guard herdScope != .all else { return }
+            herdScope = .all
+            defaults.removeObject(forKey: scopeDefaultsKey)
+        case .connection(let id):
+            guard configuredConnections.contains(where: { $0.id == id }) else {
+                herdScope = .all
+                defaults.removeObject(forKey: scopeDefaultsKey)
+                return
+            }
+            guard herdScope != scope else { return }
+            herdScope = .connection(id: id)
+            defaults.set(id, forKey: scopeDefaultsKey)
+            _ = activate(connectionID: id)
         }
-        refresh()
+    }
+
+    func statusLabel(connectionID: String) -> String {
+        guard let health = connectionHealth.first(where: { $0.connectionID == connectionID }) else {
+            return "Unavailable"
+        }
+        return health.isUsable ? "Connected" : health.phase
     }
 
     func activate(_ agent: ConnectedAgentProjection) -> ConnectionViewModel? {
@@ -687,16 +1453,146 @@ final class ConnectionFleetViewModel: ObservableObject {
     }
 
     func activate(connectionID: String) -> ConnectionViewModel? {
-        guard let model = models[connectionID] else { return nil }
+        guard let connection = configuredConnections.first(where: { $0.id == connectionID }) else { return nil }
+        preferredSelectedConnectionID = connectionID
+        let model = ensureStarted(connection)
         guard activeModel !== model else { return model }
         activeModel = model
         objectWillChange.send()
         return model
     }
 
+    func model(connectionID: String) -> ConnectionViewModel? {
+        models[connectionID]
+    }
+
+    func waitForProjectLaunchTarget(
+        connectionID: String,
+        timeout: TimeInterval = 20,
+        pollInterval: TimeInterval = 0.05
+    ) async throws -> ProjectLaunchTarget {
+        guard timeout > 0, pollInterval > 0 else {
+            preconditionFailure("Project launch target readiness requires positive timing bounds")
+        }
+        guard let connection = configuredConnections.first(where: { $0.id == connectionID }) else {
+            throw ProjectLaunchTargetReadinessError.notConfigured(connectionID: connectionID)
+        }
+        if let target = projectLaunchTargets[connectionID] {
+            if let detail = HerdrCompatibility.incompatibility(for: target.connection.identity) {
+                throw ProjectLaunchTargetReadinessError.incompatible(
+                    connectionName: connection.name,
+                    detail: detail
+                )
+            }
+            return target
+        }
+
+        let model = ensureStarted(connection)
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            try Task.checkCancellation()
+            guard configuredConnections.contains(where: { $0.id == connectionID }) else {
+                throw ProjectLaunchTargetReadinessError.notConfigured(connectionID: connectionID)
+            }
+            if let target = projectLaunchTargets[connectionID] {
+                if let detail = HerdrCompatibility.incompatibility(for: target.connection.identity) {
+                    throw ProjectLaunchTargetReadinessError.incompatible(
+                        connectionName: connection.name,
+                        detail: detail
+                    )
+                }
+                return target
+            }
+            switch model.presentation.status {
+            case .notFound, .lost:
+                throw ProjectLaunchTargetReadinessError.unavailable(
+                    connectionName: connection.name,
+                    detail: "\(model.presentation.title). \(model.presentation.detail)"
+                )
+            case .stopped:
+                throw ProjectLaunchTargetReadinessError.startupFailed(
+                    connectionName: connection.name,
+                    detail: model.presentation.detail
+                )
+            case .incompatible:
+                throw ProjectLaunchTargetReadinessError.incompatible(
+                    connectionName: connection.name,
+                    detail: model.presentation.detail
+                )
+            case .notChecked, .connecting, .connected, .retrying:
+                break
+            }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else {
+                throw ProjectLaunchTargetReadinessError.timedOut(
+                    connectionName: connection.name,
+                    seconds: timeout
+                )
+            }
+            let sleep = min(pollInterval, remaining)
+            try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
+        }
+    }
+
+    @discardableResult
+    func applyTerminalTheme(
+        _ candidate: BessieResolvedTerminalTheme,
+        activeRegistry: TerminalControllerRegistry
+    ) -> TerminalThemeTransaction.Result {
+        let registries = [activeRegistry] + supplementalTerminalRegistries
+            .sorted(by: { $0.key < $1.key })
+            .map(\.value)
+            .filter { $0 !== activeRegistry }
+        var updated: [(registry: TerminalControllerRegistry, previous: BessieResolvedTerminalTheme)] = []
+        for registry in registries {
+            let previous = registry.effectiveTheme
+            let result = registry.applyTheme(candidate)
+            guard result.succeeded else {
+                var restored = result != .rollbackFailed
+                for item in updated.reversed() {
+                    restored = item.registry.applyTheme(item.previous).succeeded && restored
+                }
+                if !restored {
+                    BessieDiagnosticLog.append("Fleet terminal theme rollback failed; terminal presentation may be inconsistent")
+                    return .rollbackFailed
+                }
+                return .rejectedAndRestored
+            }
+            updated.append((registry, previous))
+        }
+        return .applied
+    }
+
+    func terminalRegistry(connectionID: String, activeRegistry: TerminalControllerRegistry) -> TerminalControllerRegistry? {
+        guard let model = models[connectionID], let endpoint = model.terminalEndpoint,
+              let projection = model.projection, connectedConnectionIDs.contains(connectionID)
+        else { return nil }
+        let registry: TerminalControllerRegistry
+        if activeConnectionID == connectionID {
+            registry = activeRegistry
+        } else if let existing = supplementalTerminalRegistries[connectionID] {
+            registry = existing
+        } else {
+            let created = TerminalControllerRegistry()
+            created.setInitialTheme(activeRegistry.effectiveTheme)
+            supplementalTerminalRegistries[connectionID] = created
+            registry = created
+        }
+        registry.reconcile(
+            presentedPaneIDs: projection.layouts.values.flatMap { $0.root.paneIDs },
+            availablePaneIDs: Set(projection.panes.map(\.id)),
+            endpoint: endpoint
+        )
+        return registry
+    }
+
     func notificationConnectionState(connectionID: String) -> FleetNotificationConnectionState {
         guard let model = models[connectionID] else {
-            return !hasStarted || configuredConnectionIDs.contains(connectionID) ? .waiting : .unavailable
+            // Configured but intentionally not started yet — not a transient wait.
+            if hasStarted, configuredConnections.contains(where: { $0.id == connectionID }) {
+                return .unavailable
+            }
+            return !hasStarted ? .waiting : .unavailable
         }
         if model.projection != nil, model.terminalEndpoint != nil { return .ready }
         switch model.presentation.status {
@@ -712,30 +1608,73 @@ final class ConnectionFleetViewModel: ObservableObject {
         _ = activate(connectionID: model.activeConnection.id)
     }
 
+    func reportRouteFailure(_ message: String) {
+        routeFailure = message
+    }
+
+    func clearRouteFailure() {
+        routeFailure = nil
+    }
+
     func retryAll() {
         for model in models.values { model.retry() }
     }
 
     func retry(connectionID: String) {
-        models[connectionID]?.retry()
+        if let model = models[connectionID] {
+            model.retry()
+            return
+        }
+        guard let connection = configuredConnections.first(where: { $0.id == connectionID }) else { return }
+        ensureStarted(connection)
     }
 
     func stop() {
         for model in models.values { model.stop() }
         models.removeAll()
         subscriptions.removeAll()
+        supplementalTerminalRegistries.values.forEach { $0.releaseAll() }
+        supplementalTerminalRegistries.removeAll()
+        startedConnectionIDs.removeAll()
+        refreshTask?.cancel()
+        refreshTask = nil
         agents = []
-        attentionAgents = []
+        connectedConnectionIDs = []
         connectedCount = 0
         connectionIssues = []
         connectionHealth = []
+        configuredConnections = []
         activeModel = nil
     }
 
+    @discardableResult
+    func scheduleRefresh() -> Task<Void, Never> {
+        if let refreshTask { return refreshTask }
+        let task = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            refreshTask = nil
+            refresh()
+        }
+        refreshTask = task
+        return task
+    }
+
     private func refresh() {
+        refreshPassCount += 1
         let connected = models.values.filter { $0.projection != nil && $0.terminalEndpoint != nil }
         connectedCount = connected.count
-        if activeModel == nil, let replacement = connected.first {
+        connectedConnectionIDs = Set(connected.map { $0.activeConnection.id })
+        let registriesToRelease = supplementalTerminalRegistries.keys.filter {
+            !connectedConnectionIDs.contains($0) || $0 == activeConnectionID
+        }
+        for connectionID in registriesToRelease {
+            supplementalTerminalRegistries.removeValue(forKey: connectionID)?.releaseAll()
+        }
+        if case .connection(let id) = herdScope,
+           let scoped = models[id], scoped.projection != nil, scoped.terminalEndpoint != nil {
+            activeModel = scoped
+        } else if activeModel == nil, let replacement = connected.first {
             activeModel = replacement
         }
         agents = connected.flatMap { model -> [ConnectedAgentProjection] in
@@ -745,26 +1684,32 @@ final class ConnectionFleetViewModel: ObservableObject {
                     connection: model.activeConnection,
                     agent: agent,
                     workspaceLabel: projection.workspaces.first { $0.id == agent.workspaceID }?.label,
-                    tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label
+                    tabLabel: projection.tabs.first { $0.id == agent.tabID }?.label,
+                    pane: projection.panes.first { $0.id == agent.id }
                 )
             }
         }
-        attentionAgents = connected.flatMap { model -> [ConnectedAgentProjection] in
-            guard let projection = model.projection else { return [] }
-            return projection.panes.map { pane in
-                ConnectedAgentProjection(
-                    connection: model.activeConnection,
-                    agent: AgentProjection(pane: pane),
-                    workspaceLabel: projection.workspaces.first { $0.id == pane.workspaceID }?.label,
-                    tabLabel: projection.tabs.first { $0.id == pane.tabID }?.label
-                )
+        connectionHealth = configuredConnections.map { connection in
+            if let model = models[connection.id] {
+                return ConnectionHealth(connection: connection, presentation: model.presentation)
             }
-        }
-        connectionHealth = models.values.map {
-            ConnectionHealth(connection: $0.activeConnection, presentation: $0.presentation)
+            return ConnectionHealth(
+                connection: connection,
+                presentation: ConnectPresentation(
+                    title: "Not started",
+                    detail: connection.connectAtLaunch
+                        ? "Will start at launch."
+                        : "Starts when selected, or enable Start at launch.",
+                    status: .stopped
+                )
+            )
         }.sorted { lhs, rhs in
-            let lhsLabel = models[lhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? lhs.connectionID
-            let rhsLabel = models[rhs.connectionID].map { ConnectionDisplayLabel(connection: $0.activeConnection).short } ?? rhs.connectionID
+            let lhsLabel = ConnectionDisplayLabel(
+                connection: configuredConnections.first(where: { $0.id == lhs.connectionID }) ?? .localBessie
+            ).short
+            let rhsLabel = ConnectionDisplayLabel(
+                connection: configuredConnections.first(where: { $0.id == rhs.connectionID }) ?? .localBessie
+            ).short
             let comparison = lhsLabel.localizedCaseInsensitiveCompare(rhsLabel)
             return comparison == .orderedSame ? lhs.connectionID < rhs.connectionID : comparison == .orderedAscending
         }
@@ -784,35 +1729,71 @@ final class ConnectionFleetViewModel: ObservableObject {
 
 struct ConnectView: View {
     @ObservedObject var fleet: ConnectionFleetViewModel
-    @StateObject private var terminalRegistry = TerminalControllerRegistry()
+    let featureFlags: BessieFeatureFlags
+    @ObservedObject var terminalRegistry: TerminalControllerRegistry
+    @ObservedObject var commandPaletteAvailability: BessieCommandPaletteAvailability
     @StateObject private var projects = ProjectsViewModel()
+    @StateObject private var onboardingCoordinator = OnboardingCompletionCoordinator()
     @EnvironmentObject private var settings: BessieSettingsModel
     @Environment(\.bessieDensity) private var density
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @State private var setupAutomationStarted = false
+    @State private var navigationRequest: ProductNavigationRequest?
+    @State private var zenState = BessieZenPresentationState.inactive
+    @State private var onboardingPath = Self.designOnboardingPath
+    @State private var onboardingConnectionID: String?
+    @State private var showingColdOpen: Bool
+    @State private var splashEntryGeneration = -1
+
+    init(
+        fleet: ConnectionFleetViewModel,
+        featureFlags: BessieFeatureFlags,
+        terminalRegistry: TerminalControllerRegistry,
+        commandPaletteAvailability: BessieCommandPaletteAvailability,
+        initiallyShowsColdOpen: Bool
+    ) {
+        self.fleet = fleet
+        self.featureFlags = featureFlags
+        self.terminalRegistry = terminalRegistry
+        self.commandPaletteAvailability = commandPaletteAvailability
+        _showingColdOpen = State(initialValue: initiallyShowsColdOpen)
+    }
 
     private var presentation: ConnectPresentation { fleet.presentation }
+    private var coldOpenBootstrapSettled: Bool {
+        switch presentation.status {
+        case .connected, .notFound, .stopped, .incompatible, .lost: true
+        case .notChecked, .connecting, .retrying: false
+        }
+    }
+    /// Video only on first-run / Run Setup Again (and the splash design artboard).
+    /// Ordinary completed launches keep the native "joining the herd" loader.
+    private var playsColdOpenVideo: Bool {
+        if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] == "09" {
+            return true
+        }
+        return !settings.onboarding.completed
+    }
     private var notificationActivationSignature: String {
         let pending = notifications.pendingRoute
         let routeState = pending.map {
             fleet.notificationConnectionState(connectionID: $0.target.connectionID).rawValue
         } ?? "-"
-        return "\(pending?.id.uuidString ?? "-")|\(pending?.target.connectionID ?? "-")|\(routeState)|\(fleet.activeConnectionID ?? "-")|\(settings.connections.map(\.id).joined(separator: ","))"
+        return "\(pending?.id.uuidString ?? "-")|\(pending?.target.connectionID ?? "-")|\(routeState)|\(fleet.activeConnectionID ?? "-")|\(settings.enabledConnections.map(\.id).joined(separator: ","))"
     }
-    private var backgroundNotificationSignature: String {
-        let sources = fleet.notificationSources
-            .filter { $0.connection.id != fleet.activeConnectionID }
-            .map { source in
-                let panes = source.panes.map { "\($0.paneID):\($0.state.rawValue):\($0.revision)" }.joined(separator: ",")
-                return "\(source.connection.id)=\(panes)"
-            }
-            .joined(separator: "|")
-        return "\(notifications.authorizationLoaded)|\(settings.preferences.notifications.rawValue)|\(fleet.activeConnectionID ?? "-")|\(sources)"
-    }
+    // Non-active + windowless active reconcile lives on BessieAppDelegate so it
+    // survives main-window close (menu-bar companion). Do not duplicate it here.
 
     var body: some View {
         Group {
-            if let model = fleet.activeModel,
+            if showingColdOpen {
+                ColdOpenSplashView(
+                    bootstrapSettled: coldOpenBootstrapSettled,
+                    playsVideo: playsColdOpenVideo
+                ) {
+                    showingColdOpen = false
+                }
+            } else if let model = fleet.activeModel,
                let projection = model.projection,
                let endpoint = model.terminalEndpoint {
                 ZStack {
@@ -822,34 +1803,42 @@ struct ConnectView: View {
                         projection: projection,
                         terminalEndpoint: endpoint,
                         terminalRegistry: terminalRegistry,
-                        projects: projects
+                        navigationRequest: $navigationRequest,
+                        zenState: $zenState,
+                        projects: projects,
+                        commandPaletteAvailability: commandPaletteAvailability,
+                        featureFlags: featureFlags
                     )
+                    .onAppear {
+                        model.markShellReady()
+                    }
                     if !settings.onboarding.completed {
-                        OnboardingView(
-                            state: settings.onboarding,
-                            connected: true,
-                            hasWorkspace: !projection.workspaces.isEmpty,
-                            terminalControllerReady: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame }),
-                            createWorkspace: { model.perform(.workspaceCreate(cwd: nil, label: "My workspace", focus: true)) },
-                            continueSetup: {
-                                settings.advanceSetup(runtimeReady: true, sessionReady: true,
-                                    workspaceReady: !projection.workspaces.isEmpty,
-                                    terminalControllerReady: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame }))
-                            }
-                        )
-                        .frame(maxWidth: 680, maxHeight: 460)
-                        .shadow(radius: 20)
+                        connectedOnboardingView(projection: projection)
                     } else if model.runtimeDiagnostic.finding == .terminalControlUnavailable {
                         TroubleView(diagnostic: model.runtimeDiagnostic) { model.retry() }
                             .frame(maxWidth: 760, maxHeight: 560)
-                            .shadow(radius: 20)
                     }
                 }
                 .task(id: projection.workspaces.count) {
                     runSetupAutomation(model: model, projection: projection)
                 }
+                .task(id: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame })) {
+                    runSetupAutomation(model: model, projection: projection)
+                    resumeOnboardingCompletion(model: model, projection: projection)
+                }
             } else {
-                if let diagnostic = fleet.activeModel?.runtimeDiagnostic, diagnostic.finding != nil {
+                if !settings.onboarding.completed {
+                    disconnectedOnboardingView
+                } else if zenState.isActive {
+                    BessieZenDisconnectedSurface(
+                        connection: fleet.activeModel?.activeConnection
+                            ?? fleet.connectionDefinitions.first
+                            ?? .localBessie,
+                        presentation: presentation,
+                        retry: retryActiveConnection,
+                        exit: { zenState.exit() }
+                    )
+                } else if let diagnostic = fleet.activeModel?.runtimeDiagnostic, diagnostic.finding != nil {
                     TroubleView(diagnostic: diagnostic) { retryActiveConnection() }
                 } else {
                     connectPanel
@@ -858,30 +1847,56 @@ struct ConnectView: View {
         }
         .environmentObject(fleet)
         .task {
+            onboardingCoordinator.configure(service: ProductionOnboardingMaterializationService(
+                fleet: fleet,
+                remoteBootstrap: .production { connection in
+                    try DispatchQueue.main.sync { try settings.registerOnboardingConnection(connection) }
+                },
+                register: settings.registerOnboardingConnection
+            ))
+            enterOnboardingIfNeeded()
+            updateIntentConnectionContext()
             fleet.start(
-                connections: settings.connections,
+                connections: settings.enabledConnections,
                 selectedConnectionID: settings.selectedConnectionID,
                 runtimeSelection: settings.runtimeSelection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
             )
         }
+        .onChange(of: settings.setupEntryGeneration) { _, _ in enterOnboardingIfNeeded() }
+        .onChange(of: onboardingCoordinator.stage) { _, stage in handleOnboardingStage(stage) }
         .onChange(of: settings.connections) { _, connections in
-            fleet.sync(connections: connections, runtimeSelection: settings.runtimeSelection, bundledRuntimeURL: Self.bundledRuntimeURL)
+            updateIntentConnectionContext()
+            fleet.sync(
+                connections: connections.filter(\.enabled),
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
             fleet.start(
-                connections: settings.connections,
+                connections: settings.enabledConnections,
                 selectedConnectionID: settings.selectedConnectionID,
                 runtimeSelection: selection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
             )
         }
         .onChange(of: settings.selectedConnectionID) { _, id in
+            updateIntentConnectionContext()
             _ = fleet.activate(connectionID: id)
         }
+        .onChange(of: settings.defaultProjectConnectionID) { _, _ in
+            updateIntentConnectionContext()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .bessieCommand)) { notification in
+            if notification.object as? BessieShortcutCommand == .exitZen,
+               fleet.activeModel?.projection == nil {
+                zenState.exit()
+            }
+        }
         .onChange(of: fleet.activeConnectionID) { _, id in
-            terminalRegistry.releaseAll()
+            terminalRegistry.releaseAll(unlessConnectedTo: id)
             if let id, settings.selectedConnectionID != id {
                 settings.selectConnection(id)
             }
@@ -893,16 +1908,9 @@ struct ConnectView: View {
                 _ = fleet.activate(connectionID: route.target.connectionID)
             case .unavailable:
                 fleet.activateFirstReadyConnection()
-                notifications.fallBackToAttention(for: route)
-            }
-        }
-        .task(id: backgroundNotificationSignature) {
-            for source in fleet.notificationSources where source.connection.id != fleet.activeConnectionID {
-                notifications.reconcile(
-                    connection: source.connection,
-                    panes: source.panes,
-                    policy: settings.preferences.notifications,
-                    activePaneID: nil
+                notifications.consumePendingRoute(route)
+                fleet.reportRouteFailure(
+                    "Couldn't open the notification target because its Herdr connection is unavailable. Reconnect it, then find the agent in The herd."
                 )
             }
         }
@@ -914,13 +1922,75 @@ struct ConnectView: View {
                 settings.terminalBecameReady()
             }
         }
-        .onDisappear {
-            shutdownForAppExit()
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             shutdownForAppExit()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .bessieMainWindowWillClose)) { _ in
+            terminalRegistry.releaseAll()
+        }
+        .alert("Action failed", isPresented: Binding(
+            get: { fleet.routeFailure != nil },
+            set: { if !$0 { fleet.clearRouteFailure() } }
+        )) {
+            Button("OK") { fleet.clearRouteFailure() }
+        } message: {
+            Text(fleet.routeFailure ?? "The requested target is unavailable.")
+        }
         .background(BessieWindowSnapshotProbe())
+    }
+
+    private func connectedOnboardingView(projection: HerdrSessionProjection) -> some View {
+        OnboardingView(
+            projects: projects,
+            state: settings.onboarding,
+            connected: true,
+            completionAvailable: onboardingCoordinator.canSubmit,
+            connectionError: onboardingCoordinator.error,
+            path: $onboardingPath,
+            continueSetup: {
+                settings.advanceSetup(
+                    runtimeReady: true,
+                    sessionReady: true,
+                    workspaceReady: !projection.workspaces.isEmpty,
+                    terminalControllerReady: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame })
+                )
+            },
+            finishSetup: submitOnboarding,
+            cancelSetup: cancelOnboarding,
+            setupConnectionID: $onboardingConnectionID
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(BessieOnboardingSurface(base: BessieDesign.background))
+    }
+
+    private var disconnectedOnboardingView: some View {
+        OnboardingView(
+            projects: projects,
+            state: settings.onboarding,
+            connected: false,
+            completionAvailable: false,
+            connectionError: onboardingCoordinator.error ?? "\(presentation.title). \(presentation.detail)",
+            path: $onboardingPath,
+            continueSetup: {},
+            finishSetup: {},
+            cancelSetup: cancelOnboarding,
+            setupConnectionID: $onboardingConnectionID
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(BessieOnboardingSurface(base: BessieDesign.background))
+    }
+
+    private func submitOnboarding() {
+        onboardingCoordinator.submit(
+            connectionID: settings.selectedConnectionID,
+            path: onboardingPath
+        )
+    }
+
+    private func cancelOnboarding() {
+        guard !onboardingCoordinator.materializationStarted else { return }
+        try? onboardingCoordinator.cancelBeforeMaterialization()
+        settings.cancelSetupAgainBeforeMaterialization()
     }
 
     private func shutdownForAppExit() {
@@ -929,11 +1999,52 @@ struct ConnectView: View {
         fleet.stop()
     }
 
+    private func enterOnboardingIfNeeded() {
+        guard !settings.onboarding.completed,
+              splashEntryGeneration != settings.setupEntryGeneration else { return }
+        splashEntryGeneration = settings.setupEntryGeneration
+        onboardingConnectionID = nil
+        onboardingPath = Self.designOnboardingPath
+        if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
+           (10...13).contains(Int(artboard) ?? 0) {
+            showingColdOpen = false
+            return
+        }
+        showingColdOpen = true
+    }
+
+    private func handleOnboardingStage(_ stage: OnboardingCompletionStage) {
+        guard stage == .waitingForFirstFrame,
+              let attempt = onboardingCoordinator.attempt,
+              let model = fleet.activate(connectionID: attempt.connectionID),
+              let projection = model.projection,
+              let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: attempt.paneID ?? "")
+        else { return }
+        navigationRequest = ProductNavigationRequest(
+            connectionID: attempt.connectionID,
+            workspaceID: target.workspaceID,
+            tabID: target.tabID,
+            paneID: target.paneID
+        )
+        terminalRegistry.focusWhenPresented(paneID: target.paneID)
+        settings.advanceSetup(
+            runtimeReady: true,
+            sessionReady: true,
+            workspaceReady: true,
+            terminalControllerReady: false
+        )
+        resumeOnboardingCompletion(model: model, projection: projection)
+    }
+
+    private static var designOnboardingPath: String {
+        guard let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
+              (10...13).contains(Int(artboard) ?? 0)
+        else { return "" }
+        return "/tmp/bessie-design-preview"
+    }
+
     private var connectPanel: some View {
         ZStack {
-            BessieCowprintTexture(base: BessieDesign.window, crop: .connect, intensityScale: 1.15)
-                .ignoresSafeArea()
-
             VStack(spacing: 0) {
                 HStack {
                     Spacer(minLength: 20)
@@ -965,7 +2076,7 @@ struct ConnectView: View {
                                 symbol: "terminal",
                                 title: activeConnection.kind == .local ? "Herdr" : "Remote Herdr",
                                 detail: activeConnection.kind == .local
-                                    ? (presentation.status == .notFound ? "Not installed" : "Version 0.7.5")
+                                    ? (presentation.status == .notFound ? "Not installed" : "Included runtime")
                                     : "\(activeConnection.sshHost ?? "Unknown host") · session \(activeConnection.session ?? "default")",
                                 status: activeConnection.kind == .local
                                     ? (presentation.status == .notFound ? "NOT FOUND" : "FOUND")
@@ -981,8 +2092,8 @@ struct ConnectView: View {
                             Divider().overlay(BessieDesign.border)
                             ConnectFactRow(
                                 symbol: "checkmark.shield",
-                                title: "Required version",
-                                detail: "Herdr 0.7.5 · protocol 17",
+                                title: "Compatibility",
+                                detail: "Public protocol \(BessieCompatibility.protocolVersion)",
                                 status: presentation.status == .incompatible ? "UNSUPPORTED" : "REQUIRED"
                             )
                         }
@@ -1014,14 +2125,13 @@ struct ConnectView: View {
                     }
                     .padding(40)
                     .frame(maxWidth: 760, alignment: .leading)
-                    .bessieSurface(base: BessieDesign.background, crop: .connect)
+                    .bessieSurface(base: BessieDesign.background)
                     Spacer(minLength: 20)
                 }
                 .padding(.horizontal, density.cardGap)
                 .padding(.bottom, max(2, density.cardGap - 2))
             }
         }
-        .tint(BessieDesign.strong)
     }
 
     private static var bundledRuntimeURL: URL? {
@@ -1040,9 +2150,55 @@ struct ConnectView: View {
             }
             return
         }
-        while settings.onboarding.step != .terminal {
+        while settings.onboarding.step != .notifications {
             settings.advanceSetup(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: false)
         }
+        guard terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame }),
+              !setupAutomationStarted
+        else { return }
+        setupAutomationStarted = true
+        completeSetup(model: model, projection: projection)
+    }
+
+    private func completeSetup(model: ConnectionViewModel, projection: HerdrSessionProjection) {
+        let expectedPaneID = onboardingCoordinator.attempt?.paneID
+        guard let readyPaneID = expectedPaneID ?? terminalRegistry.controllers.first(where: { $0.value.hasReadyFrame })?.key,
+              terminalRegistry.controllers[readyPaneID]?.hasReadyFrame == true,
+              let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: readyPaneID)
+        else {
+            setupAutomationStarted = false
+            return
+        }
+        model.openPane(target) { _ in
+            setupAutomationStarted = false
+            do {
+                try onboardingCoordinator.advance(.completed)
+            } catch {
+                return
+            }
+            guard settings.finishSetup(
+                connected: true,
+                hasWorkspace: true,
+                terminalControllerReady: true
+            ) else { return }
+            navigationRequest = ProductNavigationRequest(
+                connectionID: model.activeConnection.id,
+                workspaceID: target.workspaceID,
+                tabID: target.tabID,
+                paneID: target.paneID
+            )
+        } failure: {
+            setupAutomationStarted = false
+            settings.reportOnboardingFocusFailure()
+        }
+    }
+
+    private func resumeOnboardingCompletion(model: ConnectionViewModel, projection: HerdrSessionProjection) {
+        guard onboardingCoordinator.stage == .waitingForFirstFrame,
+              let paneID = onboardingCoordinator.attempt?.paneID,
+              terminalRegistry.controllers[paneID]?.hasReadyFrame == true
+        else { return }
+        completeSetup(model: model, projection: projection)
     }
 
     private var allowsRetry: Bool {
@@ -1050,7 +2206,9 @@ struct ConnectView: View {
     }
 
     private var activeConnection: BessieConnectionDefinition {
-        fleet.activeModel?.activeConnection ?? .localBessie
+        fleet.activeModel?.activeConnection
+            ?? fleet.connectionDefinitions.first
+            ?? .localBessie
     }
 
     private var connectionLabel: ConnectionDisplayLabel {
@@ -1061,12 +2219,20 @@ struct ConnectView: View {
         if activeConnection.kind == .ssh {
             return "Start Herdr session \(activeConnection.session ?? "default") on \(activeConnection.sshHost ?? "the remote Mac"), then try again. Bessie uses your OpenSSH config and leaves remote Herdr running when it disconnects."
         }
-        return "Install Herdr 0.7.5. Bessie starts its named local session automatically. If Herdr is installed somewhere unusual, set BESSIE_HERDR_PATH to the executable."
+        return "Bessie's included compatible Herdr runtime could not start. Reinstall this copy of Bessie or open Trouble for a safe diagnostic report."
     }
 
     private func retryActiveConnection() {
         guard let id = fleet.activeConnectionID else { return }
         fleet.retry(connectionID: id)
+    }
+
+    private func updateIntentConnectionContext() {
+        fleet.updateIntentConnectionContext(
+            connections: settings.connections,
+            selectedConnectionID: settings.selectedConnectionID,
+            defaultProjectConnectionID: settings.defaultProjectConnectionID
+        )
     }
 
     private var statusText: String {
@@ -1118,5 +2284,33 @@ private struct ConnectFactRow: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 54)
+    }
+}
+
+private extension Dictionary where Key == String, Value == JSONValue {
+    func stringValue(_ key: String) -> String? {
+        guard case .string(let value) = self[key] else { return nil }
+        return value
+    }
+
+    func uint64Value(_ key: String) -> UInt64? {
+        guard case .number(let value) = self[key], value >= 0,
+              value.rounded(.towardZero) == value,
+              value <= Double(UInt64.max)
+        else { return nil }
+        return UInt64(value)
+    }
+}
+
+private extension BessieTimedSnoozeProvenance {
+    var intentPreset: BessiePaneSnoozePreset {
+        switch self {
+        case .thirtyMinutes: return .thirtyMinutes
+        case .oneHour: return .oneHour
+        case .threeHours: return .threeHours
+        case .twelveHours: return .twelveHours
+        case .twentyFourHours: return .twentyFourHours
+        case .tomorrow: return .tomorrow
+        }
     }
 }

@@ -20,6 +20,10 @@ final class BessieProjectTests: XCTestCase {
 
             XCTAssertEqual(normalized.name, "Project One")
             XCTAssertEqual(normalized.group, "Client")
+            XCTAssertEqual(normalized.schemaVersion, 3)
+            XCTAssertEqual(normalized.targetConnectionID, BessieConnectionDefinition.localBessie.id)
+            XCTAssertEqual(normalized.folders.count, 1)
+            XCTAssertTrue(normalized.folders[0].isPrimary)
             XCTAssertEqual(normalized.tabs[0].name, "Main")
             XCTAssertEqual(normalized.tabs[0].panes[0].label, "Server")
             XCTAssertEqual(normalized.tabs[0].panes[0].command, "printf ' exact $TEXT '")
@@ -39,11 +43,39 @@ final class BessieProjectTests: XCTestCase {
         XCTAssertEqual(migrated.schemaVersion, BessieProjectSchema.currentVersion)
         XCTAssertEqual(migrated.id, UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
         XCTAssertEqual(migrated.name, "First schema fixture")
+        XCTAssertEqual(migrated.group, "  Legacy team  ")
+        XCTAssertEqual(migrated.folders, [
+            BessieProjectFolder(
+                id: migrated.id,
+                name: "Primary",
+                path: "/tmp/bessie-project-v1-fixture",
+                isPrimary: true
+            ),
+        ])
+        XCTAssertNil(migrated.tabs[0].panes[0].folderID)
         XCTAssertEqual(try BessieProjectCodec.decode(data), migrated)
+
+        let roundTripped = try BessieProjectCodec.decode(BessieProjectCodec.encode(migrated))
+        XCTAssertEqual(roundTripped, migrated)
+        XCTAssertEqual(roundTripped.group, "  Legacy team  ")
 
         let future = try replacingSchemaVersion(in: data, with: BessieProjectSchema.currentVersion + 1)
         XCTAssertThrowsError(try BessieProjectMigration.migrate(future)) {
             XCTAssertEqual($0 as? BessieProjectSchemaError, .unsupportedVersion(BessieProjectSchema.currentVersion + 1))
+        }
+    }
+
+    func testSchemaTwoMigrationPinsLegacyHostPathsToLocalInsteadOfSelectedRemote() throws {
+        try withProjectDirectory { directory in
+            var sourceProject = makeProject(directory: directory)
+            sourceProject.targetConnectionID = "hermes-vps"
+            let versionTwo = try versionTwoData(from: sourceProject)
+
+            let migrated = try BessieProjectMigration.migrate(versionTwo)
+
+            XCTAssertEqual(migrated.schemaVersion, 3)
+            XCTAssertEqual(migrated.targetConnectionID, BessieConnectionDefinition.localBessie.id)
+            XCTAssertEqual(migrated.workingDirectory, directory.path)
         }
     }
 
@@ -71,11 +103,13 @@ final class BessieProjectTests: XCTestCase {
         }
     }
 
-    func testSchemaOneRejectsUnknownRuntimeAndEnvironmentFields() throws {
+    func testCurrentSchemaRejectsUnknownRuntimeCredentialAndEnvironmentFields() throws {
         try withProjectDirectory { directory in
             let data = try BessieProjectCodec.encode(makeProject(directory: directory))
             for (path, key) in [
                 ([String](), "workspace_id"),
+                ([String](), "credentials"),
+                (["folders", "0"], "sshConnectionString"),
                 (["tabs", "0"], "tab_id"),
                 (["tabs", "0", "panes", "0"], "environment"),
                 (["tabs", "0", "panes", "0", "placement"], "pane_id"),
@@ -85,6 +119,23 @@ final class BessieProjectTests: XCTestCase {
                     guard case .invalidDocument = $0 as? BessieProjectSchemaError else {
                         return XCTFail("Expected strict schema rejection, got \($0)")
                     }
+                }
+            }
+        }
+    }
+
+    func testSchemaOneStrictlyRejectsFutureAndRuntimeFieldsBeforeMigration() throws {
+        let data = Data(Self.versionOneMigrationFixture.utf8)
+        for (path, key) in [
+            ([String](), "folders"),
+            ([String](), "token"),
+            (["tabs", "0", "panes", "0"], "folderID"),
+            (["tabs", "0", "panes", "0"], "pane_id"),
+        ] {
+            let modified = try addingJSONField(to: data, path: path, key: key)
+            XCTAssertThrowsError(try BessieProjectCodec.decode(modified)) {
+                guard case .invalidDocument = $0 as? BessieProjectSchemaError else {
+                    return XCTFail("Expected strict schema-v1 rejection, got \($0)")
                 }
             }
         }
@@ -104,14 +155,51 @@ final class BessieProjectTests: XCTestCase {
 
     func testValidationRejectsRelativeMissingAndNonDirectoryWorkingPaths() throws {
         try withProjectDirectory { directory in
-            assertIssues(makeProject(directory: directory, workingDirectory: "relative/path"), contain: [.workingDirectoryNotAbsolute])
+            assertIssues(makeProject(directory: directory, workingDirectory: "relative/path"), contain: [.folderNotAbsolute])
             assertIssues(
                 makeProject(directory: directory, workingDirectory: directory.appendingPathComponent("missing").path),
-                contain: [.workingDirectoryNotDirectory]
+                contain: [.folderNotDirectory]
             )
             let file = directory.appendingPathComponent("file")
             try Data().write(to: file)
-            assertIssues(makeProject(directory: directory, workingDirectory: file.path), contain: [.workingDirectoryNotDirectory])
+            assertIssues(makeProject(directory: directory, workingDirectory: file.path), contain: [.folderNotDirectory])
+        }
+    }
+
+    func testFolderValidationRequiresOnePrimaryUniquePathsAndValidPaneReferences() throws {
+        try withProjectDirectory { directory in
+            let additional = directory.appendingPathComponent("Additional", isDirectory: true)
+            try FileManager.default.createDirectory(at: additional, withIntermediateDirectories: true)
+            let primaryID = UUID()
+            let additionalID = UUID()
+            let timestamp = Date(timeIntervalSince1970: 1_000)
+            var project = BessieProject(
+                name: "Folders",
+                folders: [
+                    .init(id: primaryID, name: "Primary", path: directory.path, isPrimary: true),
+                    .init(id: additionalID, name: "Additional", path: additional.path),
+                ],
+                tabs: [.init(name: "Main", panes: [
+                    .init(folderID: additionalID, placement: .root),
+                ])],
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+
+            let normalized = try project.normalized()
+            XCTAssertEqual(normalized.workingDirectory(for: normalized.tabs[0].panes[0]), additional.path)
+            XCTAssertEqual(
+                try BessieProjectCodec.decode(BessieProjectCodec.encode(normalized)),
+                normalized
+            )
+
+            project.folders[1].path = directory.appendingPathComponent(".").path
+            project.folders[1].isPrimary = true
+            project.tabs[0].panes[0].folderID = UUID()
+            assertIssues(
+                project,
+                contain: [.invalidPrimaryFolderCount, .duplicateFolderPath, .paneFolderMissing]
+            )
         }
     }
 
@@ -335,7 +423,7 @@ final class BessieProjectTests: XCTestCase {
                 guard let validation = error as? BessieProjectValidationError else {
                     return XCTFail("Expected validation error, got \(error)")
                 }
-                XCTAssertTrue(validation.issues.contains { $0.code == .workingDirectoryNotDirectory })
+                XCTAssertTrue(validation.issues.contains { $0.code == .folderNotDirectory })
             }
 
             let saved = try store.create(makeProject(directory: directory))
@@ -345,7 +433,7 @@ final class BessieProjectTests: XCTestCase {
                 guard let validation = error as? BessieProjectValidationError else {
                     return XCTFail("Expected validation error, got \(error)")
                 }
-                XCTAssertTrue(validation.issues.contains { $0.code == .workingDirectoryNotDirectory })
+                XCTAssertTrue(validation.issues.contains { $0.code == .folderNotDirectory })
             }
             XCTAssertEqual(try store.load(id: saved.project.id).project, saved.project)
         }
@@ -538,6 +626,96 @@ final class BessieProjectTests: XCTestCase {
             "/Users/tester/Library/Application Support/Bessie/Projects"
         )
     }
+
+    func testStoreTransactionallyMigratesVersionOneAndRetainsExactBackup() throws {
+        try withProjectDirectory { directory in
+            let root = directory.appendingPathComponent("Projects", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let source = root.appendingPathComponent("11111111-1111-1111-1111-111111111111.json")
+            let original = Data(Self.versionOneMigrationFixture.utf8)
+            try original.write(to: source)
+            let store = BessieProjectStore(rootURL: root)
+
+            let catalog = try store.list()
+
+            XCTAssertEqual(catalog.projects.first?.project.schemaVersion, 3)
+            XCTAssertTrue(catalog.issues.isEmpty)
+            XCTAssertEqual(try BessieProjectCodec.schemaVersion(in: Data(contentsOf: source)), 3)
+            XCTAssertEqual(
+                catalog.projects.first?.project.targetConnectionID,
+                BessieConnectionDefinition.localBessie.id
+            )
+            XCTAssertEqual(try BessieProjectCodec.decode(Data(contentsOf: source)).group, "  Legacy team  ")
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathExtension("v1-backup")), original)
+        }
+    }
+
+    func testStoreTransactionallyMigratesVersionTwoAndRetainsExactBackup() throws {
+        try withProjectDirectory { directory in
+            let root = directory.appendingPathComponent("Projects", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let project = makeProject(directory: directory)
+            let source = root.appendingPathComponent("\(project.id.uuidString).json")
+            let original = try versionTwoData(from: project)
+            try original.write(to: source)
+
+            let catalog = try BessieProjectStore(rootURL: root).list()
+
+            XCTAssertEqual(catalog.projects.first?.project.schemaVersion, 3)
+            XCTAssertEqual(catalog.projects.first?.project.targetConnectionID, BessieConnectionDefinition.localBessie.id)
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathExtension("v2-backup")), original)
+        }
+    }
+
+    func testInterruptedMigrationRollsBackCanonicalVersionOneAndSurfacesActionableIssue() throws {
+        try withProjectDirectory { directory in
+            let root = directory.appendingPathComponent("Projects", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let source = root.appendingPathComponent("11111111-1111-1111-1111-111111111111.json")
+            let original = Data(Self.versionOneMigrationFixture.utf8)
+            try original.write(to: source)
+            let store = BessieProjectStore(rootURL: root, atomicReplace: { _, destination in
+                try FileManager.default.removeItem(at: destination)
+                throw AtomicReplacementError.injected
+            })
+
+            let catalog = try store.list()
+
+            XCTAssertTrue(catalog.projects.isEmpty)
+            XCTAssertEqual(catalog.issues.map(\.kind), [.migrationFailed])
+            XCTAssertTrue(catalog.issues[0].message.contains("rolled back"))
+            XCTAssertEqual(try Data(contentsOf: source), original)
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathExtension("v1-backup")), original)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasSuffix(".tmp") })
+
+            let retriedCatalog = try BessieProjectStore(rootURL: root).list()
+            XCTAssertEqual(retriedCatalog.projects.first?.project.schemaVersion, 3)
+            XCTAssertTrue(retriedCatalog.issues.isEmpty)
+
+            try Data("changed after rollback".utf8).write(to: source)
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathExtension("v1-backup")), original)
+        }
+    }
+
+    func testStoreRefusesSymlinkedCatalogEntryWithoutTouchingExternalVersionOneTarget() throws {
+        try withProjectDirectory { directory in
+            let root = directory.appendingPathComponent("Projects", isDirectory: true)
+            let external = directory.appendingPathComponent("external-v1.json")
+            let original = Data(Self.versionOneMigrationFixture.utf8)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try original.write(to: external)
+            let linked = root.appendingPathComponent("linked.json")
+            try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: external)
+
+            let catalog = try BessieProjectStore(rootURL: root).list()
+
+            XCTAssertTrue(catalog.projects.isEmpty)
+            XCTAssertEqual(catalog.issues.map(\.kind), [.corrupt])
+            XCTAssertTrue(catalog.issues[0].message.contains("symbolic links"))
+            XCTAssertEqual(try Data(contentsOf: external), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: external.appendingPathExtension("v1-backup").path))
+        }
+    }
 }
 
 private enum TrashOwnerError: Error, Equatable { case denied }
@@ -562,7 +740,7 @@ private extension BessieProjectTests {
     {
       "archivedAt": null,
       "createdAt": "2026-08-01T00:00:00Z",
-      "group": null,
+      "group": "  Legacy team  ",
       "id": "11111111-1111-1111-1111-111111111111",
       "name": "First schema fixture",
       "projectDescription": "Native Bessie schema 1",
@@ -644,6 +822,15 @@ private extension BessieProjectTests {
     func replacingSchemaVersion(in data: Data, with version: Int) throws -> Data {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         object["schemaVersion"] = version
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    func versionTwoData(from project: BessieProject) throws -> Data {
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: BessieProjectCodec.encode(project)) as? [String: Any]
+        )
+        object["schemaVersion"] = 2
+        object.removeValue(forKey: "targetConnectionID")
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 

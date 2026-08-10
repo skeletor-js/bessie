@@ -54,8 +54,8 @@ final class FollowFilesViewModelTests: XCTestCase {
 
     private func projection(cwd: String) throws -> HerdrSessionProjection {
         try HerdrSessionProjection(snapshot: HerdrSnapshot(
-            version: "0.7.5",
-            protocolVersion: 17,
+            version: "0.8.0",
+            protocolVersion: 19,
             focusedWorkspaceID: "workspace",
             focusedTabID: "tab",
             focusedPaneID: "pane",

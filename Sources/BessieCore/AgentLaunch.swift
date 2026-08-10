@@ -86,6 +86,23 @@ public struct AgentCatalog: Equatable, Sendable {
         case "gemini": "Gemini"
         case "opencode": "OpenCode"
         case "copilot": "Copilot"
+        case "hermes": "Hermes"
+        case "amp": "Amp"
+        case "grok": "Grok"
+        case "pi": "Pi"
+        case "omp": "OMP"
+        case "cursor": "Cursor"
+        case "devin": "Devin"
+        case "agy": "Antigravity"
+        case "cline": "Cline"
+        case "mastracode": "Mastra"
+        case "kimi": "Kimi"
+        case "kiro": "Kiro"
+        case "droid": "Droid"
+        case "kilo": "Kilo"
+        case "qodercli": "Qoder CLI"
+        case "maki": "Maki"
+        case "openclaw": "OpenClaw"
         default: kind.prefix(1).uppercased() + kind.dropFirst()
         }
     }
@@ -101,8 +118,8 @@ public enum AgentSemanticName {
 }
 
 public enum NewProcessPlacement: Equatable, Sendable {
-    case split(targetPaneID: String, direction: SplitDirection, cwd: String?)
-    case newTab(workspaceID: String, cwd: String?)
+    case split(targetPaneID: String, direction: SplitDirection, cwd: String?, name: String)
+    case newTab(workspaceID: String, cwd: String?, name: String)
 }
 
 public enum NewProcessChoice: Equatable, Sendable {
@@ -138,19 +155,26 @@ public struct HerdrProcessLauncher: Sendable {
         let client = HerdrActionClient(api: api)
         let placementAction: HerdrAction
         switch placement {
-        case .split(let targetPaneID, let direction, let cwd):
+        case .split(let targetPaneID, let direction, let cwd, _):
             placementAction = .paneSplit(targetPaneID: targetPaneID, direction: direction, ratio: 0.5, cwd: cwd, focus: true)
-        case .newTab(let workspaceID, let cwd):
-            placementAction = .tabCreate(workspaceID: workspaceID, cwd: cwd, label: nil, focus: true)
+        case .newTab(let workspaceID, let cwd, let name):
+            placementAction = .tabCreate(workspaceID: workspaceID, cwd: cwd, label: name, focus: true)
         }
         let shellProjection = try client.perform(placementAction)
         let oldPaneIDs = Set(before.panes.map(\.id))
         guard let paneID = shellProjection.panes.first(where: { !oldPaneIDs.contains($0.id) })?.id else {
             throw HerdrClientError.unexpectedResponse("Herdr created no new pane for the requested process")
         }
+        let namedShellProjection: HerdrSessionProjection
+        switch placement {
+        case .split(_, _, _, let name):
+            namedShellProjection = try client.perform(.paneRename(id: paneID, label: name))
+        case .newTab:
+            namedShellProjection = shellProjection
+        }
 
         guard case .agent(let kind, let name, let args, let timeout) = process else {
-            return ProcessLaunchResult(projection: shellProjection, paneID: paneID, agentStarted: false, agentError: nil)
+            return ProcessLaunchResult(projection: namedShellProjection, paneID: paneID, agentStarted: false, agentError: nil)
         }
         let agentAction = HerdrAction.agentStart(paneID: paneID, kind: kind, name: name, args: args, timeoutMilliseconds: timeout)
         var retryIndex = 0
@@ -169,7 +193,7 @@ public struct HerdrProcessLauncher: Sendable {
                     continue
                 }
                 return ProcessLaunchResult(
-                    projection: shellProjection,
+                    projection: namedShellProjection,
                     paneID: paneID,
                     agentStarted: false,
                     agentError: error.localizedDescription
@@ -179,7 +203,8 @@ public struct HerdrProcessLauncher: Sendable {
     }
 
     private func isTransientFreshPaneError(_ error: Error) -> Bool {
-        guard let clientError = error as? HerdrClientError,
+        let underlying = (error as? HerdrActionAttemptFailure)?.underlying ?? error
+        guard let clientError = underlying as? HerdrClientError,
               case .server(let code, _) = clientError
         else { return false }
         return code == "agent_pane_busy" || code == "agent_pane_unavailable"

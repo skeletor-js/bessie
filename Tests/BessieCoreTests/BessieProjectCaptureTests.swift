@@ -17,9 +17,14 @@ final class BessieProjectCaptureTests: XCTestCase {
     func testCaptureMapsNestedMultiTabTopologyWithFreshIDsAndBlankCommands() throws {
         let projection = try HerdrSessionProjection(snapshot: .captureFixture)
         let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        let project = try BessieProjectCapture.capture(from: projection, now: capturedAt)
+        let project = try BessieProjectCapture.capture(
+            from: projection,
+            targetConnectionID: "hermes-vps",
+            now: capturedAt
+        )
 
         XCTAssertEqual(project.name, "duplicate")
+        XCTAssertEqual(project.targetConnectionID, "hermes-vps")
         XCTAssertEqual(project.workingDirectory, "/tmp/bessie-capture")
         XCTAssertEqual(project.createdAt, capturedAt)
         XCTAssertEqual(project.updatedAt, capturedAt)
@@ -100,7 +105,7 @@ final class BessieProjectCaptureTests: XCTestCase {
 
 private extension HerdrSnapshot {
     static let emptyCaptureFixture = HerdrSnapshot(
-        version: "0.7.5", protocolVersion: 17,
+        version: "0.8.0", protocolVersion: 19,
         focusedWorkspaceID: nil, focusedTabID: nil, focusedPaneID: nil,
         workspaces: [], tabs: [], panes: [], layouts: [], agents: []
     )
@@ -175,7 +180,7 @@ private extension HerdrSnapshot {
             ]))
         }
         return HerdrSnapshot(
-            version: "0.7.5", protocolVersion: 17,
+            version: "0.8.0", protocolVersion: 19,
             focusedWorkspaceID: workspace, focusedTabID: tabOne, focusedPaneID: paneIDs[1],
             workspaces: [.object([
                 "workspace_id": .string(workspace), "number": .number(1), "label": .string("duplicate"),
@@ -215,7 +220,7 @@ private extension HerdrSnapshot {
     ) -> HerdrSnapshot {
         let workspace = "workspace", tabID = "tab"
         return HerdrSnapshot(
-            version: "0.7.5", protocolVersion: 17,
+            version: "0.8.0", protocolVersion: 19,
             focusedWorkspaceID: workspace, focusedTabID: tabID, focusedPaneID: paneFacts[0].id,
             workspaces: [.object([
                 "workspace_id": .string(workspace), "number": .number(1), "label": .string("Captured"),

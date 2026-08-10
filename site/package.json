@@ -1,0 +1,24 @@
+{
+  "name": "bessie-dev-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "check": "node scripts/smoke.mjs && node scripts/appcast.test.mjs",
+    "proof": "node scripts/visual-proof.mjs",
+    "stage:appcast": "node scripts/stage-appcast.mjs stage",
+    "verify:staged-appcast": "node scripts/stage-appcast.mjs verify-staged",
+    "predeploy": "npm run check && npm run verify:staged-appcast",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "wrangler": "4.118.0"
+  },
+  "overrides": {
+    "undici": "7.29.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.10.1"
+  }
+}

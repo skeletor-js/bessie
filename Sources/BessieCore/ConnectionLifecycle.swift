@@ -24,6 +24,25 @@ public struct ReconnectPolicy: Equatable, Sendable {
     }
 }
 
+struct ReconnectAttempt: Equatable, Sendable {
+    let attempt: Int
+    let delay: TimeInterval
+}
+
+struct ReconnectAttemptBudget: Sendable {
+    private var failureCount = 0
+
+    mutating func recordConnectionSuccess() {
+        failureCount = 0
+    }
+
+    mutating func recordFailure(using policy: ReconnectPolicy) -> ReconnectAttempt? {
+        guard let delay = policy.delay(afterFailure: failureCount) else { return nil }
+        failureCount += 1
+        return ReconnectAttempt(attempt: failureCount, delay: delay)
+    }
+}
+
 public enum HerdrConnectionState: Equatable, Sendable {
     case notFound
     case resolutionFailed(RuntimeResolutionFailure)
@@ -67,6 +86,8 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
     private let bundledRuntimeURL: URL?
     private let validator: HerdrRuntimeValidator?
     private let bundledRuntimeLock: BundledRuntimeLock?
+    private let performanceRecorder: BessiePerformanceRecorder?
+    private let performanceSequence: UInt64?
     private let cancellation = ConnectionCancellation()
 
     public init(
@@ -79,7 +100,9 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
         runtimeSelection: HerdrRuntimeSelection? = nil,
         bundledRuntimeURL: URL? = nil,
         validator: HerdrRuntimeValidator? = nil,
-        bundledRuntimeLock: BundledRuntimeLock? = nil
+        bundledRuntimeLock: BundledRuntimeLock? = nil,
+        performanceRecorder: BessiePerformanceRecorder? = nil,
+        performanceSequence: UInt64? = nil
     ) {
         self.repositoryRoot = repositoryRoot
         var managedEnvironment = environment
@@ -106,6 +129,8 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
         self.bundledRuntimeURL = bundledRuntimeURL
         self.validator = validator
         self.bundledRuntimeLock = bundledRuntimeLock
+        self.performanceRecorder = performanceRecorder
+        self.performanceSequence = performanceSequence
     }
 
     public func run(onState: @escaping @Sendable (HerdrConnectionState) -> Void) async {
@@ -122,77 +147,131 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
                 runtime = try locator.resolve(explicitPath: environment["BESSIE_HERDR_PATH"], selection: runtimeSelection,
                                              bundledURL: bundledRuntimeURL, path: environment["PATH"])
             } catch let failure as RuntimeResolutionFailure {
+                markRuntimeValidationUnavailable()
                 onState(.resolutionFailed(failure)); return
-            } catch { onState(.notFound); return }
+            } catch {
+                markRuntimeValidationUnavailable()
+                onState(.notFound); return
+            }
         } else {
             guard let located = locator.locate(explicitPath: environment["BESSIE_HERDR_PATH"], path: environment["PATH"], repositoryRoot: repositoryRoot)
-            else { onState(.notFound); return }
+            else {
+                markRuntimeValidationUnavailable()
+                onState(.notFound); return
+            }
             runtime = located
         }
 
-        if let validator {
-            do { _ = try validator.validate(runtime, bundledLock: bundledRuntimeLock) }
+        let socketOverride = environment["HERDR_SOCKET_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSocketOverride = socketOverride?.isEmpty == false
+        let skipIntegrity = hasSocketOverride || environment["BESSIE_HERDR_SKIP_RUNTIME_INTEGRITY"] == "1"
+
+        if skipIntegrity {
+            // Remote tunnel / explicit socket: identity comes from socket ping, not local sha/codesign.
+            performanceRecorder?.mark(.runtimeValidation, sequence: performanceSequence)
+        } else if let validator {
+            do {
+                _ = try validator.validate(runtime, bundledLock: bundledRuntimeLock)
+                performanceRecorder?.mark(.runtimeValidation, sequence: performanceSequence)
+            }
             catch let failure as RuntimeValidationFailure {
+                performanceRecorder?.mark(.runtimeValidation, sequence: performanceSequence)
                 onState(.validationFailed(runtime: runtime, failure: failure)); return
             } catch {
+                performanceRecorder?.mark(.runtimeValidation, sequence: performanceSequence)
                 onState(.validationFailed(runtime: runtime, failure: .filesystem(runtime.url.path))); return
             }
+        } else {
+            performanceRecorder?.markUnavailable(
+                from: .connectionStart,
+                to: .runtimeValidation,
+                sequence: performanceSequence
+            )
         }
 
-        var status: HerdrServerStatus
-        do { status = try probe.status(runtime: runtime, environment: environment) }
-        catch { onState(.apiUnavailable(runtime: runtime, reason: error.localizedDescription)); return }
-        if !status.running {
-            guard autoStartEnabled else {
-                onState(.stopped(runtime: runtime, socketPath: status.socketPath))
-                return
-            }
-            onState(.starting(runtime: runtime))
-            do {
-                try launcher.start(
-                    runtime: runtime,
-                    environment: environment,
-                    startupDirectory: startupDirectory
-                )
-            } catch {
-                onState(.startFailed(runtime: runtime, reason: error.localizedDescription))
-                return
-            }
-
-            var startupFailure = "Herdr did not become ready."
-            for delay in policy.delays {
-                guard cancellation.wait(for: delay) else { return }
+        let socketPath: String
+        if let socketOverride, !socketOverride.isEmpty {
+            // Already bridged (SSH) or caller forced a socket — skip `herdr status` process spawn.
+            socketPath = socketOverride
+        } else {
+            var status: HerdrServerStatus
+            do { status = try probe.status(runtime: runtime, environment: environment) }
+            catch { onState(.apiUnavailable(runtime: runtime, reason: error.localizedDescription)); return }
+            if !status.running {
+                guard autoStartEnabled else {
+                    onState(.stopped(runtime: runtime, socketPath: status.socketPath))
+                    return
+                }
+                onState(.starting(runtime: runtime))
                 do {
-                    status = try probe.status(runtime: runtime, environment: environment)
-                    if status.running { break }
+                    try launcher.start(
+                        runtime: runtime,
+                        environment: environment,
+                        startupDirectory: startupDirectory
+                    )
                 } catch {
-                    startupFailure = error.localizedDescription
+                    onState(.startFailed(runtime: runtime, reason: error.localizedDescription))
+                    return
+                }
+
+                var startupFailure = "Herdr did not become ready."
+                // Probe immediately, then back off — do not sleep before the first ready check.
+                let readinessDelays = [0.0] + policy.delays
+                var becameReady = false
+                for delay in readinessDelays {
+                    if delay > 0 {
+                        guard cancellation.wait(for: delay) else { return }
+                    } else if cancellation.isCancelled {
+                        return
+                    }
+                    do {
+                        status = try probe.status(runtime: runtime, environment: environment)
+                        if status.running {
+                            becameReady = true
+                            break
+                        }
+                    } catch {
+                        startupFailure = error.localizedDescription
+                    }
+                }
+                guard becameReady else {
+                    onState(.startFailed(runtime: runtime, reason: startupFailure))
+                    return
                 }
             }
-            guard status.running else {
-                onState(.startFailed(runtime: runtime, reason: startupFailure))
+
+            let statusIdentity = HerdrServerIdentity(version: status.version ?? "unknown", protocolVersion: status.protocolVersion ?? -1)
+            if let reason = HerdrCompatibility.incompatibility(for: statusIdentity) {
+                onState(.incompatible(runtime: runtime, identity: statusIdentity, reason: reason))
                 return
             }
+            socketPath = status.socketPath
         }
 
-        let statusIdentity = HerdrServerIdentity(version: status.version ?? "unknown", protocolVersion: status.protocolVersion ?? -1)
-        if let reason = HerdrCompatibility.incompatibility(for: statusIdentity) {
-            onState(.incompatible(runtime: runtime, identity: statusIdentity, reason: reason))
-            return
-        }
-
-        var failure = 0
+        var retryBudget = ReconnectAttemptBudget()
         var connectedOnce = false
         while !cancellation.isCancelled {
             onState(.connecting(runtime: runtime))
             do {
-                let api = HerdrSocketAPI(socketPath: status.socketPath)
-                let identity = try api.ping()
-                if let reason = HerdrCompatibility.incompatibility(for: identity) {
-                    onState(.incompatible(runtime: runtime, identity: identity, reason: reason))
-                    return
+                let api = HerdrSocketAPI(socketPath: socketPath)
+                if !hasSocketOverride {
+                    let identity = try api.ping()
+                    if let reason = HerdrCompatibility.incompatibility(for: identity) {
+                        onState(.incompatible(runtime: runtime, identity: identity, reason: reason))
+                        return
+                    }
                 }
                 let bootstrapped = try HerdrBootstrapper().bootstrap(api: api)
+                let snapshotIdentity = HerdrServerIdentity(
+                    version: bootstrapped.snapshot.version,
+                    protocolVersion: bootstrapped.snapshot.protocolVersion
+                )
+                if let reason = HerdrCompatibility.incompatibility(for: snapshotIdentity) {
+                    bootstrapped.subscription.close()
+                    onState(.incompatible(runtime: runtime, identity: snapshotIdentity, reason: reason))
+                    return
+                }
                 guard cancellation.attach(bootstrapped.subscription) else {
                     bootstrapped.subscription.close()
                     return
@@ -203,29 +282,34 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
                 }
                 var latestSnapshot = bootstrapped.snapshot
                 connectedOnce = true
-                onState(.connected(runtime: runtime, socketPath: status.socketPath, snapshot: bootstrapped.snapshot))
+                retryBudget.recordConnectionSuccess()
+                onState(.connected(runtime: runtime, socketPath: socketPath, snapshot: bootstrapped.snapshot))
                 while !cancellation.isCancelled, try bootstrapped.subscription.nextEvent() != nil {
                     guard cancellation.wait(for: 0.03) else { return }
                     _ = bootstrapped.subscription.drainBufferedEvents()
                     let snapshot = try api.snapshot()
                     if snapshot != latestSnapshot {
                         latestSnapshot = snapshot
-                        onState(.connected(runtime: runtime, socketPath: status.socketPath, snapshot: snapshot))
+                        onState(.connected(runtime: runtime, socketPath: socketPath, snapshot: snapshot))
                     }
                 }
                 guard !cancellation.isCancelled else { return }
                 throw HerdrClientError.connectionClosed
             } catch {
                 guard !cancellation.isCancelled else { return }
-                guard let delay = policy.delay(afterFailure: failure) else {
+                guard let retry = retryBudget.recordFailure(using: policy) else {
                     onState(connectedOnce
                         ? .lost(runtime: runtime, reason: error.localizedDescription)
                         : .apiUnavailable(runtime: runtime, reason: error.localizedDescription))
                     return
                 }
-                failure += 1
-                onState(.retrying(runtime: runtime, attempt: failure, delay: delay, reason: error.localizedDescription))
-                guard cancellation.wait(for: delay) else { return }
+                onState(.retrying(
+                    runtime: runtime,
+                    attempt: retry.attempt,
+                    delay: retry.delay,
+                    reason: error.localizedDescription
+                ))
+                guard cancellation.wait(for: retry.delay) else { return }
             }
         }
     }
@@ -233,6 +317,14 @@ public final class HerdrConnectionRunner: @unchecked Sendable {
     private var autoStartEnabled: Bool {
         guard let configured = environment["BESSIE_HERDR_AUTOSTART"]?.lowercased() else { return true }
         return !["0", "false", "no"].contains(configured)
+    }
+
+    private func markRuntimeValidationUnavailable() {
+        performanceRecorder?.markUnavailable(
+            from: .connectionStart,
+            to: .runtimeValidation,
+            sequence: performanceSequence
+        )
     }
 
     private var startupDirectory: URL {

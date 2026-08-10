@@ -45,6 +45,7 @@ public enum BessieIntentErrorCode: String, Codable, Equatable, Sendable {
     case confirmTokenInvalid = "confirm_token_invalid"
     case herdrError = "herdr_error"
     case notConnected = "not_connected"
+    case conflict
     case unsupported
 }
 
@@ -80,13 +81,14 @@ public struct BessieIntentResult: Codable, Equatable, Sendable {
         id: String,
         code: BessieIntentErrorCode,
         message: String,
-        confirmToken: String? = nil
+        confirmToken: String? = nil,
+        value: JSONValue? = nil
     ) -> BessieIntentResult {
         BessieIntentResult(
             v: 1,
             id: id,
             ok: false,
-            value: nil,
+            value: value,
             error: BessieIntentError(code: code, message: message, confirmToken: confirmToken)
         )
     }
@@ -130,15 +132,61 @@ public struct BessieIntentSessionProjection: Codable, Equatable, Sendable {
     }
 }
 
+public struct BessieIntentConnectionContext: Codable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+    public let kind: BessieConnectionKind
+    public let sshHost: String?
+    public let enabled: Bool
+    public let selected: Bool
+    public let defaultProjectTarget: Bool
+    public let connected: Bool
+
+    public init(
+        id: String,
+        label: String,
+        kind: BessieConnectionKind,
+        sshHost: String?,
+        enabled: Bool,
+        selected: Bool,
+        defaultProjectTarget: Bool,
+        connected: Bool
+    ) {
+        self.id = id
+        self.label = label
+        self.kind = kind
+        self.sshHost = sshHost
+        self.enabled = enabled
+        self.selected = selected
+        self.defaultProjectTarget = defaultProjectTarget
+        self.connected = connected
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, kind, enabled, selected, connected
+        case sshHost = "ssh_host"
+        case defaultProjectTarget = "default_project_target"
+    }
+}
+
 public protocol BessieIntentLivePort: Sendable {
     func isConnected(connectionID: String?) -> Bool
+    func connectionContexts(connectionID: String?) -> [BessieIntentConnectionContext]
     func projection(connectionID: String) throws -> HerdrSessionProjection
     func perform(_ action: HerdrAction, connectionID: String) throws -> HerdrSessionProjection
+}
+
+public extension BessieIntentLivePort {
+    func connectionContexts(connectionID _: String?) -> [BessieIntentConnectionContext] { [] }
 }
 
 public protocol BessieIntentProjectReadPort: Sendable {
     func listProjects() throws -> [BessieProject]
     func project(id: UUID) throws -> BessieProject?
+}
+
+public protocol BessieIntentPresentationPort: Sendable {
+    func executePresentation(_ request: BessieIntentRequest) -> BessieIntentResult
 }
 
 extension BessieProjectStore: BessieIntentProjectReadPort {
@@ -153,21 +201,27 @@ extension BessieProjectStore: BessieIntentProjectReadPort {
 public struct BessieIntentExecutor: Sendable {
     private let live: any BessieIntentLivePort
     private let projects: any BessieIntentProjectReadPort
+    private let presentation: (any BessieIntentPresentationPort)?
     private let confirmations: ConfirmationStore
 
     public init(
         live: any BessieIntentLivePort,
         projects: any BessieIntentProjectReadPort,
+        presentation: (any BessieIntentPresentationPort)? = nil,
         tokenSource: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.live = live
         self.projects = projects
+        self.presentation = presentation
         confirmations = ConfirmationStore(tokenSource: tokenSource)
     }
 
     public func execute(_ request: BessieIntentRequest) -> BessieIntentResult {
         guard request.v == 1 else {
             return .failure(id: request.id, code: .unsupported, message: "Unsupported intent protocol version \(request.v).")
+        }
+        guard !request.id.isEmpty, request.id.utf8.count <= BessiePanePresentationLedger.maximumIdentifierBytes else {
+            return .failure(id: request.id, code: .invalidParams, message: "Request ID must contain 1 to 256 UTF-8 bytes.")
         }
         guard let definition = BessieIntentRegistry.definition(for: request.intent) else {
             return .failure(id: request.id, code: .unknownIntent, message: "Unknown intent '\(request.intent.rawValue)'.")
@@ -205,6 +259,13 @@ public struct BessieIntentExecutor: Sendable {
                 "connected": .bool(live.isConnected(connectionID: connectionID)),
                 "connection_id": connectionID.map(JSONValue.string) ?? .null,
             ]))
+        case "connection.context":
+            return try success(request, live.connectionContexts(connectionID: connectionID))
+        case "pane.presentation.list", "pane.pin", "pane.unpin", "pane.snooze", "pane.wake":
+            guard let presentation else {
+                return .failure(id: request.id, code: .unsupported, message: "Pane presentation state is unavailable.")
+            }
+            return presentation.executePresentation(request)
         case "session.projection":
             let connectionID = required(connectionID)
             return try success(

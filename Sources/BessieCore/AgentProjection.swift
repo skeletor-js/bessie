@@ -8,17 +8,20 @@ public struct ConnectedAgentProjection: Equatable, Identifiable, Sendable {
     public let agent: AgentProjection
     public let workspaceLabel: String?
     public let tabLabel: String?
+    public let pane: PaneProjection?
 
     public init(
         connection: BessieConnectionDefinition,
         agent: AgentProjection,
         workspaceLabel: String? = nil,
-        tabLabel: String? = nil
+        tabLabel: String? = nil,
+        pane: PaneProjection? = nil
     ) {
         self.connection = connection
         self.agent = agent
         self.workspaceLabel = workspaceLabel
         self.tabLabel = tabLabel
+        self.pane = pane?.id == agent.id ? pane : nil
     }
 
     public var id: String { "\(connection.id)::\(agent.id)" }
@@ -27,6 +30,12 @@ public struct ConnectedAgentProjection: Equatable, Identifiable, Sendable {
     public var paneID: String { agent.id }
     public var workspaceID: String { agent.workspaceID }
     public var tabID: String { agent.tabID }
+    /// Pane-oriented surfaces lead with Herdr's pane presentation. Agent-only
+    /// callers remain on `AgentProjection.identity` and are unaffected.
+    public var primaryTitle: String { pane?.presentationTitle ?? agent.identity }
+    public var secondaryIdentity: String? {
+        agent.identity == primaryTitle ? nil : agent.identity
+    }
 
     var presentationLocation: String {
         "\(workspaceLabel ?? "Untitled workspace") · \(tabLabel ?? "Untitled tab")"
