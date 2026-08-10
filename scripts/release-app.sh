@@ -224,6 +224,9 @@ else
         die "downloaded Sparkle tools archive does not match the pinned 2.9.5 SHA-256"
     mkdir "$release_scratch/sparkle"
     "$ditto_cmd" -x -k "$sparkle_archive" "$release_scratch/sparkle"
+    "$xcrun_cmd" swift package --package-path "$repo_root" resolve
+    [[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] || \
+        die "Swift package resolution mutated the approved source"
     sparkle_xcframework=$(bessie_find_sparkle_xcframework "$repo_root")
     resolved_tools=$(find "$release_scratch/sparkle" -type f -path '*/bin/generate_keys' -print)
     [[ -n "$resolved_tools" && "$resolved_tools" != *$'\n'* ]] || die "official Sparkle archive did not contain exactly one release tool set"
