@@ -256,9 +256,18 @@ if [[ "$initial_release" == 0 ]]; then
     previous_signature=$(python3 - "$previous_appcast" <<'PY'
 import sys, xml.etree.ElementTree as ET
 ns = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
-enclosures = ET.parse(sys.argv[1]).getroot().findall("./channel/item/enclosure")
+root = ET.parse(sys.argv[1]).getroot()
 def version(value): return tuple(int(part) for part in value.split("."))
-enclosure = max(enclosures, key=lambda item: version(item.get(ns + "version", "0")))
+item = max(
+    root.findall("./channel/item"),
+    key=lambda candidate: version(
+        candidate.findtext(
+            ns + "version",
+            candidate.find("enclosure").get(ns + "version", "0"),
+        )
+    ),
+)
+enclosure = item.find("enclosure")
 signature = enclosure.get(ns + "edSignature", "")
 if not signature:
     raise SystemExit(1)
@@ -370,8 +379,9 @@ archive_signature=$(python3 - "$output/appcast.xml" "$build" <<'PY'
 import sys, xml.etree.ElementTree as ET
 ns = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 root = ET.parse(sys.argv[1]).getroot(); matches = []
-for enclosure in root.findall("./channel/item/enclosure"):
-    if enclosure.get(ns + "version") == sys.argv[2]:
+for item in root.findall("./channel/item"):
+    enclosure = item.find("enclosure")
+    if enclosure is not None and item.findtext(ns + "version", enclosure.get(ns + "version", "")) == sys.argv[2]:
         matches.append(enclosure.get(ns + "edSignature", ""))
 if len(matches) != 1 or not matches[0]:
     raise SystemExit(1)
