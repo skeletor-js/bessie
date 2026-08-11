@@ -200,10 +200,36 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         return cacheRoot.appendingPathComponent(".r-\(token)", isDirectory: true)
     }
 
+    static func preparePrivateDirectory(_ directory: URL) throws {
+        guard directory.isFileURL, directory.path.hasPrefix("/") else {
+            throw BessieConnectionError.tunnelFailed("The local SSH cache path is invalid.")
+        }
+
+        if mkdir(directory.path, S_IRWXU) != 0, errno != EEXIST {
+            throw BessieConnectionError.tunnelFailed("Could not create the local SSH cache directory.")
+        }
+
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw BessieConnectionError.tunnelFailed("The local SSH cache path is not a private directory.")
+        }
+        defer { close(descriptor) }
+
+        var details = stat()
+        guard fstat(descriptor, &details) == 0,
+              details.st_mode & S_IFMT == S_IFDIR,
+              details.st_uid == geteuid(),
+              details.st_mode & 0o077 == 0 else {
+            throw BessieConnectionError.tunnelFailed("The local SSH cache directory is not privately owned.")
+        }
+        guard fchmod(descriptor, S_IRWXU) == 0 else {
+            throw BessieConnectionError.tunnelFailed("Could not secure the local SSH cache directory.")
+        }
+    }
+
     private func prepareDirectory(_ directory: URL) throws {
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheRoot.path)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try Self.preparePrivateDirectory(cacheRoot)
+        try Self.preparePrivateDirectory(directory)
         lock.withLock { localDirectory = directory }
     }
 

@@ -411,6 +411,31 @@ final class BessieConnectionTests: XCTestCase {
         XCTAssertLessThan(plan.localControlPath.utf8.count + 17, MemoryLayout.size(ofValue: sockaddr_un().sun_path))
     }
 
+    func testRemoteBridgePrivateCacheDirectoryRejectsUnsafePrecreatedEntries() throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let created = fixture.appendingPathComponent("created", isDirectory: true)
+        XCTAssertNoThrow(try RemoteHerdrBridge.preparePrivateDirectory(created))
+        let createdMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: created.path)[.posixPermissions] as? NSNumber
+        ).intValue
+        XCTAssertEqual(createdMode & 0o777, 0o700)
+
+        let permissive = fixture.appendingPathComponent("permissive", isDirectory: true)
+        try FileManager.default.createDirectory(at: permissive, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: permissive.path)
+        XCTAssertThrowsError(try RemoteHerdrBridge.preparePrivateDirectory(permissive))
+
+        let target = fixture.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
+        let symlink = fixture.appendingPathComponent("symlink", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: target)
+        XCTAssertThrowsError(try RemoteHerdrBridge.preparePrivateDirectory(symlink))
+    }
+
     func testRemoteBridgeStartupOnlyRequestsRemoteStatus() throws {
         let connection = try BessieConnectionDefinition(
             id: "remote-hermes",
