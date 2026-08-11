@@ -1,3 +1,9 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bessie-social-preview-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset=".github/assets/bessie-social-preview-light.png">
+  <img alt="Bessie. Your herd. One window." src=".github/assets/bessie-social-preview-light.png" width="100%">
+</picture>
+
 <p align="center">
   <strong>The native Mac layer for <a href="https://github.com/herdrdev/herdr">Herdr</a>.</strong><br>
   See every agent. Shape every workspace. Quit Bessie; the work keeps running.
@@ -11,28 +17,33 @@
   <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-f1ede3?style=flat-square&labelColor=050505"></a>
 </p>
 
-Herdr keeps coding agents, terminals, and workspaces alive. Bessie adds the native Mac experience around it: a visual Herd, real terminal layouts, attention states, reusable Projects, notifications, navigation, settings, and diagnostics.
+Herdr keeps coding agents, terminals, and workspaces alive. Bessie turns that durable foundation into one native Mac workspace for running a lot of agents without losing track of them.
 
-If you already use Herdr, Bessie does not ask you to adopt a second session system. It connects to the same durable work and makes it easier to see, shape, and return to.
+## The big additions
 
-## What Bessie adds to Herdr
+**Projects remember the whole setup.** Save a reusable recipe with its Herd, folders, tabs, split layout, pane labels, and starting commands. Launch it again as ordinary Herdr work instead of rebuilding the same workspace by hand. Projects can target this Mac or a remote Herd over SSH.
 
-- See your whole Herd across this Mac and remote machines in one roster.
-- Know which agents need you without polling every terminal; filter by Needs you, Working, Done, Idle, or Unknown.
-- Shape work visually with native tabs, splits, and panes, all rendered by [libghostty](https://github.com/Lakr233/libghostty-spm).
-- Turn repeatable setups into Projects that launch folders, commands, tabs, and pane layouts as ordinary Herdr work.
-- Jump directly to an agent or pane, focus with bounded Zen, search from the command palette, or check the Herd from the menu bar.
-- Use the Mac features Herdr alone does not provide: native notifications, themes, connection setup, diagnostics, secure updates, and a local CLI/MCP intent bus.
+**Local and remote sessions live in one sidebar.** Connect multiple Herds and see every workspace, tab, pane, and agent together. The redesigned agent sidebar tells you what **Needs you**, what is **Working**, and what is **Done**, **Idle**, or **Unknown**, then routes you to the exact pane.
 
-The [V1 feature contract](docs/v1/features.md) lists the complete scope and deliberate exclusions.
+**Pin what matters. Snooze what does not.** Keep important sessions at the top, quiet a pane for a bounded amount of time, wake it early, and separate pinned or snoozed work without changing the underlying Herdr session.
+
+**Native notifications take you straight to the agent.** Choose whether Bessie notifies you when work needs an answer or settles. Notifications omit terminal contents, respect snoozing, and open the exact pane that triggered them.
+
+**The menu bar keeps the Herd in reach.** See agents that need you, working agents, and status totals without opening the main window. Click a row to jump straight back into the work.
+
+**Every pane is a real terminal.** Bessie uses [libghostty](https://github.com/Lakr233/libghostty-spm) for terminal rendering, with native tabs, splits, focus, keyboard handling, paste, scrolling, themes, and a focused Zen mode.
+
+Herdr's plugin community has explored many of these jobs separately. Bessie brings them together as one coherent native client, while every live workspace and process remains ordinary Herdr-owned state. The [V1 feature contract](docs/v1/features.md) has the complete shipping scope and deliberate exclusions.
 
 ## Never heard of Herdr?
 
-[Herdr](https://github.com/herdrdev/herdr) is an open-source runtime for long-lived terminal workspaces and coding agents. It owns the sessions, processes, panes, and durable state, so the work survives when a client disconnects.
+Running one coding agent in a terminal is easy. Running several at once is where things fall apart: tabs multiply, one agent stops for an answer, another finishes unnoticed, and closing the wrong window can take useful context with it.
 
-Bessie is designed to be the best way to use Herdr on a Mac. It includes the compatible Herdr runtime, walks you through local setup, renders every terminal with libghostty, and adds the native interface Herdr does not provide. You can start on this Mac without installing Herdr separately, then bring existing remote Herds into the same window over SSH.
+[Herdr](https://github.com/herdrdev/herdr) solves the foundation of that problem. It is an open-source runtime for durable terminal workspaces and coding agents. Herdr owns the sessions, panes, processes, and state, so the work keeps running when a client disconnects and remains available through its CLI and public APIs.
 
-Herdr remains available through its own CLI and public APIs. Bessie is not a walled garden around it; it is the native front door.
+Bessie makes that foundation easier to operate on a Mac. It includes the compatible Herdr runtime for local work, adds a visual layer for attention and navigation, and brings local and remote Herds into the same window. You get Herdr's durability without giving up direct CLI access or adopting a second session system.
+
+Bessie is not a walled garden around Herdr. It is a native front door to it.
 
 ## Availability
 
@@ -60,7 +71,7 @@ Bessie uses Herdr's public JSON API, CLI surfaces, and terminal-session bridge. 
 - [Development and release operations](docs/v1/development.md)
 - [Release engineering](docs/releases/README.md)
 
-[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Credits](CREDITS.md) · [License](LICENSE)
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)
 
 ## Development quick start
 
@@ -79,3 +90,11 @@ swift test
 The package pins `libghostty-spm` `1.3.2` and Sparkle `2.9.5`. Development may use the repository-local runtime and configuration under `.local/`; it must not silently install or overwrite a system Herdr installation.
 
 Read [the development guide](docs/v1/development.md) before changing implementation or packaging behavior.
+
+## Built with love for Herdr
+
+> I love Herdr as a platform. It reshaped how I work with coding agents: instead of treating every terminal as an isolated, fragile task, I can run a real fleet of durable work and move between agents without losing the thread. Bessie is my contribution back to the community that made that possible—a native Mac client built on Herdr's public foundation and informed by the ideas its plugin authors explored first.
+
+Thank you to [Oğulcan Çelik](https://github.com/ogulcancelik), every Herdr contributor, and the community projects that shaped Bessie.
+
+**[Read the full credits and acknowledgements →](CREDITS.md)**
