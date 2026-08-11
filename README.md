@@ -21,11 +21,11 @@ Herdr keeps coding agents, terminals, and workspaces alive. Bessie turns that du
 
 ## The big additions
 
-**Projects remember the whole setup.** Save a reusable recipe with its Herd, folders, tabs, split layout, pane labels, and starting commands. Launch it again as ordinary Herdr work instead of rebuilding the same workspace by hand. Projects can target this Mac or a remote Herd over SSH.
+**Projects are reusable launch recipes.** Choose a target Herd and primary folder, then define tabs, split layouts, pane labels, and starting commands. Local recipes may include additional folders; remote recipes use absolute paths on the target host. Launch either as ordinary Herdr work instead of rebuilding the same setup by hand.
 
-**Local and remote sessions live in one sidebar.** Connect multiple Herds and see every workspace, tab, pane, and agent together. The redesigned agent sidebar tells you what **Needs you**, what is **Working**, and what is **Done**, **Idle**, or **Unknown**, then routes you to the exact pane.
+**Local and remote Herds share one sidebar.** Connect multiple Herds and see their workspaces, tabs, panes, and agents together. The redesigned agent sidebar tells you what **Needs you**, what is **Working**, and what is **Done**, **Idle**, or **Unknown**, then routes you to the exact pane.
 
-**Pin what matters. Snooze what does not.** Keep important sessions at the top, quiet a pane for a bounded amount of time, wake it early, and separate pinned or snoozed work without changing the underlying Herdr session.
+**Pin what matters. Snooze what does not.** Keep important panes at the top, quiet a pane for a bounded amount of time, wake it early, and separate pinned or snoozed work without changing the underlying Herdr pane.
 
 **Native notifications take you straight to the agent.** Choose whether Bessie notifies you when work needs an answer or settles. Notifications omit terminal contents, respect snoozing, and open the exact pane that triggered them.
 
@@ -33,7 +33,7 @@ Herdr keeps coding agents, terminals, and workspaces alive. Bessie turns that du
 
 **Every pane is a real terminal.** Bessie uses [libghostty](https://github.com/Lakr233/libghostty-spm) for terminal rendering, with native tabs, splits, focus, keyboard handling, paste, scrolling, themes, and a focused Zen mode.
 
-Herdr's plugin community has explored many of these jobs separately. Bessie brings them together as one coherent native client, while every live workspace and process remains ordinary Herdr-owned state. The [V1 feature contract](docs/v1/features.md) has the complete shipping scope and deliberate exclusions.
+Herdr's community projects have explored many of these jobs separately. Bessie brings them together as one coherent native client, while every live workspace and process remains ordinary Herdr-owned state. The [V1 feature contract](docs/v1/features.md) has the complete shipping scope and deliberate exclusions.
 
 ## Never heard of Herdr?
 
@@ -93,7 +93,7 @@ Read [the development guide](docs/v1/development.md) before changing implementat
 
 ## Built with love for Herdr
 
-> I love Herdr as a platform. It reshaped how I work with coding agents: instead of treating every terminal as an isolated, fragile task, I can run a real fleet of durable work and move between agents without losing the thread. Bessie is my contribution back to the community that made that possible—a native Mac client built on Herdr's public foundation and informed by the ideas its plugin authors explored first.
+> I love Herdr as a platform. It reshaped how I work with coding agents: instead of treating every terminal as an isolated, fragile task, I can run a real fleet of durable work and move between agents without losing the thread. Bessie is my contribution back to the community that made that possible: a native Mac client built on Herdr's public foundation and informed by ideas explored across Herdr's community projects.
 
 Thank you to [Oğulcan Çelik](https://github.com/ogulcancelik), every Herdr contributor, and the community projects that shaped Bessie.
 
