@@ -336,6 +336,53 @@ final class TransientOnboardingTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.journalURL.path))
     }
 
+    func testStartupRejectsJournalBelongingToDifferentStoresInSameDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeOnboardingTransactionFixture(root: root)
+        try writeOnboardingJournal(fixture.journal, to: fixture.journalURL)
+
+        let otherPresentationURL = root.appendingPathComponent("other-presentation.json")
+        let otherConnectionsURL = root.appendingPathComponent("other-connections.json")
+        let otherPresentationStore = BessiePresentationStore(url: otherPresentationURL)
+        let otherConnectionStore = BessieConnectionStore(url: otherConnectionsURL)
+        try otherPresentationStore.save(BessiePresentationState(
+            preferences: BessiePreferences(notifications: .blockedAndDone)
+        ))
+        try otherConnectionStore.save(fixture.previousConnections)
+        try setPrivateMode(otherConnectionsURL)
+        let presentationBefore = try Data(contentsOf: otherPresentationURL)
+        let connectionsBefore = try Data(contentsOf: otherConnectionsURL)
+
+        let blocked = BessieSettingsModel(
+            presentationURL: otherPresentationURL,
+            connectionsURL: otherConnectionsURL,
+            runtimeSelectionURL: root.appendingPathComponent("other-runtime.json")
+        )
+
+        XCTAssertTrue(blocked.connectionConfigurationLoadFailed)
+        XCTAssertNotNil(blocked.presentationPersistenceError)
+        XCTAssertEqual(try Data(contentsOf: otherPresentationURL), presentationBefore)
+        XCTAssertEqual(try Data(contentsOf: otherConnectionsURL), connectionsBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
+    func testStartupRecoversLegacyUnboundJournalForCanonicalColocatedStores() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeOnboardingTransactionFixture(root: root)
+        try fixture.connectionStore.save(fixture.acceptedConnections)
+        try setPrivateMode(fixture.connectionStore.url)
+        try writeLegacyUnboundOnboardingJournal(fixture.journal, to: fixture.journalURL)
+
+        let recovered = makeSettings(root: root)
+
+        XCTAssertFalse(recovered.onboarding.completed)
+        XCTAssertEqual(try fixture.connectionStore.load(), fixture.previousConnections)
+        XCTAssertEqual(try fixture.presentationStore.load(), fixture.previousPresentation)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
     func testMalformedOnboardingCommitJournalFailsClosedWithoutRewritingSettings() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -423,6 +470,8 @@ final class TransientOnboardingTests: XCTestCase {
         )
         let journalURL = BessieOnboardingSettingsTransaction.journalURL(for: connectionStore.url)
         let journal = BessieOnboardingSettingsJournal(
+            presentationURL: presentationStore.url,
+            connectionsURL: connectionStore.url,
             previousPresentationExists: false,
             previousPresentation: BessiePresentationState(),
             previousConnectionsExists: false,
@@ -548,6 +597,8 @@ final class TransientOnboardingTests: XCTestCase {
         try connectionStore.save(previousConnections)
         try setPrivateMode(connectionStore.url)
         let journal = BessieOnboardingSettingsJournal(
+            presentationURL: presentationStore.url,
+            connectionsURL: connectionStore.url,
             previousPresentationExists: true,
             previousPresentation: previousPresentation,
             previousConnectionsExists: true,
@@ -572,6 +623,22 @@ final class TransientOnboardingTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(journal).write(to: url, options: .atomic)
+        try setPrivateMode(url)
+    }
+
+    private func writeLegacyUnboundOnboardingJournal(
+        _ journal: BessieOnboardingSettingsJournal,
+        to url: URL
+    ) throws {
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(journal)) as? [String: Any]
+        )
+        object["schemaVersion"] = 1
+        object.removeValue(forKey: "presentationPath")
+        object.removeValue(forKey: "connectionsPath")
+        try makePrivateJournalDirectory(for: url)
+        try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
         try setPrivateMode(url)
     }
 

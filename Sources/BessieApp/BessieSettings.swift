@@ -7,8 +7,11 @@ import SwiftUI
 import UserNotifications
 
 struct BessieOnboardingSettingsJournal: Codable, Equatable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
+    private static let legacyUnboundSchemaVersion = 1
     let schemaVersion: Int
+    let presentationPath: String?
+    let connectionsPath: String?
     let previousPresentationExists: Bool
     let previousPresentation: BessiePresentationState
     let previousConnectionsExists: Bool
@@ -17,6 +20,8 @@ struct BessieOnboardingSettingsJournal: Codable, Equatable {
     let acceptedConnections: BessieConnectionState
 
     init(
+        presentationURL: URL,
+        connectionsURL: URL,
         previousPresentationExists: Bool,
         previousPresentation: BessiePresentationState,
         previousConnectionsExists: Bool,
@@ -25,12 +30,39 @@ struct BessieOnboardingSettingsJournal: Codable, Equatable {
         acceptedConnections: BessieConnectionState
     ) {
         schemaVersion = Self.currentSchemaVersion
+        presentationPath = Self.normalizedPath(presentationURL)
+        connectionsPath = Self.normalizedPath(connectionsURL)
         self.previousPresentationExists = previousPresentationExists
         self.previousPresentation = previousPresentation
         self.previousConnectionsExists = previousConnectionsExists
         self.previousConnections = previousConnections
         self.acceptedPresentation = acceptedPresentation
         self.acceptedConnections = acceptedConnections
+    }
+
+    func appliesTo(presentationURL: URL, connectionsURL: URL) -> Bool {
+        let presentationPath = Self.normalizedPath(presentationURL)
+        let connectionsPath = Self.normalizedPath(connectionsURL)
+        switch schemaVersion {
+        case Self.currentSchemaVersion:
+            return self.presentationPath == presentationPath
+                && self.connectionsPath == connectionsPath
+        case Self.legacyUnboundSchemaVersion:
+            let presentation = URL(fileURLWithPath: presentationPath)
+            let connections = URL(fileURLWithPath: connectionsPath)
+            return self.presentationPath == nil
+                && self.connectionsPath == nil
+                && presentation.lastPathComponent == "presentation.json"
+                && connections.lastPathComponent == "connections.json"
+                && presentation.deletingLastPathComponent().standardizedFileURL
+                    == connections.deletingLastPathComponent().standardizedFileURL
+        default:
+            return false
+        }
+    }
+
+    private static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.path
     }
 }
 
@@ -282,7 +314,10 @@ enum BessieOnboardingSettingsTransaction {
         }
         let data = try BessieOnboardingDurableFile.readPrivateFile(at: journalURL)
         let journal = try JSONDecoder().decode(BessieOnboardingSettingsJournal.self, from: data)
-        guard journal.schemaVersion == BessieOnboardingSettingsJournal.currentSchemaVersion else {
+        guard journal.appliesTo(
+            presentationURL: presentationStore.url,
+            connectionsURL: connectionStore.url
+        ) else {
             throw BessiePresentationPersistenceError.invalidSource
         }
         let currentPresentation = BessieOnboardingDurableFile.isSafePrivateFile(at: presentationStore.url)
@@ -898,6 +933,8 @@ final class BessieSettingsModel: ObservableObject {
             let acceptedPresentation = presentationState(preferences: candidate)
             if let connectionCandidate {
                 let journal = BessieOnboardingSettingsJournal(
+                    presentationURL: store.url,
+                    connectionsURL: connectionStore.url,
                     previousPresentationExists: FileManager.default.fileExists(atPath: store.url.path),
                     previousPresentation: presentationState(preferences: preferences),
                     previousConnectionsExists: FileManager.default.fileExists(atPath: connectionStore.url.path),
