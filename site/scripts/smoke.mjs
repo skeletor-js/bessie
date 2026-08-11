@@ -14,11 +14,17 @@ for (const bad of ['React', 'dc-runtime', 'sc-camel', 'ref="{{']) {
   if (`${html}\n${css}\n${main}`.includes(bad)) throw new Error(`production leak: ${bad}`);
 }
 for (const file of [
-  'styles.css', 'config.js', 'main.js', 'assets/favicon.png', 'assets/og.png',
+  'styles.css', 'config.js', 'main.js', 'assets/bessie-logo.svg', 'assets/favicon.png', 'assets/og.png',
   'assets/bessie-opening.mp4',
   'assets/fonts/phosphor-thin.woff2', 'assets/fonts/phosphor-fill.woff2',
 ]) {
   if (!fs.existsSync(publicFile(file))) throw new Error(`missing ${file}`);
+}
+if ((html.match(/<img class="bessie-logo" src="\/assets\/bessie-logo\.svg" alt="">/g) || []).length !== 4) {
+  throw new Error('current Bessie logo is missing from a branded site surface');
+}
+if ((html.match(/ph-fill ph-cow/g) || []).length !== 1 || !/<i id="cow-probe"[^>]*ph-fill ph-cow/.test(html)) {
+  throw new Error('legacy cow glyph remains visible outside the animation probe');
 }
 for (const file of ['assets/marks/claude.svg', 'assets/marks/codex.svg', 'assets/marks/amp.svg']) {
   if (fs.existsSync(publicFile(file))) throw new Error(`third-party agent mark remains: ${file}`);
