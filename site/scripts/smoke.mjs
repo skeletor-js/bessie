@@ -59,16 +59,28 @@ for (const stale of [
   'All herds', 'All workspaces', 'class="rr-age"', 'id="client"',
   'Run six coding agents', 'spend half the day', 'Any pane, three keystrokes.',
   'so you never act in the wrong repo', 'so you never open the wrong',
+  'data-fit="1180x815"', 'bessie — the herd', 'class="topbar"', 'class="wb-tab',
+  'claude · bessie / dev / theme', 'width:100%;max-width:760px',
+  '⌘↩ alternate', 'Prove direct write ordering',
 ]) {
   if (html.includes(stale)) throw new Error(`stale V1 claim remains: ${stale}`);
 }
 for (const current of [
   'The siderail tells you where to look.',
-  'Needs you · 2', 'Working · 2', 'Done · 4', 'Idle · 3', 'Unknown · 1',
+  'Needs you · 2', 'Working · 2', 'Done · 2', 'Idle · 1', 'Unknown · 1',
   'panes · workspaces · projects · herds · commands',
   '2 need you · 2 working', '1 elsewhere',
+  'data-fit="1180x740"', 'claude · local · bessie · dev',
+  'Verify terminal input', 'Run release checks', 'width:312px',
+  '<span>Done</span><strong>4', '<span>Idle</span><strong>3', '<span>Unknown</span><strong>1',
 ]) {
   if (!html.includes(current)) throw new Error(`current product story is missing: ${current}`);
+}
+if ((html.match(/class="zen-state(?: is-selected)?"/g) || []).length !== 8) {
+  throw new Error('Zen awareness rail does not match the current eight-row fixture');
+}
+if ((html.match(/class="rail-row menu-row(?: is-highlighted)?"/g) || []).length !== 4) {
+  throw new Error('menu bar fixture does not match the current four-row layout');
 }
 
 console.log('static smoke: ok');
