@@ -311,6 +311,8 @@ public enum OnboardingCompletionStage: String, Codable, CaseIterable, Sendable {
 
 public struct PendingOnboardingAttempt: Codable, Equatable, Sendable {
     public static let schemaVersion = 1
+    public static let boundedSessionPrefix = "bessie-ob-"
+    public static let legacySessionPrefix = "bessie-onboarding-"
     public let schemaVersion: Int
     public let attemptID: String
     public var connectionID: String
@@ -322,7 +324,7 @@ public struct PendingOnboardingAttempt: Codable, Equatable, Sendable {
     public var paneID: String?
 
     public init(attemptID: String = "bessie-\(UUID().uuidString.lowercased())", connectionID: String,
-                sessionName: String = "bessie-onboarding-\(UUID().uuidString.lowercased())", path: String,
+                sessionName: String = PendingOnboardingAttempt.generatedSessionName(), path: String,
                 stage: OnboardingCompletionStage = .idle, workspaceID: String? = nil,
                 tabID: String? = nil, paneID: String? = nil, schemaVersion: Int = Self.schemaVersion) throws {
         guard schemaVersion == Self.schemaVersion else { throw OnboardingPersistenceError.unsupportedSchema(schemaVersion) }
@@ -332,6 +334,15 @@ public struct PendingOnboardingAttempt: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion; self.attemptID = attemptID; self.connectionID = connectionID
         self.sessionName = sessionName; self.path = try OnboardingPathValidator.absolute(path)
         self.stage = stage; self.workspaceID = workspaceID; self.tabID = tabID; self.paneID = paneID
+    }
+
+    public static func generatedSessionName() -> String {
+        let token = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        return boundedSessionPrefix + token.prefix(24)
+    }
+
+    public var requiresBoundedSessionMigration: Bool {
+        sessionName.hasPrefix(Self.legacySessionPrefix)
     }
 }
 

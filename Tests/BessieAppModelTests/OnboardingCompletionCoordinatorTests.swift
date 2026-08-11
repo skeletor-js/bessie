@@ -41,6 +41,36 @@ final class OnboardingCompletionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try resumed.begin(connectionID: "other", path: "/other").attemptID, attempt.attemptID)
     }
 
+    func testRelaunchMigratesLegacyLongOnboardingSessionToFreshBoundedAttempt() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let legacy = try PendingOnboardingAttempt(
+            attemptID: "bessie-legacy-attempt",
+            connectionID: "legacy-remote",
+            sessionName: "bessie-onboarding-2025118d-daff-4541-958e-deaff5eb527f",
+            path: "/srv/project",
+            stage: .failed,
+            workspaceID: "old-workspace",
+            tabID: "old-tab",
+            paneID: "old-pane"
+        )
+        try fixture.store.save(legacy)
+
+        let resumed = OnboardingCompletionCoordinator(store: fixture.store)
+        let migrated = try XCTUnwrap(resumed.attempt)
+
+        XCTAssertNotEqual(migrated.attemptID, legacy.attemptID)
+        XCTAssertEqual(migrated.connectionID, legacy.connectionID)
+        XCTAssertEqual(migrated.path, legacy.path)
+        XCTAssertTrue(migrated.sessionName.hasPrefix("bessie-ob-"))
+        XCTAssertEqual(migrated.sessionName.utf8.count, 34)
+        XCTAssertEqual(migrated.stage, .validating)
+        XCTAssertNil(migrated.workspaceID)
+        XCTAssertNil(migrated.tabID)
+        XCTAssertNil(migrated.paneID)
+        XCTAssertEqual(try fixture.store.load(), migrated)
+    }
+
     func testCancellationClearsOnlyPreMaterializationAttempt() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

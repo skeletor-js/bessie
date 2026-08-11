@@ -50,7 +50,20 @@ final class OnboardingCompletionCoordinator: ObservableObject {
         self.store = resolvedStore
         self.clearAttempt = clearAttempt ?? { try resolvedStore.clear() }
         self.service = service
-        do { attempt = try self.store.load(); stage = attempt?.stage ?? .idle }
+        do {
+            var loaded = try self.store.load()
+            if let legacy = loaded, legacy.requiresBoundedSessionMigration {
+                let migrated = try PendingOnboardingAttempt(
+                    connectionID: legacy.connectionID,
+                    path: legacy.path,
+                    stage: .validating
+                )
+                try self.store.save(migrated)
+                loaded = migrated
+            }
+            attempt = loaded
+            stage = loaded?.stage ?? .idle
+        }
         catch { self.error = error.localizedDescription; stage = .failed }
     }
 

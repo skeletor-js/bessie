@@ -100,6 +100,14 @@ final class RuntimeSetupTests: XCTestCase {
         XCTAssertThrowsError(try store.load()) { XCTAssertEqual($0 as? OnboardingPersistenceError, .unsupportedSchema(999)) }
     }
 
+    func testGeneratedPendingAttemptUsesBoundedOnboardingSessionName() throws {
+        let attempt = try PendingOnboardingAttempt(connectionID: "remote", path: "/srv/project")
+
+        XCTAssertTrue(attempt.sessionName.hasPrefix("bessie-ob-"))
+        XCTAssertEqual(attempt.sessionName.utf8.count, 34)
+        XCTAssertTrue(BessieConnectionDefinition.isSafeSession(attempt.sessionName))
+    }
+
     func testAbsolutePathAndRemoteAttachCommandAreSafeAndUseSelectedCWD() throws {
         XCTAssertThrowsError(try OnboardingPathValidator.absolute("relative"))
         XCTAssertThrowsError(try OnboardingPathValidator.absolute("/tmp\n/not-the-selected-path"))
