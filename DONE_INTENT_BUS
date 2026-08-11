@@ -1,6 +1,0 @@
-DONE_INTENT_BUS
-
-Implementation commits: 7737a0b, 20c2ee4, da8f7b2, b3b13af, 31d7806, 9c4d070, b29a52d
-VPS check: passed
-Full Mac verification: 224 XCTest tests and 21 Swift Testing tests, 0 failures
-Live CLI/MCP parity, focus mutation, destructive confirmation, quit survival, package install, and relaunch: passed

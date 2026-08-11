@@ -16,6 +16,8 @@ Current public documentation lives in:
 
 Source, tests, package lockfiles, and runtime lockfiles are authoritative when prose drifts.
 
+No private workspace, personal machine path, or off-repository document is required to contribute.
+
 ## Non-negotiable architecture
 
 - Bessie is a graphical client for Herdr, never a replacement runtime or fork.
@@ -39,14 +41,13 @@ Source, tests, package lockfiles, and runtime lockfiles are authoritative when p
 - Development may use repository-local runtime/config state under ignored `.local/`; never overwrite a system Herdr installation.
 - Distribution bundles the compatible Herdr executable as a signed nested resource.
 
-## V1 freeze
+## Contribution model
 
-The Mac V1 source is feature-frozen. Before the V1 release, accept only:
-
-- fixes for demonstrated major defects; or
-- changes strictly required to build, sign, notarize, package, document, or distribute the release.
-
-Do not merge cleanup, refactors, speculative abstractions, or nice-to-have features during the freeze.
+- External contributors should fork the repository, create a focused branch, and open a pull request. Write access is not required.
+- The repository owner is the only account permitted to merge into `main`. Branch protection allows an owner bypass for deliberate release or recovery work; contributors must not rely on that bypass.
+- Open an issue or discussion before investing in substantial product, architecture, or dependency changes.
+- Keep pull requests narrowly scoped. Do not mix behavior changes with unrelated cleanup, refactors, renames, or formatting churn.
+- Treat the compatibility baseline above as a contract. Changes to platform support, Herdr, libghostty, Sparkle, or public protocols require coordinated source, tests, documentation, and release review.
 
 ## Validation
 
@@ -66,7 +67,11 @@ Do not delete, skip, weaken, narrow, or relabel a check to manufacture a pass. C
 - Add focused tests for model decoding, transport envelopes, state transitions, layout projection, compatibility checks, and terminal frame/input sequencing.
 - Keep dependencies and abstractions narrow.
 - Never commit credentials, signing material, notarization profiles, local runtime state, build products, or generated release secrets.
-- Do not publish releases, change repository visibility, deploy the site, or modify distribution channels as part of an ordinary code change.
+- Keep committed documentation and configuration portable. Do not add personal usernames, machine-specific absolute paths, private workstream references, or local evidence directories except clearly synthetic values inside tests.
+
+## Maintainer-only operations
+
+Publishing releases, changing repository visibility, deploying the site, modifying update feeds, signing, and notarization are separately authorized maintainer operations. An ordinary pull request must not perform or imply those actions.
 
 ## Agent surfaces
 

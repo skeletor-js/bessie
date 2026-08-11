@@ -41,23 +41,6 @@ def main() -> None:
     assert not missing, f"missing audited callers: {missing}"
     audit.self_test()
 
-    acceptance = (ROOT / "scripts/rebuild-install-catppuccin-themes.sh").read_text(encoding="utf-8")
-    assert './scripts/rebuild-install-shortcuts.sh --install-only "$mac_dir"' in acceptance
-    assert '"method": "pane.send_input"' in acceptance
-    assert '"keys": ["Enter"]' in acceptance
-    assert "BESSIE_THEME_INPUT_雪豹_🦬_é" in acceptance
-    assert "BESSIE_THEME_ANSI_16_牛é🐄" in acceptance
-    assert "_bessie_process_matches" in acceptance and "kill -KILL" in acceptance
-    assert "--verify-evidence" in acceptance
-    assert "verify-catppuccin-region-evidence.py" in acceptance
-    integrity_index = acceptance.rindex("real_presentation_after=")
-    assert "/usr/bin/open" not in acceptance[integrity_index:], (
-        "No app launch may follow the final real-presentation integrity check."
-    )
-    marker_index = acceptance.index("CATPPUCCIN_ACCEPTANCE_OK")
-    assert marker_index < acceptance.index("run_root="), (
-        "The only success marker must remain in no-launch evidence-verification mode."
-    )
     print(f"Catppuccin theme contract self-tests passed ({len(EXPECTED_CALLER_FILES)} callers).")
 
 

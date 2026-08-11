@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/lib/sparkle-packaging.sh scripts/mac-verify.sh scripts/package-app.sh scripts/rebuild-install-catppuccin-themes.sh scripts/rebuild-install-shortcuts.sh scripts/release-app.sh scripts/run-hardening-probes.sh scripts/test-release-app.sh scripts/test-sparkle-packaging.sh scripts/verify-app-install-lifecycle.sh
+bash -n scripts/check.sh scripts/check-ui-copy.sh scripts/capture-redesign-matrix.sh scripts/dogfood-install-signed.sh scripts/fetch-herdr-runtime.sh scripts/lib/bessie-app-lifecycle.sh scripts/lib/sparkle-packaging.sh scripts/mac-verify.sh scripts/package-app.sh scripts/release-app.sh scripts/run-hardening-probes.sh scripts/test-release-app.sh scripts/test-sparkle-packaging.sh scripts/verify-app-install-lifecycle.sh
 python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("scripts/release-metadata.py").read_text())'
 ./scripts/test-sparkle-packaging.sh
 ./scripts/test-release-app.sh
@@ -12,7 +12,6 @@ python3 scripts/check-herdr-runtime.py
 python3 scripts/check-intent-parity.py
 python3 scripts/check-theme-color-escapes.py
 python3 scripts/test-theme-contracts.py
-python3 scripts/verify-catppuccin-region-evidence.py --self-test
 python3 scripts/run-hardening-benchmarks.py --self-test
 python3 - <<'PY'
 import plistlib
@@ -27,6 +26,36 @@ assert info.get("NSPrefersDisplaySafeAreaCompatibilityMode") is False, (
 assert info.get("CFBundleIdentifier") == "__BESSIE_BUNDLE_IDENTIFIER__", (
     "Info.plist.in must not claim a production or verification notification identity."
 )
+PY
+
+python3 - <<'PY'
+from pathlib import Path
+
+contributor_files = [
+    Path("AGENTS.md"),
+    Path("CLAUDE.md"),
+    Path("CONTRIBUTING.md"),
+    Path(".github/copilot-instructions.md"),
+    Path(".agents/skills/operating-bessie/SKILL.md"),
+]
+personal_markers = [
+    "jordan",
+    "/users/",
+    "/home/",
+    "desktop/hermes",
+    ".hermes/workspace",
+    "workstreams/bessie",
+]
+for path in contributor_files:
+    if not path.is_file():
+        raise SystemExit(f"missing public contributor instruction file: {path}")
+    lowered = path.read_text(encoding="utf-8").lower()
+    for marker in personal_markers:
+        if marker in lowered:
+            raise SystemExit(f"personal or machine-specific reference in {path}: {marker}")
+
+if Path("CLAUDE.md").read_text(encoding="utf-8").splitlines()[-1] != "@AGENTS.md":
+    raise SystemExit("CLAUDE.md must import AGENTS.md instead of duplicating contributor policy")
 PY
 
 production_bundle_id=$(BESSIE_PACKAGE_VARIANT=production BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/package-app.sh --print-bundle-identifier)
@@ -53,17 +82,7 @@ dogfood_configuration=$(
     BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/dogfood-install-signed.sh --print-package-configuration
 )
 [[ "$dogfood_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
-rebuild_configuration=$(
-    BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/rebuild-install-shortcuts.sh --print-package-configuration
-)
-[[ "$rebuild_configuration" == $'variant=production\nbundle_identifier=dev.bessie.app' ]]
-theme_configuration=$(
-    BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/rebuild-install-catppuccin-themes.sh --print-configuration
-)
-grep -Fq 'variant=production' <<<"$theme_configuration"
-grep -Fq 'bundle_identifier=dev.bessie.app' <<<"$theme_configuration"
-grep -Fq 'themes=bessie-dark,bessie-light,catppuccin-latte,catppuccin-frappe,catppuccin-macchiato,catppuccin-mocha' <<<"$theme_configuration"
-grep -Fq './scripts/dogfood-install-signed.sh' README.md
+grep -Fq './scripts/dogfood-install-signed.sh' docs/v1/development.md
 
 grep -Fq 'exact: "1.3.2"' Package.swift
 grep -Fq '.product(name: "GhosttyTerminal", package: "libghostty-spm")' Package.swift
@@ -143,7 +162,6 @@ test -x scripts/capture-redesign-matrix.sh
 test -s scripts/lib/bessie-app-lifecycle.sh
 test -s scripts/verify-app-install-lifecycle.sh
 grep -Fq 'bessie_terminate_installation_owners' scripts/mac-verify.sh
-grep -Fq 'bessie_terminate_installation_owners' scripts/rebuild-install-shortcuts.sh
 grep -Fq 'for screen_number in {1..15}' scripts/capture-redesign-matrix.sh
 grep -Fq "screen=\$(printf '%02d' \"\$screen_number\")" scripts/capture-redesign-matrix.sh
 grep -Fq 'len(entries) != 30' scripts/capture-redesign-matrix.sh
@@ -170,7 +188,6 @@ grep -Fq 'cmp "$repo_root/LICENSE" "$bessie_license_path"' scripts/package-app.s
 [[ $(shasum -a 256 Sources/BessieApp/Resources/Sparkle-LICENSE.txt | awk '{print $1}') == 389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe ]]
 test -s Sources/BessieApp/CatppuccinPalette.swift
 test -x scripts/check-theme-color-escapes.py
-test -x scripts/rebuild-install-catppuccin-themes.sh
 grep -Fq 'Catppuccin palette v1.8.0' Sources/BessieApp/Resources/ATTRIBUTION.md
 grep -Fq 'a310b246a3cfcdadb6f5b174d879743e084e87ea' Sources/BessieApp/Resources/ATTRIBUTION.md
 grep -Fq '5a58926563ddacbde4a12b4a347464c2c6945393' Sources/BessieApp/Resources/ATTRIBUTION.md
@@ -224,7 +241,7 @@ grep -Fq 'static let motionExplanatoryDuration: TimeInterval = 0.20' Sources/Bes
 grep -Fq 'static let motionStrongEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionFastDuration)' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'static let motionExplanatoryEaseOut = Animation.timingCurve(0.23, 1, 0.32, 1, duration: motionExplanatoryDuration)' Sources/BessieApp/BessieDesignSystem.swift
 grep -Fq 'struct BessieOnboardingSurface: View' Sources/BessieApp/BessieDesignSystem.swift
-grep -Fq './scripts/mac-verify.sh' README.md
+grep -Fq './scripts/mac-verify.sh' docs/v1/development.md
 
 ./scripts/check-ui-copy.sh
 

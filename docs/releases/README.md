@@ -2,8 +2,6 @@
 
 This runbook creates signed, notarized, stapled, immutable local release bytes and a staged signed appcast. It does not publish a GitHub release, upload an asset, deploy Cloudflare, change repository visibility, install Bessie, or update the production feed.
 
-**Current status:** no production release has been published. The local 0.1.0 build-11 candidate is Developer ID-signed but unnotarized and is not a public release artifact.
-
 ## Boundaries
 
 - `./scripts/release-app.sh prepare ...` is credentialed and macOS-only. Run it on a trusted maintainer Mac. It reads a Developer ID identity, a named `notarytool` Keychain profile, and Sparkle's Keychain-backed Ed25519 key. It never publishes.

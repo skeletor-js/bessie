@@ -1,6 +1,6 @@
 # Getting started with Bessie V1
 
-Bessie is currently pre-release: there is no public download. These instructions apply to an approved local candidate. The current candidate supports macOS 14 or newer on Apple silicon.
+Bessie is currently pre-release: there is no public download. These instructions apply to approved local builds on macOS 14 or newer on Apple silicon.
 
 ## Before you open it
 
@@ -188,7 +188,7 @@ Another client owns the terminal controller. Continue observing, close the other
 
 Packaged production builds use Sparkle. In **Settings → Updates** you can control automatic checks and automatic download/install behavior, run **Check for Updates…**, and restart when a verified update is ready.
 
-An unbundled `swift run` or development executable is intentionally ineligible for production updates. The existing `0.1.0` build `9` artifact predates the keyboard-command changes above and remains immutable. No packaged candidate containing this work exists until a new build number is authorized. Build 9 has no public appcast release to install: it is Developer ID signed but not notarized, and there is no public download yet.
+An unbundled `swift run` or development executable is intentionally ineligible for production updates. Until public distribution begins, there is no production appcast or public download to install.
 
 When public distribution begins, Bessie will not silently replace itself outside the Sparkle flow. Downloaded updates are signature-checked; installation is exposed through Sparkle's UI and Bessie's explicit ready-to-restart state.
 

@@ -10,10 +10,18 @@ Bessie is a native macOS client for Herdr. Before proposing implementation work,
 - Use only Herdr's public JSON API, CLI surfaces, and terminal-session bridge.
 - Keep every visible terminal on `GhosttyTerminal`; do not add terminal imitations or alternate emulators.
 - Do not modify Herdr or libghostty upstream source to make Bessie work.
-- Until V1 ships, limit changes to demonstrated major defects and work strictly required for the release. Open an issue before proposing broader product scope.
+- Open an issue before proposing broader product scope or compatibility changes.
 - Never commit credentials, local runtime state, signing material, notarization profiles, or generated release secrets.
 
 For substantial behavior or UI changes, open an issue or discussion before investing in a large patch. Explain the user problem, the Herdr capability involved, and how the change preserves the ownership boundary.
+
+## Pull requests and merge policy
+
+Fork the repository, create a focused branch, and open a pull request against `main`. Contributors do not need write access.
+
+The repository owner is the only account permitted to merge into `main`. Branch protection requires pull requests from other accounts and blocks force-pushes and branch deletion. The owner retains a bypass for deliberate release or recovery work.
+
+Keep each pull request reviewable. Do not combine a feature or fix with unrelated cleanup, dependency changes, renames, or formatting churn.
 
 ## Development environment
 

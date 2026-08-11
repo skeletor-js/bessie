@@ -72,7 +72,7 @@ Run native Swift tests on the Apple Silicon Mac checkout:
 xcrun swift test
 ```
 
-That is the ordinary complete native suite. The current established baseline is 733 XCTest tests with 6 intentional skips and 0 failures, plus 21 Swift Testing tests passing. Five skips are isolated live-Herdr tests gated by environment; one is a headless responder case. Treat these numbers as a known baseline, not a reason to ignore new tests or unexpected skips.
+That is the ordinary complete native suite. Environment-gated integration tests may skip when their required live Herdr or GUI context is unavailable; every unexpected failure or skip still requires investigation.
 
 During implementation, prefer the smallest relevant suite first, then expand. SwiftPM supports test-case filters, for example:
 
@@ -126,6 +126,7 @@ Never use a person's active Herdr pane as test input, and never send commands in
 - Packaged applications carry Bessie's Apache-2.0 license at `Contents/Resources/Bessie-LICENSE.txt`, the bundled Herdr license under `Contents/Resources/Herdr/`, and the resource attribution file. Packaging and install checks fail if those copies are missing or drifted.
 - Verification packages use `dev.bessie.app.verify` and cannot be treated as production install candidates.
 - Production packaging requires a stable approved signing identity; ad-hoc signing must not claim `dev.bessie.app`.
+- `./scripts/dogfood-install-signed.sh` packages and installs a signed development build for maintainer testing. It is not a public installer and does not publish a release.
 - Install helpers modify `/Applications/Bessie.app` and interact with LaunchServices. Run them only as part of the authorized Mac validation flow, and verify that the installed executable matches the packaged executable.
 - Runtime fetching, app packaging, install verification, and update/release preparation are separate stages. Passing one does not imply the others.
 
