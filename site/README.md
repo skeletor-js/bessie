@@ -13,7 +13,7 @@ curl -i http://127.0.0.1:8787/appcast.xml
 curl -i http://127.0.0.1:8787/install
 ```
 
-Wrangler may choose another port when 8787 is occupied. `/install` returns the pinned build-15 shell installer. It verifies the immutable archive checksum, Developer ID signature, notarization ticket, and Gatekeeper assessment before replacing `/Applications/Bessie.app`; it never invokes `sudo`. Until a signed feed is staged, exact `/appcast.xml` returns `503` plain text with `no-store`. Neither endpoint falls through to landing-page HTML.
+Wrangler may choose another port when 8787 is occupied. `/install` returns the pinned build-23 shell installer. It verifies the immutable archive checksum, Developer ID signature, notarization ticket, and Gatekeeper assessment before replacing `/Applications/Bessie.app`; it never invokes `sudo`. Until a signed feed is staged, exact `/appcast.xml` returns `503` plain text with `no-store`. Neither endpoint falls through to landing-page HTML.
 
 ## Stage a signed appcast
 

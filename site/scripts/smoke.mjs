@@ -41,7 +41,7 @@ if (!main.includes('finishOpening') || !css.includes('#site-opening.is-done') ||
 if (!html.includes('data-copy-row') || !html.includes('data-install') || !config.includes("installCmd:'curl -fsSL https://bessie.dev/install | sh'")) {
   throw new Error('curl installer UI is missing');
 }
-if (!config.includes("downloadUrl:'https://github.com/skeletor-js/bessie/releases/download/v1.0.0/Bessie-1.0.0-15.zip'")) {
+if (!config.includes("downloadUrl:'https://github.com/skeletor-js/bessie/releases/download/v1.0.2/Bessie-1.0.2-23.zip'")) {
   throw new Error('public release download URL is missing');
 }
 for (const stale of [

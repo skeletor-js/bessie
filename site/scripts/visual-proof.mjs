@@ -49,7 +49,7 @@ async function capture(width) {
   if (repoLinks.some(link => link.href !== 'https://github.com/skeletor-js/bessie' || link.rel !== 'noopener' || link.target !== '_blank')) {
     throw new Error(`${width}px: repo CTA configuration is wrong`);
   }
-  const releaseURL = 'https://github.com/skeletor-js/bessie/releases/download/v1.0.0/Bessie-1.0.0-15.zip';
+  const releaseURL = 'https://github.com/skeletor-js/bessie/releases/download/v1.0.2/Bessie-1.0.2-23.zip';
   if (await page.locator('[data-link="download"]').evaluateAll((elements, expected) => elements.some(element =>
     element.getAttribute('href') !== expected || element.getAttribute('target') !== '_blank' || element.getAttribute('rel') !== 'noopener'
   ), releaseURL)) {
@@ -72,8 +72,8 @@ async function capture(width) {
     const response = await fetch('/install');
     return { status: response.status, body: await response.text() };
   });
-  if (install.status !== 200 || !/Bessie-1\.0\.0-15\.zip[\s\S]*codesign --verify[\s\S]*stapler validate[\s\S]*spctl --assess/.test(install.body)) {
-    throw new Error(`${width}px: /install is not the verified build-15 installer`);
+  if (install.status !== 200 || !/Bessie-1\.0\.2-23\.zip[\s\S]*codesign --verify[\s\S]*stapler validate[\s\S]*spctl --assess/.test(install.body)) {
+    throw new Error(`${width}px: /install is not the verified build-23 installer`);
   }
   await page.close();
 }
