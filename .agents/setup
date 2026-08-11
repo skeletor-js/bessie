@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(uname -s)" != Linux ]]; then
+    echo ".agents/setup is intended for Amp's Debian orb environment." >&2
+    exit 1
+fi
+
+packages=()
+command -v ffprobe >/dev/null 2>&1 || packages+=(ffmpeg)
+command -v rg >/dev/null 2>&1 || packages+=(ripgrep)
+command -v shasum >/dev/null 2>&1 || packages+=(libdigest-sha-perl)
+
+if ((${#packages[@]})); then
+    sudo apt-get update
+    sudo apt-get install -y "${packages[@]}"
+fi
+
+amp_config_dir="$HOME/.config/amp"
+mkdir -p "$amp_config_dir"
+cat >"$amp_config_dir/AGENTS.md" <<'EOF'
+# Bessie in an Amp Orb
+
+- This machine is a Debian orb. It can run Bessie's static, fixture, shell, Python, and site checks, but it cannot prove AppKit, SwiftUI, libghostty, Metal, signing, installation, responder, or other native Apple-platform behavior.
+- Run `./scripts/check.sh` for the ordinary orb-side validation gate.
+- For native macOS or iOS work, delegate validation to an available macOS Amp runner rooted in a dedicated Bessie checkout. Give that thread the exact branch or commit to test and the focused observable behavior to exercise.
+- On the Mac, start with the smallest relevant `xcrun swift test --filter ...` target, then expand to `xcrun swift test` when warranted. UI and terminal behavior need the live evidence required by `docs/v1/development.md`; compilation alone is not acceptance.
+- Do not use release, signing, notarization, installation, or publication scripts unless the user explicitly authorizes that scope.
+- Report orb checks and Mac-runner checks separately. Never present a Linux pass as native validation.
+EOF
+
+./scripts/check.sh
