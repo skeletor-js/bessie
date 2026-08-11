@@ -6,6 +6,33 @@ import XCTest
 @testable import BessieApp
 
 final class BessieThemeTests: XCTestCase {
+    @MainActor
+    func testStatusLineUsesThePackagedMarketingVersion() throws {
+        XCTAssertEqual(
+            BessieStatusLine.versionLabel(infoDictionary: ["CFBundleShortVersionString": "1.2.3"]),
+            "BESSIE 1.2.3"
+        )
+        XCTAssertEqual(BessieStatusLine.versionLabel(infoDictionary: [:]), "BESSIE DEVELOPMENT")
+
+        let source = try appSource("BessieDesignSystem.swift")
+        let start = try XCTUnwrap(source.range(of: "struct BessieStatusLine: View {")?.lowerBound)
+        let end = try XCTUnwrap(
+            source.range(
+                of: "\nstruct BessieSectionLabel: View {",
+                range: start..<source.endIndex
+            )?.lowerBound
+        )
+        let statusLineSource = String(source[start..<end])
+
+        XCTAssertTrue(statusLineSource.contains("Text(Self.versionLabel())"))
+        XCTAssertNil(
+            statusLineSource.range(
+                of: #"\"BESSIE [0-9]+\.[0-9]+\.[0-9]+\""#,
+                options: .regularExpression
+            )
+        )
+    }
+
     func testCuratedCatalogHasExactStableOrderAndNames() {
         XCTAssertEqual(BessieThemeRegistry.selectableIDs, [
             .system, .dark, .light, .catppuccinLatte, .catppuccinFrappe,
@@ -864,6 +891,17 @@ final class BessieThemeTests: XCTestCase {
         XCTAssertEqual(Double(converted.greenComponent), Double((value >> 8) & 0xff) / 255, accuracy: 0.000_001, file: file, line: line)
         XCTAssertEqual(Double(converted.blueComponent), Double(value & 0xff) / 255, accuracy: 0.000_001, file: file, line: line)
         XCTAssertEqual(Double(converted.alphaComponent), alpha, accuracy: 0.000_001, file: file, line: line)
+    }
+
+    private func appSource(_ name: String) throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/BessieApp/\(name)"),
+            encoding: .utf8
+        )
     }
 
     @MainActor

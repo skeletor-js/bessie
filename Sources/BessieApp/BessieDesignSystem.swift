@@ -1049,9 +1049,14 @@ struct BessieStatusLine: View {
     let attentionCount: Int
     let connectionCount: Int
 
+    static func versionLabel(infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]) -> String {
+        let version = infoDictionary["CFBundleShortVersionString"] as? String ?? "development"
+        return "BESSIE \(version.uppercased())"
+    }
+
     var body: some View {
         HStack(spacing: 16) {
-            Text("BESSIE 0.1.0").foregroundStyle(BessieDesign.strong)
+            Text(Self.versionLabel()).foregroundStyle(BessieDesign.strong)
             Text("\(connectionCount) CONNECTION\(connectionCount == 1 ? "" : "S")")
             Text("\(workspaceCount) WORKSPACE\(workspaceCount == 1 ? "" : "S")")
             Spacer(minLength: 8)
