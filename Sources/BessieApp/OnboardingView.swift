@@ -264,27 +264,12 @@ struct OnboardingView: View {
     }
 
     private var remoteConnectionCard: some View {
-        let remotes = settings.connections.filter { $0.kind == .ssh }
         let selected = selectedSetupConnection?.kind == .ssh
-        return Group {
-            if remotes.isEmpty {
-                Button { prepareAddRemote() } label: { remoteConnectionLabel(selected: false) }
-                    .buttonStyle(.plain)
-            } else {
-                Menu {
-                    ForEach(remotes) { connection in
-                        Button(connection.name) { chooseConnection(connection) }
-                    }
-                    Divider()
-                    Button("Add Remote Herd…") { prepareAddRemote() }
-                } label: {
-                    remoteConnectionLabel(selected: selected)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-            }
+        return Button { prepareAddRemote() } label: {
+            remoteConnectionLabel(selected: selected)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .frame(height: 76)
         .background(BessieDesign.panel)
         .overlay { RoundedRectangle(cornerRadius: 4).stroke(selected ? BessieDesign.activeBorder : BessieDesign.border, lineWidth: 1) }

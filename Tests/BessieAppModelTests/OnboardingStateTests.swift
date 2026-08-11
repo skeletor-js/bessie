@@ -19,7 +19,7 @@ final class OnboardingStateTests: XCTestCase {
         XCTAssertTrue(source.contains(".padding(.horizontal, 18)"))
         XCTAssertTrue(source.contains(".padding(.vertical, 14)"))
         XCTAssertEqual(source.components(separatedBy: ".frame(height: 76)").count - 1, 2)
-        XCTAssertTrue(source.contains("Add Remote Herd"))
+        XCTAssertTrue(source.contains("ADD REMOTE HERD"))
         XCTAssertEqual(source.components(separatedBy: "Button(\"Back\")").count - 1, 1)
         XCTAssertTrue(source.contains("if state.canNavigateBack { Button(\"Back\")"))
         XCTAssertFalse(source.contains("the local herd is already running"))
@@ -36,6 +36,16 @@ final class OnboardingStateTests: XCTestCase {
         XCTAssertTrue(designSystem.contains("struct BessieBrandMark: View"))
         XCTAssertFalse(designSystem.contains("Text(\"Bessie\")"))
         XCTAssertTrue(designSystem.contains(".accessibilityLabel(\"Bessie\")"))
+    }
+
+    func testOnboardingRemoteChoiceDoesNotEnumerateDurableRemoteHerds() throws {
+        let onboarding = try appSource("OnboardingView.swift")
+        let app = try appSource("BessieApp.swift")
+
+        XCTAssertFalse(onboarding.contains("settings.connections.filter { $0.kind == .ssh }"))
+        XCTAssertFalse(onboarding.contains("ForEach(settings.connections.filter"))
+        XCTAssertTrue(onboarding.contains("Button { prepareAddRemote() } label: {"))
+        XCTAssertTrue(app.contains("onboardingConnectionID = onboardingCoordinator.attempt?.connectionID"))
     }
 
     private func appSource(_ name: String) throws -> String {

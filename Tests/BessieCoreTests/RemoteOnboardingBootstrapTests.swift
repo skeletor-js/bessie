@@ -4,11 +4,35 @@ import XCTest
 
 final class RemoteOnboardingBootstrapTests: XCTestCase {
     func testCollisionRefusesBeforePathRegistrationOrAttach() throws {
-        let fake = FakeRemoteBootstrap(commands: [.init(exitCode: 0, stdout: Self.sessions("bessie-new"))])
+        let fake = FakeRemoteBootstrap(commands: [
+            .init(exitCode: 0, stdout: Self.sessions("bessie-new")),
+            .init(exitCode: 0, stdout: Self.status(detached: false)),
+        ])
         XCTAssertThrowsError(try fake.bootstrap().bootstrap(definition: Self.connection, path: "/srv/work", sessionName: "bessie-new")) {
             XCTAssertEqual($0 as? RemoteBootstrapError, .collision("bessie-new"))
         }
         XCTAssertEqual(fake.attachCount, 0); XCTAssertEqual(fake.registered.count, 0)
+    }
+
+    func testExistingHealthyPendingSessionResumesWithoutAttachingAgain() throws {
+        let fake = FakeRemoteBootstrap(commands: [
+            .init(exitCode: 0, stdout: Self.sessions("bessie-new")),
+            .init(exitCode: 0, stdout: Self.status(detached: true)),
+        ], snapshot: Self.snapshot())
+
+        let result = try fake.bootstrap().bootstrap(
+            definition: Self.connection,
+            path: "/srv/my work",
+            sessionName: "bessie-new"
+        )
+
+        XCTAssertEqual(result.connection.id, "bessie-new")
+        XCTAssertEqual(result.workspaceID, "w1")
+        XCTAssertEqual(result.tabID, "t1")
+        XCTAssertEqual(result.paneID, "p1")
+        XCTAssertEqual(fake.registered.map(\.id), ["bessie-new"])
+        XCTAssertEqual(fake.attachCount, 0)
+        XCTAssertEqual(fake.arguments.count, 2)
     }
 
     func testAuthOrUnknownFailureIsNotTreatedAsAbsence() throws {

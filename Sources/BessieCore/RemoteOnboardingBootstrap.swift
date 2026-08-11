@@ -83,7 +83,25 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
         let listed: RemoteSessionList
         do { listed = try JSONDecoder().decode(RemoteSessionList.self, from: initial.stdout) }
         catch { throw RemoteBootstrapError.commandFailed("Herdr returned invalid session-list JSON: \(error.localizedDescription)") }
-        if listed.sessions.contains(where: { $0.name == sessionName }) { throw RemoteBootstrapError.collision(sessionName) }
+        if listed.sessions.contains(where: { $0.name == sessionName }) {
+            let existing = try command(Self.statusArguments(host: host, session: sessionName), nil)
+            guard existing.exitCode == 0 else { throw RemoteBootstrapError.collision(sessionName) }
+            let status = try Self.decodeStatus(existing.stdout)
+            guard status.running,
+                  status.session == sessionName,
+                  status.detachedServerDaemon,
+                  status.version == BessieCompatibility.herdrVersion,
+                  status.protocolVersion == BessieCompatibility.protocolVersion else {
+                throw RemoteBootstrapError.collision(sessionName)
+            }
+            try register(connection)
+            return try accept(
+                snapshot(connection),
+                connection: connection,
+                path: selectedPath,
+                expectedIDs: expectedIDs
+            )
+        }
 
         let pathCheck = try command(Self.pathValidationArguments(host: host), Data("\(selectedPath)\n".utf8))
         guard pathCheck.exitCode == 0 else {
