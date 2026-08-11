@@ -47,7 +47,7 @@ Bessie is not a walled garden around Herdr. It is a native front door to it.
 
 ## Availability
 
-Bessie is distributed as a signed, notarized Mac app, not as a source-only project. The first packaged V1 release is being finalized now and will be available from GitHub Releases.
+Bessie is available as a signed and notarized Mac app.
 
 V1 targets **macOS 14 or newer on Apple silicon**. The app bundles the compatible Apple-silicon Herdr `0.8.0` runtime (protocol `19`, source `346411fa21afd297f5ed3b3fa56f9e3fbf7654b7`). Compatible system and custom runtimes remain explicit advanced options.
 
