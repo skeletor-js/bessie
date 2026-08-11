@@ -3,6 +3,10 @@ main = "worker.js"
 compatibility_date = "2026-08-04"
 workers_dev = true
 preview_urls = true
+routes = [
+  { pattern = "bessie.dev", custom_domain = true, zone_name = "bessie.dev" },
+  { pattern = "www.bessie.dev", custom_domain = true, zone_name = "bessie.dev" },
+]
 [assets]
 directory = "./public"
 binding = "ASSETS"

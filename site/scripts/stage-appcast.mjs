@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -109,6 +109,28 @@ export async function verifyStagedAppcast({
   return staged;
 }
 
+async function pathExists(file) {
+  try {
+    await access(path.resolve(file));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyDeployAppcastState({
+  destination = defaultDestination,
+  receipt = defaultReceipt,
+} = {}) {
+  const hasAppcast = await pathExists(destination);
+  const hasReceipt = await pathExists(receipt);
+  if (!hasAppcast && !hasReceipt) return null;
+  if (hasAppcast !== hasReceipt) {
+    throw new Error('Appcast staging is incomplete; appcast.xml and its staged receipt must both exist or both be absent');
+  }
+  return verifyStagedAppcast({ destination, receipt });
+}
+
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const [command, argument] = process.argv.slice(2);
@@ -119,8 +141,13 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
     } else if (command === 'verify-staged' && !argument) {
       const staged = await verifyStagedAppcast();
       console.log(`Verified staged appcast ${staged.version} (${staged.build}).`);
+    } else if (command === 'verify-deploy' && !argument) {
+      const staged = await verifyDeployAppcastState();
+      console.log(staged
+        ? `Verified staged appcast ${staged.version} (${staged.build}) for deployment.`
+        : 'Verified pre-release deployment with no staged appcast.');
     } else {
-      throw new Error('Usage: stage-appcast.mjs stage PREPARED_DIRECTORY | verify-staged');
+      throw new Error('Usage: stage-appcast.mjs stage PREPARED_DIRECTORY | verify-staged | verify-deploy');
     }
   } catch (error) {
     console.error(`Appcast staging: ${error.message}`);

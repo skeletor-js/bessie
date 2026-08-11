@@ -57,7 +57,7 @@ npx wrangler whoami
 npm run deploy
 ```
 
-The predeploy gate reruns site and staged-appcast checks. A Workers preview deployment is not production acceptance. Attaching `bessie.dev`, changing DNS, or exposing the production appcast are separate maintainer operations.
+The predeploy gate reruns site checks and validates the deployment's appcast state. A pre-release deploy may have neither an appcast nor a staging receipt; once either exists, both are required and the signed feed is reverified. A Workers preview deployment is not production acceptance. Attaching `bessie.dev`, changing DNS, or exposing the production appcast are separate maintainer operations.
 
 Before attaching a custom domain, record existing apex, `www`, MX, TXT, Worker routes, and the rollback deployment. Never replace unrelated DNS records. Publish the appcast only after the GitHub release asset is public, immutable, non-draft, and anonymously byte-verified.
 

@@ -1,1 +1,1 @@
-window.__BESSIE_SITE__=Object.assign({repoUrl:'https://github.com/skeletor-js/bessie',installCmd:'curl -fsSL https://bessie.dev/install | sh',downloadUrl:'',coldOpen:true,parallax:true,heroInk:.13,cowPx:320},window.__BESSIE_SITE__||{});
+window.__BESSIE_SITE__=Object.assign({repoUrl:'https://github.com/skeletor-js/bessie',installCmd:'curl -fsSL https://bessie.dev/install | sh',downloadUrl:'',openingVideo:true,coldOpen:false,parallax:true,heroInk:.13,cowPx:320},window.__BESSIE_SITE__||{});

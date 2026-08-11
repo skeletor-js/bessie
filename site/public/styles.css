@@ -73,6 +73,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { background: #050505; scroll-behavior: smooth; }
 body { margin: 0; overflow-x: hidden; background: #050505; color: var(--default); font: 400 var(--t-13)/1.5 var(--font); -webkit-font-smoothing: antialiased; }
 button, input { font: inherit; }
@@ -213,6 +214,9 @@ a:hover { color: #fff; }
 
 .card { display: flex; flex-direction: column; gap: 9px; padding: 13px 14px; border: 1px solid var(--border); border-radius: var(--r-pop); background: var(--bg-panel); box-shadow: var(--shadow-sm); }
 
+#site-opening { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 100; object-fit: cover; background: #050505; opacity: 1; transition: opacity .42s ease; }
+#site-opening.is-done { opacity: 0; pointer-events: none; }
+
 @media (max-width: 760px) {
   nav { padding: 0 14px !important; }
   nav > div a:not(:last-child) { display: none; }
@@ -220,7 +224,8 @@ a:hover { color: #fff; }
   #top [data-o="word"] { font-size: 68px !important; }
   #top [data-o="mark"] { font-size: 96px !important; }
   section { padding-right: 18px !important; padding-left: 18px !important; }
-  section div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; gap: 34px !important; }
+  section div[style*="grid-template-columns"] { width: 100% !important; min-width: 0 !important; grid-template-columns: minmax(0, 1fr) !important; gap: 34px !important; }
+  section div[style*="grid-template-columns"] > * { min-width: 0 !important; max-width: 100% !important; }
   .pane-grid { grid-template-columns: 1fr 1fr !important; }
   .cmdk-foot { flex-wrap: wrap; }
 }
@@ -233,6 +238,8 @@ a:hover { color: #fff; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  #site-opening { display: none; }
 }
 
 .no-js [data-o], .no-js [data-l] { opacity: 1 !important; }
+.no-js #site-opening { display: none; }

@@ -91,6 +91,7 @@ class BessieLanding {
     }
     const download = (this.props.downloadUrl || '').trim();
     for (const el of r.querySelectorAll('[data-link="download"]')) { el.href = download || '#get'; if(download){el.target='_blank';el.rel='noopener'}else{el.removeAttribute('target');el.removeAttribute('rel')} }
+    for (const row of r.querySelectorAll('[data-copy-row]')) row.hidden = !download;
     const cmd = (this.props.installCmd || '').trim();
     if (cmd){
       for (const el of r.querySelectorAll('[data-install]')){
@@ -98,6 +99,30 @@ class BessieLanding {
         el.dataset.copy = cmd;
       }
     }
+  }
+
+  finishOpening(immediate = false){
+    const video = document.getElementById('site-opening');
+    if (!video) return;
+    if (this.openingTimer) clearTimeout(this.openingTimer);
+    if (this.onOpeningScroll) window.removeEventListener('scroll', this.onOpeningScroll);
+    if (immediate){ video.remove(); return; }
+    if (video.classList.contains('is-done')) return;
+    video.classList.add('is-done');
+    setTimeout(() => video.remove(), 460);
+  }
+
+  startOpening(){
+    const video = document.getElementById('site-opening');
+    if (!video || this.props.openingVideo === false || this.reduce){ this.finishOpening(true); return; }
+    const finish = () => this.finishOpening();
+    video.addEventListener('ended', finish, { once: true });
+    video.addEventListener('error', finish, { once: true });
+    this.onOpeningScroll = () => { if ((window.scrollY || 0) > 30) finish(); };
+    window.addEventListener('scroll', this.onOpeningScroll, { passive: true });
+    this.openingTimer = setTimeout(finish, 5500);
+    const playback = video.play();
+    if (playback?.catch) playback.catch(finish);
   }
 
   mkGeom(cv){
@@ -553,6 +578,7 @@ class BessieLanding {
     if (this.timer) clearInterval(this.timer);
     this.reduce = document.documentElement.getAttribute('data-reduce-motion') === '1' ||
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    this.startOpening();
     this.ink = 0.05;
     this.grab();
     this.g = this.mkGeom(cv);

@@ -8,7 +8,8 @@
     "proof": "node scripts/visual-proof.mjs",
     "stage:appcast": "node scripts/stage-appcast.mjs stage",
     "verify:staged-appcast": "node scripts/stage-appcast.mjs verify-staged",
-    "predeploy": "npm run check && npm run verify:staged-appcast",
+    "verify:deploy-appcast": "node scripts/stage-appcast.mjs verify-deploy",
+    "predeploy": "npm run check && npm run verify:deploy-appcast",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

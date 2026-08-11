@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { validateAppcast } from '../lib/appcast.mjs';
 import worker from '../worker.js';
-import { stagePreparedAppcast, verifyStagedAppcast } from './stage-appcast.mjs';
+import { stagePreparedAppcast, verifyDeployAppcastState, verifyStagedAppcast } from './stage-appcast.mjs';
 
 const signature = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 
@@ -160,6 +160,16 @@ assert.match(await installResponse.text(), /No binary was downloaded[\s\S]*exit 
 
 const work = await mkdtemp(path.join(os.tmpdir(), 'bessie-site-appcast-'));
 try {
+  const absentDestination = path.join(work, 'absent-appcast.xml');
+  const absentReceipt = path.join(work, 'absent-appcast.json');
+  assert.equal(await verifyDeployAppcastState({ destination: absentDestination, receipt: absentReceipt }), null);
+  await writeFile(absentDestination, validFeed);
+  await assert.rejects(
+    () => verifyDeployAppcastState({ destination: absentDestination, receipt: absentReceipt }),
+    /incomplete|both/i,
+  );
+  await rm(absentDestination);
+
   const prepared = path.join(work, 'prepared');
   const destination = path.join(work, 'public', 'appcast.xml');
   const receipt = path.join(work, '.staged', 'appcast.json');
@@ -200,6 +210,7 @@ try {
   await stagePreparedAppcast({ preparedDirectory: prepared, destination, receipt });
   assert.equal(await readFile(destination, 'utf8'), validFeed);
   await verifyStagedAppcast({ destination, receipt });
+  await verifyDeployAppcastState({ destination, receipt });
 
   await writeFile(path.join(prepared, 'Bessie-1.2.3-10.zip.sha256'), `${'0'.repeat(64)}  Bessie-1.2.3-10.zip\n`);
   await assert.rejects(

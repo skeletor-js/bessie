@@ -12,13 +12,16 @@ const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 async function capture(width) {
   const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: 'no-preference', userAgent });
   const failed = [];
-  page.on('requestfailed', request => failed.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`));
+  page.on('requestfailed', request => {
+    if (request.url().endsWith('/assets/bessie-opening.mp4') && request.failure()?.errorText === 'net::ERR_ABORTED') return;
+    failed.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`);
+  });
   page.on('response', response => {
     if (response.status() >= 400) failed.push(`${response.status()} ${response.url()}`);
   });
   page.on('pageerror', error => errors.push(`${width}px: ${error.message}`));
   await page.addInitScript(() => {
-    window.__BESSIE_SITE__ = { coldOpen: false, parallax: false };
+    window.__BESSIE_SITE__ = { openingVideo: false, coldOpen: false, parallax: false };
     window.__copied = '';
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -27,6 +30,7 @@ async function capture(width) {
   });
   await page.goto(baseURL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__BESSIE_LANDING__?.done === true);
+  if (await page.locator('#site-opening').count()) throw new Error(`${width}px: disabled opening video was not removed`);
   await page.screenshot({ path: new URL(`landing-${width}.png`, output).pathname, fullPage: true });
   for (const id of ['top', 'surface', 'state', 'client', 'get']) {
     if (!await page.locator(`#${id}`).isVisible()) throw new Error(`${width}px: #${id} is not visible`);
@@ -49,11 +53,8 @@ async function capture(width) {
     throw new Error(`${width}px: unavailable download CTA does not fail honestly to #get`);
   }
 
-  const copyRow = page.locator('[data-copy-row]').first();
-  await copyRow.locator('[data-copybtn]').click();
-  await page.waitForFunction(() => document.querySelector('[data-copylabel]')?.textContent === 'Copied');
-  if (await page.evaluate(() => window.__copied) !== 'curl -fsSL https://bessie.dev/install | sh') {
-    throw new Error(`${width}px: copy interaction used the wrong command`);
+  if (await page.locator('[data-copy-row]:visible').count()) {
+    throw new Error(`${width}px: unavailable install command is visible`);
   }
 
   const age = page.locator('.rr-age').first();
@@ -74,7 +75,12 @@ async function capture(width) {
 async function verifyFallbackAndWatchdog() {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, userAgent });
   await page.addInitScript(() => {
-    window.__BESSIE_SITE__ = { coldOpen: false, parallax: false };
+    window.__BESSIE_SITE__ = {
+      openingVideo: false,
+      coldOpen: false,
+      parallax: false,
+      downloadUrl: 'https://example.invalid/Bessie.zip',
+    };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     document.execCommand = () => false;
   });
@@ -112,13 +118,27 @@ async function verifyReducedMotion() {
   await page.close();
 }
 
+async function verifyOpeningVideo() {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'no-preference', userAgent });
+  await page.goto(baseURL, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => {
+    const video = document.querySelector('#site-opening');
+    return video && video.currentTime > 0.1;
+  }, null, { timeout: 5000 });
+  await page.waitForFunction(() => !document.querySelector('#site-opening'), null, { timeout: 7000 });
+  await page.waitForFunction(() => window.__BESSIE_LANDING__?.done === true);
+  await page.close();
+}
+
 try {
+  await verifyOpeningVideo();
+  await capture(390);
   await capture(1280);
   await capture(1440);
   await verifyFallbackAndWatchdog();
   await verifyReducedMotion();
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log(`visual proof: ok (${baseURL}; 1280, 1440, copy/fallback, CTA config, ages/watchdog, /install, reduced motion)`);
+  console.log(`visual proof: ok (${baseURL}; 390, 1280, 1440, opening video, copy/fallback, CTA config, ages/watchdog, /install, reduced motion)`);
 } finally {
   await browser.close();
 }
