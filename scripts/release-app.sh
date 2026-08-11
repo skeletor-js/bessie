@@ -362,7 +362,6 @@ printf '%s  %s\n' "$archive_sha256" "$archive_name" >"$archive.sha256"
 appcast_stage="$output/work/appcast"
 mkdir -p "$appcast_stage"
 cp "$archive" "$appcast_stage/$archive_name"
-cp "$release_notes" "$appcast_stage/${archive_name%.zip}.html"
 if [[ "$initial_release" == 0 ]]; then
     cp "$previous_appcast" "$output/appcast.xml"
 fi

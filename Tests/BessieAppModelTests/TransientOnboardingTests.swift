@@ -308,6 +308,7 @@ final class TransientOnboardingTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try makeOnboardingTransactionFixture(root: root)
         try fixture.connectionStore.save(fixture.acceptedConnections)
+        try setPrivateMode(fixture.connectionStore.url)
         try writeOnboardingJournal(fixture.journal, to: fixture.journalURL)
 
         let recovered = makeSettings(root: root)
@@ -323,6 +324,7 @@ final class TransientOnboardingTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try makeOnboardingTransactionFixture(root: root)
         try fixture.connectionStore.save(fixture.acceptedConnections)
+        try setPrivateMode(fixture.connectionStore.url)
         try fixture.presentationStore.save(fixture.acceptedPresentation)
         try writeOnboardingJournal(fixture.journal, to: fixture.journalURL)
 
@@ -340,7 +342,9 @@ final class TransientOnboardingTests: XCTestCase {
         let fixture = try makeOnboardingTransactionFixture(root: root)
         let priorConnections = try Data(contentsOf: fixture.connectionStore.url)
         let priorPresentation = try Data(contentsOf: fixture.presentationStore.url)
-        try Data("not a journal".utf8).write(to: fixture.journalURL)
+        try makePrivateJournalDirectory(for: fixture.journalURL)
+        try Data("{not-json".utf8).write(to: fixture.journalURL)
+        try setPrivateMode(fixture.journalURL)
 
         let blocked = makeSettings(root: root)
 
@@ -349,6 +353,107 @@ final class TransientOnboardingTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.connectionStore.url), priorConnections)
         XCTAssertEqual(try Data(contentsOf: fixture.presentationStore.url), priorPresentation)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
+    func testStartupRestoresFromJournalWhenCommittedConnectionFileIsCorrupt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeOnboardingTransactionFixture(root: root)
+        try writeOnboardingJournal(fixture.journal, to: fixture.journalURL)
+        try Data("torn accepted connection state".utf8).write(to: fixture.connectionStore.url)
+
+        _ = makeSettings(root: root)
+
+        XCTAssertEqual(try fixture.connectionStore.load(), fixture.previousConnections)
+        XCTAssertEqual(try fixture.presentationStore.load(), fixture.previousPresentation)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
+    func testSymlinkOnboardingJournalFailsClosedWithoutFollowingTarget() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeOnboardingTransactionFixture(root: root)
+        let target = root.appendingPathComponent("attacker-journal.json")
+        try writeOnboardingJournal(fixture.journal, to: target)
+        let targetBefore = try Data(contentsOf: target)
+        try makePrivateJournalDirectory(for: fixture.journalURL)
+        try FileManager.default.createSymbolicLink(at: fixture.journalURL, withDestinationURL: target)
+
+        let blocked = makeSettings(root: root)
+
+        XCTAssertTrue(blocked.connectionConfigurationLoadFailed)
+        XCTAssertNotNil(blocked.presentationPersistenceError)
+        XCTAssertEqual(try Data(contentsOf: target), targetBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
+    func testPermissiveOnboardingJournalFailsClosed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeOnboardingTransactionFixture(root: root)
+        try writeOnboardingJournal(fixture.journal, to: fixture.journalURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: fixture.journalURL.path)
+
+        let blocked = makeSettings(root: root)
+
+        XCTAssertTrue(blocked.connectionConfigurationLoadFailed)
+        XCTAssertNotNil(blocked.presentationPersistenceError)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.journalURL.path))
+    }
+
+    func testTransactionCreatesPrivateDurableJournalBeforeSettingsWrites() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sharedConnectionParent = root.appendingPathComponent("shared", isDirectory: true)
+        let presentationParent = root.appendingPathComponent("presentation", isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedConnectionParent, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: sharedConnectionParent.path
+        )
+        let connectionStore = BessieConnectionStore(
+            url: sharedConnectionParent.appendingPathComponent("connections.json")
+        )
+        let presentationStore = BessiePresentationStore(
+            url: presentationParent.appendingPathComponent("presentation.json")
+        )
+        try FileManager.default.createDirectory(
+            at: presentationStore.url,
+            withIntermediateDirectories: true
+        )
+        let journalURL = BessieOnboardingSettingsTransaction.journalURL(for: connectionStore.url)
+        let journal = BessieOnboardingSettingsJournal(
+            previousPresentationExists: false,
+            previousPresentation: BessiePresentationState(),
+            previousConnectionsExists: false,
+            previousConnections: BessieConnectionState(),
+            acceptedPresentation: BessiePresentationState(
+                firstRealTerminalCompletionVersion: BessiePresentationState.firstRealTerminalCompletionVersion
+            ),
+            acceptedConnections: BessieConnectionState()
+        )
+
+        XCTAssertThrowsError(try BessieOnboardingSettingsTransaction.commit(
+            journal: journal,
+            journalURL: journalURL,
+            presentationStore: presentationStore,
+            connectionStore: connectionStore
+        ))
+
+        let sharedParentMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: sharedConnectionParent.path)[.posixPermissions] as? NSNumber
+        ).uint16Value
+        let parentMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: journalURL.deletingLastPathComponent().path
+            )[.posixPermissions] as? NSNumber
+        ).uint16Value
+        let journalMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: journalURL.path)[.posixPermissions] as? NSNumber
+        ).uint16Value
+        XCTAssertEqual(sharedParentMode & 0o777, 0o755)
+        XCTAssertEqual(parentMode & 0o777, 0o700)
+        XCTAssertEqual(journalMode & 0o777, 0o600)
     }
 
     // MARK: - Transient fleet never persists scope changes
@@ -441,6 +546,7 @@ final class TransientOnboardingTests: XCTestCase {
         )
         try presentationStore.save(previousPresentation)
         try connectionStore.save(previousConnections)
+        try setPrivateMode(connectionStore.url)
         let journal = BessieOnboardingSettingsJournal(
             previousPresentationExists: true,
             previousPresentation: previousPresentation,
@@ -462,8 +568,26 @@ final class TransientOnboardingTests: XCTestCase {
     }
 
     private func writeOnboardingJournal(_ journal: BessieOnboardingSettingsJournal, to url: URL) throws {
+        try makePrivateJournalDirectory(for: url)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(journal).write(to: url, options: .atomic)
+        try setPrivateMode(url)
+    }
+
+    private func makePrivateJournalDirectory(for url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: url.deletingLastPathComponent().path
+        )
+    }
+
+    private func setPrivateMode(_ url: URL) throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

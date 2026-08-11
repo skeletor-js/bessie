@@ -34,9 +34,212 @@ struct BessieOnboardingSettingsJournal: Codable, Equatable {
     }
 }
 
+private enum BessieOnboardingDurableFile {
+    static let maximumBytes = 1_048_576
+
+    static func writeNewPrivateFile(_ data: Data, to destination: URL) throws {
+        guard data.count <= maximumBytes else { throw BessiePresentationPersistenceError.invalidSource }
+        let parent = destination.deletingLastPathComponent()
+        let parentIdentity = try preparePrivateDirectory(parent)
+        guard !pathExists(destination) else { throw BessiePresentationPersistenceError.invalidSource }
+        let temporary = parent.appendingPathComponent(".\(UUID().uuidString).onboarding.tmp")
+        let descriptor = open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else { throw posixError() }
+        var descriptorOpen = true
+        defer {
+            if descriptorOpen { close(descriptor) }
+            try? FileManager.default.removeItem(at: temporary)
+        }
+        try data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(descriptor, base.advanced(by: offset), bytes.count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { throw posixError() }
+                offset += written
+            }
+        }
+        try fullSync(descriptor)
+        let closeResult = close(descriptor)
+        descriptorOpen = false
+        guard closeResult == 0 else { throw posixError() }
+        guard try directoryIdentity(parent) == parentIdentity,
+              !pathExists(destination),
+              rename(temporary.path, destination.path) == 0 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        try syncDirectory(parent)
+    }
+
+    static func readPrivateFile(at url: URL) throws -> Data {
+        try requirePrivateDirectory(url.deletingLastPathComponent())
+        let expected = try privateFileDetails(at: url)
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw BessiePresentationPersistenceError.invalidSource }
+        defer { close(descriptor) }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              opened.st_dev == expected.st_dev,
+              opened.st_ino == expected.st_ino,
+              isPrivateRegularFile(opened) else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8_192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+            }
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw posixError() }
+            if count == 0 { break }
+            guard data.count + count <= maximumBytes else {
+                throw BessiePresentationPersistenceError.invalidSource
+            }
+            data.append(contentsOf: buffer[0..<count])
+        }
+        return data
+    }
+
+    static func syncPrivateFile(at url: URL) throws {
+        let expected = try ownedRegularFileDetails(at: url)
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw BessiePresentationPersistenceError.invalidSource }
+        defer { close(descriptor) }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              opened.st_dev == expected.st_dev,
+              opened.st_ino == expected.st_ino,
+              isOwnedRegularFile(opened),
+              fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        try fullSync(descriptor)
+        try syncDirectory(url.deletingLastPathComponent())
+    }
+
+    static func removePrivateFileDurably(at url: URL) throws {
+        _ = try privateFileDetails(at: url)
+        guard unlink(url.path) == 0 else { throw posixError() }
+        try syncDirectory(url.deletingLastPathComponent())
+    }
+
+    static func removeOwnedRegularFileDurablyIfPresent(at url: URL) throws {
+        var details = stat()
+        guard lstat(url.path, &details) == 0 else {
+            if errno == ENOENT { return }
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        guard isOwnedRegularFile(details), unlink(url.path) == 0 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        try syncDirectory(url.deletingLastPathComponent())
+    }
+
+    static func isSafePrivateFile(at url: URL) -> Bool {
+        (try? privateFileDetails(at: url)) != nil
+    }
+
+    private static func preparePrivateDirectory(_ url: URL) throws -> (dev_t, ino_t) {
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw BessiePresentationPersistenceError.invalidSource }
+        defer { close(descriptor) }
+        var details = stat()
+        guard fstat(descriptor, &details) == 0,
+              (details.st_mode & S_IFMT) == S_IFDIR,
+              details.st_uid == geteuid(),
+              fchmod(descriptor, S_IRWXU) == 0 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        return (details.st_dev, details.st_ino)
+    }
+
+    private static func requirePrivateDirectory(_ url: URL) throws {
+        var details = stat()
+        guard lstat(url.path, &details) == 0,
+              (details.st_mode & S_IFMT) == S_IFDIR,
+              details.st_uid == geteuid(),
+              (details.st_mode & 0o777) == 0o700 else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+    }
+
+    private static func directoryIdentity(_ url: URL) throws -> (dev_t, ino_t) {
+        var details = stat()
+        guard lstat(url.path, &details) == 0,
+              (details.st_mode & S_IFMT) == S_IFDIR,
+              details.st_uid == geteuid() else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        return (details.st_dev, details.st_ino)
+    }
+
+    private static func privateFileDetails(at url: URL) throws -> stat {
+        let details = try ownedRegularFileDetails(at: url)
+        guard isPrivateRegularFile(details),
+              details.st_size >= 0,
+              details.st_size <= maximumBytes else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        return details
+    }
+
+    private static func ownedRegularFileDetails(at url: URL) throws -> stat {
+        var details = stat()
+        guard lstat(url.path, &details) == 0, isOwnedRegularFile(details) else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        return details
+    }
+
+    private static func isOwnedRegularFile(_ details: stat) -> Bool {
+        (details.st_mode & S_IFMT) == S_IFREG
+            && details.st_uid == geteuid()
+            && details.st_nlink == 1
+    }
+
+    private static func isPrivateRegularFile(_ details: stat) -> Bool {
+        isOwnedRegularFile(details) && (details.st_mode & 0o777) == 0o600
+    }
+
+    private static func pathExists(_ url: URL) -> Bool {
+        var details = stat()
+        if lstat(url.path, &details) == 0 { return true }
+        return errno != ENOENT
+    }
+
+    private static func fullSync(_ descriptor: Int32) throws {
+        if fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+        guard fsync(descriptor) == 0 else { throw posixError() }
+    }
+
+    private static func syncDirectory(_ url: URL) throws {
+        let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw posixError() }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else { throw posixError() }
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
 enum BessieOnboardingSettingsTransaction {
     static func journalURL(for connectionsURL: URL) -> URL {
-        connectionsURL.appendingPathExtension("onboarding-commit.json")
+        connectionsURL.deletingLastPathComponent()
+            .appendingPathComponent(".bessie-onboarding-transaction", isDirectory: true)
+            .appendingPathComponent("journal.json")
     }
 
     static func commit(
@@ -48,8 +251,10 @@ enum BessieOnboardingSettingsTransaction {
         try save(journal, to: journalURL)
         do {
             try connectionStore.save(journal.acceptedConnections)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: connectionStore.url)
             try presentationStore.save(journal.acceptedPresentation)
-            try FileManager.default.removeItem(at: journalURL)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: presentationStore.url)
+            try BessieOnboardingDurableFile.removePrivateFileDurably(at: journalURL)
         } catch {
             do {
                 try restorePrevious(
@@ -70,22 +275,27 @@ enum BessieOnboardingSettingsTransaction {
         presentationStore: BessiePresentationStore,
         connectionStore: BessieConnectionStore
     ) throws {
-        guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
-        let data = try Data(contentsOf: journalURL, options: [.mappedIfSafe])
-        guard data.count <= 1_048_576 else { throw BessiePresentationPersistenceError.invalidSource }
+        var journalDetails = stat()
+        guard lstat(journalURL.path, &journalDetails) == 0 else {
+            if errno == ENOENT { return }
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        let data = try BessieOnboardingDurableFile.readPrivateFile(at: journalURL)
         let journal = try JSONDecoder().decode(BessieOnboardingSettingsJournal.self, from: data)
         guard journal.schemaVersion == BessieOnboardingSettingsJournal.currentSchemaVersion else {
             throw BessiePresentationPersistenceError.invalidSource
         }
-        let currentPresentationExists = FileManager.default.fileExists(atPath: presentationStore.url.path)
-        let currentConnectionsExists = FileManager.default.fileExists(atPath: connectionStore.url.path)
-        let currentPresentation = try presentationStore.loadWithNormalizationStatus().state
-        let currentConnections = try connectionStore.load()
-        if currentPresentationExists,
-           currentConnectionsExists,
-           currentPresentation == journal.acceptedPresentation,
+        let currentPresentation = BessieOnboardingDurableFile.isSafePrivateFile(at: presentationStore.url)
+            ? try? presentationStore.loadWithNormalizationStatus().state
+            : nil
+        let currentConnections = BessieOnboardingDurableFile.isSafePrivateFile(at: connectionStore.url)
+            ? try? connectionStore.load()
+            : nil
+        if currentPresentation == journal.acceptedPresentation,
            currentConnections == journal.acceptedConnections {
-            try FileManager.default.removeItem(at: journalURL)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: connectionStore.url)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: presentationStore.url)
+            try BessieOnboardingDurableFile.removePrivateFileDurably(at: journalURL)
             return
         }
         try restorePrevious(
@@ -97,13 +307,9 @@ enum BessieOnboardingSettingsTransaction {
     }
 
     private static func save(_ journal: BessieOnboardingSettingsJournal, to url: URL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(journal).write(to: url, options: [.atomic])
+        try BessieOnboardingDurableFile.writeNewPrivateFile(encoder.encode(journal), to: url)
     }
 
     private static func restorePrevious(
@@ -112,17 +318,19 @@ enum BessieOnboardingSettingsTransaction {
         presentationStore: BessiePresentationStore,
         connectionStore: BessieConnectionStore
     ) throws {
-        if journal.previousConnectionsExists { try connectionStore.save(journal.previousConnections) }
-        else if FileManager.default.fileExists(atPath: connectionStore.url.path) {
-            try FileManager.default.removeItem(at: connectionStore.url)
+        if journal.previousConnectionsExists {
+            try connectionStore.save(journal.previousConnections)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: connectionStore.url)
+        } else {
+            try BessieOnboardingDurableFile.removeOwnedRegularFileDurablyIfPresent(at: connectionStore.url)
         }
-        if journal.previousPresentationExists { try presentationStore.save(journal.previousPresentation) }
-        else if FileManager.default.fileExists(atPath: presentationStore.url.path) {
-            try FileManager.default.removeItem(at: presentationStore.url)
+        if journal.previousPresentationExists {
+            try presentationStore.save(journal.previousPresentation)
+            try BessieOnboardingDurableFile.syncPrivateFile(at: presentationStore.url)
+        } else {
+            try BessieOnboardingDurableFile.removeOwnedRegularFileDurablyIfPresent(at: presentationStore.url)
         }
-        if FileManager.default.fileExists(atPath: journalURL.path) {
-            try FileManager.default.removeItem(at: journalURL)
-        }
+        try BessieOnboardingDurableFile.removePrivateFileDurably(at: journalURL)
     }
 }
 

@@ -297,6 +297,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 archive=$(find "$directory" -maxdepth 1 -name '*.zip' -print -quit)
+if find "$directory" -maxdepth 1 -name '*.html' -print -quit | grep -q .; then
+    echo 'release notes HTML must not be staged where Sparkle synthesizes a temporary releaseNotesLink' >&2
+    exit 2
+fi
 name=$(basename "$archive")
 versions=${name#Bessie-}; versions=${versions%.zip}; build=${versions##*-}; version=${versions%-$build}
 length=$(wc -c <"$archive" | tr -d ' ')
