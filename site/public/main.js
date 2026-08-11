@@ -305,15 +305,6 @@ class BessieLanding {
     this.reveals = Array.from(r.querySelectorAll('[data-reveal]'));
     this.fits = Array.from(r.querySelectorAll('[data-fit]'));
 
-    // Ages are parsed out of the markup and then tick for real, so the shots are
-    // never frozen at 38s while you read the page.
-    this.ages = Array.from(r.querySelectorAll('.rr-age')).map(el => {
-      const m = /^(\d+)\s*([smh])$/.exec((el.textContent || '').trim());
-      if (!m) return null;
-      const mul = m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1;
-      return { el, s: +m[1] * mul };
-    }).filter(Boolean);
-
     // One-shot timelines, started when their element reaches the trigger line.
     this.anims = [];
     if (this.moves()){
@@ -349,16 +340,6 @@ class BessieLanding {
         this.anims.push({ el, t0: null, step: t => {
           const n = Math.max(0, Math.min(full.length, Math.round((t - 120) / 105)));
           if (el._n !== n){ el.value = full.slice(0, n); el._n = n; }
-        }});
-      }
-      for (const el of r.querySelectorAll('[data-arrive]')){
-        const count = r.querySelector('[data-needs-count]');
-        this.anims.push({ el, t0: null, step: t => {
-          const p = Math.max(0, Math.min(1, (t - 1150) / 380));
-          const e = 1 - Math.pow(1 - p, 3);
-          el.style.opacity = e.toFixed(3);
-          el.style.transform = 'translate3d(0,' + ((1 - e) * -10).toFixed(2) + 'px,0)';
-          if (count && p > 0.35 && count.textContent !== 'Needs you · 3') count.textContent = 'Needs you · 3';
         }});
       }
     }
@@ -408,13 +389,11 @@ class BessieLanding {
     for (const a of this.anims || []){ try { a.step(1e6); } catch(e){} }
     const root = this.rootRef.current;
     if (!root) return;
-    for (const el of root.querySelectorAll('[data-arrive], [data-term] > *, [data-stagger] > *')){
+    for (const el of root.querySelectorAll('[data-term] > *, [data-stagger] > *')){
       el.style.opacity = '1';
       el.style.transform = 'none';
     }
     for (const el of root.querySelectorAll('[data-typed]')) el.value = el.dataset.typed || '';
-    const count = root.querySelector('[data-needs-count]');
-    if (count) count.textContent = 'Needs you · 3';
   }
 
   heroOverlay(t, e){
@@ -553,15 +532,6 @@ class BessieLanding {
 
     this.frameTicks = (this.frameTicks || 0) + 1;
     this.stepAll();
-    if (now - (this.tick1s || 0) > 1000){
-      this.tick1s = now;
-      for (const a of this.ages){
-        a.s += 1;
-        const v = a.s < 60 ? a.s + 's' : a.s < 3600 ? Math.floor(a.s / 60) + 'm' : Math.floor(a.s / 3600) + 'h';
-        if (a.el.textContent !== v) a.el.textContent = v;
-      }
-    }
-
     this.ph += dt * 0.42;
     this.ink += ((this.inkTarget != null ? this.inkTarget : this.ambient()) - this.ink) * Math.min(1, dt * 3.4);
     const yOff = this.moves() ? (this.sy || 0) * 0.22 : 0;

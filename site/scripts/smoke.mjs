@@ -6,7 +6,7 @@ const css = fs.readFileSync(publicFile('styles.css'), 'utf8');
 const main = fs.readFileSync(publicFile('main.js'), 'utf8');
 const config = fs.readFileSync(publicFile('config.js'), 'utf8');
 
-for (const id of ['top', 'surface', 'state', 'client', 'get']) {
+for (const id of ['top', 'surface', 'state', 'get']) {
   if (!html.includes(`id="${id}"`)) throw new Error(`missing #${id}`);
 }
 if (!/<title>[^<]*every agent, one window/i.test(html)) throw new Error('title missing');
@@ -20,7 +20,7 @@ for (const file of [
 ]) {
   if (!fs.existsSync(publicFile(file))) throw new Error(`missing ${file}`);
 }
-if ((html.match(/<img class="bessie-logo" src="\/assets\/bessie-logo\.svg" alt="">/g) || []).length !== 4) {
+if ((html.match(/<img class="bessie-logo" src="\/assets\/bessie-logo\.svg" alt="">/g) || []).length !== 5) {
   throw new Error('current Bessie logo is missing from a branded site surface');
 }
 if ((html.match(/ph-fill ph-cow/g) || []).length !== 1 || !/<i id="cow-probe"[^>]*ph-fill ph-cow/.test(html)) {
@@ -53,8 +53,22 @@ if (!config.includes("downloadUrl:'https://github.com/skeletor-js/bessie/release
 for (const stale of [
   'Point it at the Herdr you already run.', 'it starts nothing',
   'Answer from the drop-down', 'Approving sends', 'Draft 0.1.0 release notes',
+  'Step one', 'Step two', 'Step three', 'Step four', 'Step five',
+  'It never owns your live work.', 'Settled ·', 'oldest 2m',
+  'panes · workspaces · projects · commands',
+  'All herds', 'All workspaces', 'class="rr-age"', 'id="client"',
+  'Run six coding agents', 'spend half the day', 'Any pane, three keystrokes.',
+  'so you never act in the wrong repo', 'so you never open the wrong',
 ]) {
   if (html.includes(stale)) throw new Error(`stale V1 claim remains: ${stale}`);
+}
+for (const current of [
+  'The siderail tells you where to look.',
+  'Needs you · 2', 'Working · 2', 'Done · 4', 'Idle · 3', 'Unknown · 1',
+  'panes · workspaces · projects · herds · commands',
+  '2 need you · 2 working', '1 elsewhere',
+]) {
+  if (!html.includes(current)) throw new Error(`current product story is missing: ${current}`);
 }
 
 console.log('static smoke: ok');

@@ -32,7 +32,7 @@ async function capture(width) {
   await page.waitForFunction(() => window.__BESSIE_LANDING__?.done === true);
   if (await page.locator('#site-opening').count()) throw new Error(`${width}px: disabled opening video was not removed`);
   await page.screenshot({ path: new URL(`landing-${width}.png`, output).pathname, fullPage: true });
-  for (const id of ['top', 'surface', 'state', 'client', 'get']) {
+  for (const id of ['top', 'surface', 'state', 'get']) {
     if (!await page.locator(`#${id}`).isVisible()) throw new Error(`${width}px: #${id} is not visible`);
   }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -40,7 +40,7 @@ async function capture(width) {
   if (failed.length) throw new Error(`${width}px: failed requests\n${failed.join('\n')}`);
 
   const anchors = await page.locator('nav a[href^="#"]').evaluateAll(elements => elements.map(element => element.getAttribute('href')));
-  for (const href of ['#top', '#surface', '#state', '#client']) {
+  for (const href of ['#top', '#surface', '#state']) {
     if (!anchors.includes(href)) throw new Error(`${width}px: missing navigation anchor ${href}`);
   }
   const repoLinks = await page.locator('[data-link="repo"]').evaluateAll(elements =>
@@ -62,11 +62,6 @@ async function capture(width) {
   if (await page.locator('[data-install]').evaluateAll(elements => elements.some(element => element.textContent !== 'curl -fsSL https://bessie.dev/install | sh'))) {
     throw new Error(`${width}px: curl installer command is wrong`);
   }
-
-  const age = page.locator('.rr-age').first();
-  const before = await age.textContent();
-  await page.waitForTimeout(1150);
-  if (await age.textContent() === before) throw new Error(`${width}px: relative age did not advance`);
 
   const install = await page.evaluate(async () => {
     const response = await fetch('/install');
@@ -145,7 +140,7 @@ try {
   await verifyFallbackAndWatchdog();
   await verifyReducedMotion();
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log(`visual proof: ok (${baseURL}; 390, 1280, 1440, opening video, copy/fallback, CTA config, ages/watchdog, /install, reduced motion)`);
+  console.log(`visual proof: ok (${baseURL}; 390, 1280, 1440, opening video, copy/fallback, CTA config, animation watchdog, /install, reduced motion)`);
 } finally {
   await browser.close();
 }
