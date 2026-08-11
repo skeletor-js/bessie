@@ -32,6 +32,29 @@ final class RemoteOnboardingBootstrapTests: XCTestCase {
         XCTAssertTrue(fake.registered.isEmpty); XCTAssertEqual(fake.attachCount, 0)
     }
 
+    func testPathValidationScriptExecutesPortablyWithoutEvaluatingPathBytes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let marker = root.appendingPathComponent("injected")
+        let directory = root.appendingPathComponent("workspace;$(touch injected) 'quoted'")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = try XCTUnwrap(RemoteOnboardingBootstrap.pathValidationArguments(host: "studio").last)
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.currentDirectoryURL = root
+        process.standardInput = input
+        try process.run()
+        input.fileHandleForWriting.write(Data("\(directory.path)\n".utf8))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testAttachUsesForcedPTYAndSelectedCWDWaitsForDetachedThenStopsBeforeContinuedProof() throws {
         let fake = FakeRemoteBootstrap(commands: [
             .init(exitCode: 0, stdout: Self.sessions()), .init(exitCode: 0),

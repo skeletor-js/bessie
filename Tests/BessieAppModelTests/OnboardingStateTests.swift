@@ -20,6 +20,8 @@ final class OnboardingStateTests: XCTestCase {
         XCTAssertTrue(source.contains(".padding(.vertical, 14)"))
         XCTAssertEqual(source.components(separatedBy: ".frame(height: 76)").count - 1, 2)
         XCTAssertTrue(source.contains("Add Remote Herd"))
+        XCTAssertEqual(source.components(separatedBy: "Button(\"Back\")").count - 1, 1)
+        XCTAssertTrue(source.contains("if state.canNavigateBack { Button(\"Back\")"))
         XCTAssertFalse(source.contains("the local herd is already running"))
         XCTAssertFalse(source.contains(".move(edge:"))
     }

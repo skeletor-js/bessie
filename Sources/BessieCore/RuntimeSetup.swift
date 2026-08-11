@@ -260,6 +260,7 @@ public struct OnboardingState: Codable, Equatable, Sendable {
     public var step: Step
     public var completed: Bool
     public init(step: Step = .connect, completed: Bool = false) { self.step = step; self.completed = completed }
+    public var canNavigateBack: Bool { step != .connect }
     public mutating func advance(runtimeReady: Bool, sessionReady: Bool, workspaceReady: Bool, terminalControllerReady: Bool) {
         switch step {
         case .connect: if runtimeReady && sessionReady { step = .howItWorks }

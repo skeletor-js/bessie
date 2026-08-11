@@ -73,6 +73,13 @@ final class RuntimeSetupTests: XCTestCase {
         XCTAssertFalse(state.completed)
     }
 
+    func testOnboardingBackEligibilityIncludesNotifications() {
+        XCTAssertFalse(OnboardingState(step: .connect).canNavigateBack)
+        XCTAssertTrue(OnboardingState(step: .howItWorks).canNavigateBack)
+        XCTAssertTrue(OnboardingState(step: .readTheRail).canNavigateBack)
+        XCTAssertTrue(OnboardingState(step: .notifications).canNavigateBack)
+    }
+
     func testOnboardingCompletesOnlyFromReadyWithReadyTerminalController() {
         var state = OnboardingState(step: .notifications)
         state.advance(runtimeReady: true, sessionReady: true, workspaceReady: true, terminalControllerReady: false)

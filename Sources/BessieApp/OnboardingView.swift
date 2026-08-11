@@ -445,8 +445,8 @@ struct OnboardingView: View {
             } else {
                 Button("Continue", action: continueSetup)
                 .buttonStyle(OnboardingPrimaryButtonStyle(width: 72)).disabled(!canContinue)
-                if state.step != .connect { Button("Back") { settings.goBackInSetup() }.buttonStyle(.plain) }
             }
+            if state.canNavigateBack { Button("Back") { settings.goBackInSetup() }.buttonStyle(.plain) }
         }
         .font(.system(size: 12, weight: .medium))
         .padding(.top, 30)
