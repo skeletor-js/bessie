@@ -289,7 +289,7 @@ public final class BessieConfigurationLease: @unchecked Sendable {
               parentURL.standardizedFileURL.path == parentURL.resolvingSymlinksInPath().standardizedFileURL.path else {
             throw BessieConfigurationLeaseError.unavailable(lockURL.path)
         }
-        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             throw BessieConfigurationLeaseError.unavailable(lockURL.path)
         }

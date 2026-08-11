@@ -413,7 +413,7 @@ public final class BessiePresentationLease: @unchecked Sendable {
               parent.standardizedFileURL.path == parent.resolvingSymlinksInPath().standardizedFileURL.path else {
             throw BessiePresentationLeaseError.unavailable(lockURL.path)
         }
-        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw BessiePresentationLeaseError.unavailable(lockURL.path) }
         var details = stat()
         guard fstat(descriptor, &details) == 0,
