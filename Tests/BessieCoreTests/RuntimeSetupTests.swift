@@ -188,6 +188,30 @@ final class RuntimeSetupTests: XCTestCase {
         }
     }
 
+    func testBundledRuntimeLockUsesPackagedSignedHashAndFailsClosedWithoutIt() throws {
+        let url = URL(fileURLWithPath: "/Applications/Bessie.app/Contents/Resources/Herdr/herdr")
+        let packaged = Data(#"""
+        {
+            "sha256": "unsigned-upstream-hash",
+            "bundled_sha256": "signed-packaged-hash",
+            "expected_version_output": "herdr 0.8.0",
+            "protocol": 19
+        }
+        """#.utf8)
+
+        let lock = try XCTUnwrap(BundledRuntimeLock(data: packaged, canonicalURL: url))
+        XCTAssertEqual(lock.sha256, "signed-packaged-hash")
+
+        let sourceOnly = Data(#"""
+        {
+            "sha256": "unsigned-upstream-hash",
+            "expected_version_output": "herdr 0.8.0",
+            "protocol": 19
+        }
+        """#.utf8)
+        XCTAssertNil(BundledRuntimeLock(data: sourceOnly, canonicalURL: url))
+    }
+
     func testExternalValidationFailuresNeverBecomeBundledIntegrity() {
         let url = URL(fileURLWithPath: "/opt/herdr")
         let validator = HerdrRuntimeValidator(

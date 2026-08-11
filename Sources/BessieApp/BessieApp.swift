@@ -975,17 +975,8 @@ final class ConnectionViewModel: ObservableObject {
     private static func runtimeValidation(for bundledURL: URL) -> (validator: HerdrRuntimeValidator, lock: BundledRuntimeLock?) {
         let lock: BundledRuntimeLock?
         if let lockURL = Bundle.main.url(forResource: "runtime-lock", withExtension: "json", subdirectory: "Herdr"),
-           let data = try? Data(contentsOf: lockURL),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let sha256 = object["sha256"] as? String,
-           let versionOutput = object["expected_version_output"] as? String,
-           let protocolVersion = object["protocol"] as? Int {
-            lock = BundledRuntimeLock(
-                canonicalURL: bundledURL,
-                sha256: sha256,
-                versionOutput: versionOutput,
-                protocolVersion: protocolVersion
-            )
+           let data = try? Data(contentsOf: lockURL) {
+            lock = BundledRuntimeLock(data: data, canonicalURL: bundledURL)
         } else {
             lock = nil
         }

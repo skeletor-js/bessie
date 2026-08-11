@@ -706,7 +706,11 @@ fi
 [[ $(( $(stat -f %Lp "$packaged_runtime") & 022 )) == 0 ]]
 cmp Sources/BessieApp/Resources/Herdr-LICENSE.txt "$packaged_license"
 cmp LICENSE "$packaged_bessie_license"
-cmp scripts/herdr-runtime-lock.json "$packaged_lock"
+source_runtime_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' scripts/herdr-runtime-lock.json)
+packaged_source_runtime_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$packaged_lock")
+packaged_bundled_runtime_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundled_sha256"])' "$packaged_lock")
+[[ "$packaged_source_runtime_sha" == "$source_runtime_sha" ]]
+[[ "$packaged_bundled_runtime_sha" == $(shasum -a 256 "$packaged_runtime" | awk '{print $1}') ]]
 codesign --verify --strict "$packaged_runtime"
 codesign --verify --deep --strict dist/Bessie.app
 

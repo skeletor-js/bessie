@@ -69,6 +69,28 @@ public struct BundledRuntimeLock: Equatable, Sendable {
         self.versionOutput = versionOutput
         self.protocolVersion = protocolVersion
     }
+
+    public init?(data: Data, canonicalURL: URL) {
+        guard let payload = try? JSONDecoder().decode(PackagedPayload.self, from: data) else { return nil }
+        self.init(
+            canonicalURL: canonicalURL,
+            sha256: payload.bundledSHA256,
+            versionOutput: payload.expectedVersionOutput,
+            protocolVersion: payload.protocolVersion
+        )
+    }
+
+    private struct PackagedPayload: Decodable {
+        let bundledSHA256: String
+        let expectedVersionOutput: String
+        let protocolVersion: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case bundledSHA256 = "bundled_sha256"
+            case expectedVersionOutput = "expected_version_output"
+            case protocolVersion = "protocol"
+        }
+    }
 }
 
 public struct ValidatedRuntime: Equatable, Sendable {

@@ -126,11 +126,29 @@ if [[ "$codesign_identity" == - ]]; then
     # Preserving it keeps those bytes identical to the checksum-pinned artifact.
     codesign --verify --strict "$runtime_path"
     bessie_sign_sparkle_framework "$sparkle_framework_path" - ad-hoc
-    codesign --force --sign - "$app_path"
     [[ $(shasum -a 256 "$runtime_path" | awk '{print $1}') == "$expected_runtime_sha" ]]
 else
     bessie_sign_sparkle_framework "$sparkle_framework_path" "$codesign_identity" developer-id
     codesign --force --options runtime --timestamp --sign "$codesign_identity" "$runtime_path"
+fi
+
+bundled_runtime_sha=$(shasum -a 256 "$runtime_path" | awk '{print $1}')
+python3 - "$provenance_path" "$bundled_runtime_sha" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text())
+payload["bundled_sha256"] = sys.argv[2]
+path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+[[ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$provenance_path") == "$expected_runtime_sha" ]]
+[[ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundled_sha256"])' "$provenance_path") == "$bundled_runtime_sha" ]]
+
+if [[ "$codesign_identity" == - ]]; then
+    codesign --force --sign - "$app_path"
+else
     codesign --force --options runtime --timestamp --sign "$codesign_identity" "$app_path"
 fi
 
