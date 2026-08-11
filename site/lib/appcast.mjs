@@ -30,6 +30,10 @@ function oneText(value, name, label) {
   return value.trim();
 }
 
+function optionalText(value, name, label) {
+  return value === undefined ? '' : oneText(value, name, label);
+}
+
 function compareVersions(left, right) {
   const leftParts = left.split('.').map(Number);
   const rightParts = right.split('.').map(Number);
@@ -76,8 +80,14 @@ function validateItem(item, index) {
   const enclosures = Array.isArray(item.enclosure) ? item.enclosure : [];
   if (enclosures.length !== 1 || !enclosures[0] || typeof enclosures[0] !== 'object') invalid(`${label} must contain exactly one full enclosure`);
   const enclosure = enclosures[0];
-  const build = enclosure['@_sparkle:version'] || '';
-  const version = enclosure['@_sparkle:shortVersionString'] || '';
+  const enclosureBuild = optionalText(enclosure['@_sparkle:version'], 'enclosure sparkle:version', label);
+  const itemBuild = optionalText(item['sparkle:version'], 'sparkle:version', label);
+  const enclosureVersion = optionalText(enclosure['@_sparkle:shortVersionString'], 'enclosure sparkle:shortVersionString', label);
+  const itemVersion = optionalText(item['sparkle:shortVersionString'], 'sparkle:shortVersionString', label);
+  if (enclosureBuild && itemBuild && enclosureBuild !== itemBuild) invalid(`${label} build versions disagree`);
+  if (enclosureVersion && itemVersion && enclosureVersion !== itemVersion) invalid(`${label} marketing versions disagree`);
+  const build = enclosureBuild || itemBuild;
+  const version = enclosureVersion || itemVersion;
   if (!VERSION_PATTERN.test(build)) invalid(`${label} build version must be numeric or dotted-numeric`);
   if (!VERSION_PATTERN.test(version) || version.split('.').length < 3) {
     invalid(`${label} marketing version must contain at least three numeric components`);
@@ -104,7 +114,7 @@ function validateItem(item, index) {
 
   if (item.title !== undefined) {
     const title = oneText(item.title, 'title', label);
-    if (title !== `Bessie ${version}`) invalid(`${label} title does not match its marketing version`);
+    if (title !== version && title !== `Bessie ${version}`) invalid(`${label} title does not match its marketing version`);
   }
   const notes = item['sparkle:releaseNotesLink'] ?? item['sparkle:fullReleaseNotesLink'];
   if (notes !== undefined) {

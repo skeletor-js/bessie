@@ -20,6 +20,16 @@ function validItem() {
   return `<item><title>Bessie 1.2.3</title><pubDate>Sun, 09 Aug 2026 00:00:00 +0000</pubDate><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><sparkle:releaseNotesLink>https://github.com/skeletor-js/bessie/releases/tag/v1.2.3</sparkle:releaseNotesLink><enclosure url="https://github.com/skeletor-js/bessie/releases/download/v1.2.3/Bessie-1.2.3-10.zip" length="7" type="application/octet-stream" sparkle:version="10" sparkle:shortVersionString="1.2.3" sparkle:edSignature="${signature}" /></item>`;
 }
 
+function elementVersionItem() {
+  return validItem()
+    .replace('<title>Bessie 1.2.3</title>', '<title>1.2.3</title>')
+    .replace(
+      '<sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>',
+      '<sparkle:version>10</sparkle:version><sparkle:shortVersionString>1.2.3</sparkle:shortVersionString><sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>',
+    )
+    .replace(' sparkle:version="10" sparkle:shortVersionString="1.2.3"', '');
+}
+
 function expectInvalid(label, feed, expected) {
   assert.throws(() => validateAppcast(Buffer.from(feed)), expected, label);
 }
@@ -33,6 +43,13 @@ function enclosureURL(replacement) {
 
 const validFeed = signedFeed();
 assert.deepEqual(validateAppcast(Buffer.from(validFeed)).latest, {
+  version: '1.2.3',
+  build: '10',
+  archiveName: 'Bessie-1.2.3-10.zip',
+  archiveLength: 7,
+  archiveURL: 'https://github.com/skeletor-js/bessie/releases/download/v1.2.3/Bessie-1.2.3-10.zip',
+});
+assert.deepEqual(validateAppcast(Buffer.from(signedFeed(elementVersionItem()))).latest, {
   version: '1.2.3',
   build: '10',
   archiveName: 'Bessie-1.2.3-10.zip',
@@ -60,6 +77,11 @@ expectInvalid('credential-bearing enclosure', signedFeed(enclosureURL('https://t
 expectInvalid('wrong archive name', signedFeed(validItem().replace('Bessie-1.2.3-10.zip', 'Bessie-1.2.3-11.zip')), /archive|immutable GitHub/);
 expectInvalid('invalid archive length', signedFeed(validItem().replace('length="7"', 'length="0"')), /length/);
 expectInvalid('version mismatch', signedFeed(validItem().replace('Bessie 1.2.3</title>', 'Bessie 1.2.4</title>')), /title|version/);
+expectInvalid(
+  'conflicting element and attribute versions',
+  signedFeed(validItem().replace('<sparkle:minimumSystemVersion>', '<sparkle:version>11</sparkle:version><sparkle:shortVersionString>1.2.4</sparkle:shortVersionString><sparkle:minimumSystemVersion>')),
+  /disagree|version/,
+);
 expectInvalid('missing macOS minimum', signedFeed(validItem().replace('<sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>', '')), /minimumSystemVersion|minimum macOS/);
 expectInvalid('missing enclosure signature', signedFeed(validItem().replace(` sparkle:edSignature="${signature}"`, '')), /archive signature/);
 expectInvalid('delta enclosure', signedFeed(validItem().replace('</item>', '<sparkle:deltas><enclosure sparkle:deltaFrom="9" /></sparkle:deltas></item>')), /delta/);
