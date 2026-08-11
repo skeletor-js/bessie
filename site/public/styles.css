@@ -108,6 +108,7 @@ a:hover { color: #fff; }
 .ph-thin.ph-terminal-window::before { content: "\eae8"; }
 .ph-fill.ph-cow::before { content: "\eabe"; }
 .flame .ph-fill, .flame .ph-thin { font-size: inherit; }
+.flame .bessie-logo { display: block; width: 1em; height: auto; filter: invert(1); }
 .ico-12 { font-size: 12px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
