@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Pre-release" src="https://img.shields.io/badge/status-pre--release-f1ede3?style=flat-square&labelColor=050505">
+  <a href="https://github.com/skeletor-js/bessie/releases/tag/v1.0.0"><img alt="Bessie 1.0.0" src="https://img.shields.io/badge/release-v1.0.0-f1ede3?style=flat-square&labelColor=050505"></a>
   <img alt="macOS 14 or newer on Apple silicon" src="https://img.shields.io/badge/macOS-14%2B%20Apple%20silicon-f1ede3?style=flat-square&labelColor=050505&logo=apple&logoColor=white">
   <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-f1ede3?style=flat-square&labelColor=050505&logo=swift&logoColor=white">
   <a href="https://github.com/herdrdev/herdr"><img alt="Herdr 0.8.0 protocol 19" src="https://img.shields.io/badge/Herdr-0.8.0%20%2F%20protocol%2019-f1ede3?style=flat-square&labelColor=050505"></a>
@@ -18,6 +18,12 @@
 </p>
 
 Herdr keeps coding agents, terminals, and workspaces alive. Bessie turns that durable foundation into one native Mac workspace for running a lot of agents without losing track of them.
+
+## What is Bessie?
+
+Bessie is a native Mac client for Herdr. It brings local and remote Herds into one graphical workspace, shows which agents need attention, and gives you native ways to launch, organize, and return to the work.
+
+Herdr remains the runtime and source of truth for every live workspace, pane, terminal, process, and durable session. Bessie adds the Mac interface around that foundation; it does not replace or fork it.
 
 ## The big additions
 
@@ -47,7 +53,13 @@ Bessie is not a walled garden around Herdr. It is a native front door to it.
 
 ## Availability
 
-Bessie is available as a signed and notarized Mac app.
+Bessie is available as a signed and notarized Mac app. **[Download Bessie 1.0.0 →](https://github.com/skeletor-js/bessie/releases/download/v1.0.0/Bessie-1.0.0-15.zip)**
+
+Or install it from the command line:
+
+```sh
+curl -fsSL https://bessie.dev/install | sh
+```
 
 V1 targets **macOS 14 or newer on Apple silicon**. The app bundles the compatible Apple-silicon Herdr `0.8.0` runtime (protocol `19`, source `346411fa21afd297f5ed3b3fa56f9e3fbf7654b7`). Compatible system and custom runtimes remain explicit advanced options.
 
@@ -72,6 +84,8 @@ Bessie uses Herdr's public JSON API, CLI surfaces, and terminal-session bridge. 
 - [Release engineering](docs/releases/README.md)
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)
+
+Questions about Bessie or the repository? Email [hello@bessie.dev](mailto:hello@bessie.dev).
 
 ## Development quick start
 

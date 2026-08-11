@@ -2,15 +2,13 @@
 
 ## Supported versions
 
-Bessie has not published its first public release yet. Until V1 ships, security fixes apply to the current release-candidate line only; local acceptance builds are not supported public distributions.
-
-After V1, the project intends to support the latest published version. Older candidates, verification bundles, and development builds may be used to reproduce an issue but should not be treated as maintained releases.
+Bessie supports the latest published version, currently `1.0.0`. Older candidates, verification bundles, and development builds may be used to reproduce an issue but are not maintained public releases.
 
 ## Report a vulnerability privately
 
 Please do **not** open a public GitHub issue for a suspected vulnerability.
 
-Use GitHub's private vulnerability-reporting flow for [`skeletor-js/bessie`](https://github.com/skeletor-js/bessie/security/advisories/new). If that flow is unavailable before the repository becomes public, contact the repository owner privately through the profile linked from the repository and ask for a secure reporting channel without including exploit details in the first message.
+Use GitHub's private vulnerability-reporting flow for [`skeletor-js/bessie`](https://github.com/skeletor-js/bessie/security/advisories/new). If that flow is unavailable, email [hello@bessie.dev](mailto:hello@bessie.dev) and ask for a secure reporting channel without including exploit details in the first message.
 
 Include, when safe:
 
@@ -40,4 +38,4 @@ Herdr vulnerabilities that reproduce independently of Bessie should also be repo
 
 ## Disclosure
 
-The maintainers will validate reports, coordinate remediation, and credit reporters who want attribution when it is safe to do so. No response-time SLA is promised before the first public release. Please allow a reasonable remediation window before public disclosure and coordinate disclosure timing for issues that affect users or upstream projects.
+The maintainers will validate reports, coordinate remediation, and credit reporters who want attribution when it is safe to do so. Please allow a reasonable remediation window before public disclosure and coordinate disclosure timing for issues that affect users or upstream projects.
