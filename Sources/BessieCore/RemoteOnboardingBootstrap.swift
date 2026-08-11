@@ -48,6 +48,7 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
     public typealias Attach = @Sendable (_ arguments: [String]) throws -> any RemoteBootstrapProcess
     public typealias Snapshot = @Sendable (_ connection: BessieConnectionDefinition) throws -> HerdrSnapshot
     public typealias Register = @Sendable (_ connection: BessieConnectionDefinition) throws -> Void
+    public typealias Log = @Sendable (_ line: String) -> Void
 
     private let command: Command
     private let attach: Attach
@@ -55,16 +56,25 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
     private let register: Register
     private let pollCount: Int
     private let sleep: @Sendable () -> Void
+    private let readinessTimeout: TimeInterval
+    private let now: @Sendable () -> TimeInterval
+    private let log: Log
 
     public init(command: @escaping Command, attach: @escaping Attach, snapshot: @escaping Snapshot,
-                register: @escaping Register = { _ in }, pollCount: Int = 80,
-                sleep: @escaping @Sendable () -> Void = { Thread.sleep(forTimeInterval: 0.1) }) {
+                register: @escaping Register = { _ in }, pollCount: Int = 900,
+                sleep: @escaping @Sendable () -> Void = { Thread.sleep(forTimeInterval: 0.1) },
+                readinessTimeout: TimeInterval = 90,
+                now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                log: @escaping Log = { _ in }) {
         self.command = command; self.attach = attach; self.snapshot = snapshot
         self.register = register; self.pollCount = pollCount; self.sleep = sleep
+        self.readinessTimeout = readinessTimeout; self.now = now; self.log = log
     }
 
     public func bootstrap(definition: BessieConnectionDefinition, path: String, sessionName: String,
                           expectedIDs: (String, String, String)? = nil) throws -> RemoteBootstrapResult {
+        let started = now()
+        let elapsed: @Sendable () -> String = { [now] in String(format: "%.1fs", now() - started) }
         let base = try definition.validated()
         guard base.kind == .ssh, let host = base.sshHost,
               BessieConnectionDefinition.isSafeSession(sessionName) else { throw BessieConnectionError.invalidSession }
@@ -75,10 +85,13 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
         // A resumed attempt with authoritative exact IDs must only reconcile; it must never attach twice.
         if let expectedIDs, let accepted = try? accept(snapshot(connection), connection: connection,
                                                        path: selectedPath, expectedIDs: expectedIDs) {
+            log("bootstrap session=\(sessionName): reconciled existing materialized session without attach (\(elapsed()))")
             return accepted
         }
 
+        log("bootstrap session=\(sessionName): session-list start")
         let initial = try command(Self.sessionListArguments(host: host), nil)
+        log("bootstrap session=\(sessionName): session-list exit=\(initial.exitCode) (\(elapsed()))")
         guard initial.exitCode == 0 else { throw commandFailure(initial) }
         let listed: RemoteSessionList
         do { listed = try JSONDecoder().decode(RemoteSessionList.self, from: initial.stdout) }
@@ -94,48 +107,67 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
                   status.protocolVersion == BessieCompatibility.protocolVersion else {
                 throw RemoteBootstrapError.collision(sessionName)
             }
-            try register(connection)
-            return try accept(
+            let accepted = try accept(
                 snapshot(connection),
                 connection: connection,
                 path: selectedPath,
                 expectedIDs: expectedIDs
             )
+            try register(connection)
+            return accepted
         }
 
+        log("bootstrap session=\(sessionName): path-check start")
         let pathCheck = try command(Self.pathValidationArguments(host: host), Data("\(selectedPath)\n".utf8))
+        log("bootstrap session=\(sessionName): path-check exit=\(pathCheck.exitCode) (\(elapsed()))")
         guard pathCheck.exitCode == 0 else {
             if pathCheck.exitCode == 20 { throw RemoteBootstrapError.invalidPath(selectedPath) }
             throw commandFailure(pathCheck)
         }
 
-        // Persist the ordinary recipe only after collision and path validation, immediately before launch.
-        try register(connection)
+        log("bootstrap session=\(sessionName): attach spawn")
         let process = try attach(try RemoteHerdrBridgePlan.remoteAttachArguments(
             for: connection, session: sessionName, directory: selectedPath
         ))
         defer {
             if process.isRunning { process.stop() }
         }
+        // Readiness is bounded by wall clock: the loop must surface an
+        // actionable failure instead of leaving onboarding spinning forever.
+        let attachStarted = now()
+        var polls = 0
         var detached = false
-        for _ in 0..<pollCount {
-            guard process.isRunning else { throw RemoteBootstrapError.attachExited }
+        while polls < pollCount, now() - attachStarted < readinessTimeout {
+            polls += 1
+            guard process.isRunning else {
+                log("bootstrap session=\(sessionName): attach exited before readiness at poll #\(polls) (\(elapsed()))")
+                throw RemoteBootstrapError.attachExited
+            }
             let result = try command(Self.statusArguments(host: host, session: sessionName), nil)
             if result.exitCode == 0 {
                 let status = try Self.decodeStatus(result.stdout)
+                log("bootstrap session=\(sessionName): status poll #\(polls) running=\(status.running) detached=\(status.detachedServerDaemon) (\(elapsed()))")
                 if status.running {
                     guard status.session == nil || status.session == sessionName else { throw RemoteBootstrapError.statusNotReady }
                     let identity = HerdrServerIdentity(version: status.version ?? "unknown", protocolVersion: status.protocolVersion ?? -1)
                     if let reason = HerdrCompatibility.incompatibility(for: identity) { throw RemoteBootstrapError.incompatible(reason) }
                     if status.detachedServerDaemon { detached = true; break }
                 }
-            } else { throw commandFailure(result) }
+            } else {
+                log("bootstrap session=\(sessionName): status poll #\(polls) exit=\(result.exitCode) (\(elapsed()))")
+                throw commandFailure(result)
+            }
             sleep()
         }
-        guard detached else { throw RemoteBootstrapError.statusNotReady }
+        guard detached else {
+            log("bootstrap session=\(sessionName): readiness deadline expired after \(polls) polls (\(elapsed()))")
+            throw RemoteBootstrapError.statusNotReady
+        }
+        log("bootstrap session=\(sessionName): detached proof after \(polls) polls; stopping attach (\(elapsed()))")
         process.stop() // Stop only the bootstrap SSH client, after detached proof.
 
         let continued = try command(Self.statusArguments(host: host, session: sessionName), nil)
+        log("bootstrap session=\(sessionName): continued-status exit=\(continued.exitCode) (\(elapsed()))")
         guard continued.exitCode == 0 else { throw commandFailure(continued) }
         let continuedStatus = try Self.decodeStatus(continued.stdout)
         guard continuedStatus.running, continuedStatus.session == sessionName, continuedStatus.detachedServerDaemon,
@@ -143,7 +175,11 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
               continuedStatus.protocolVersion == BessieCompatibility.protocolVersion else {
             throw RemoteBootstrapError.statusNotReady
         }
-        return try accept(snapshot(connection), connection: connection, path: selectedPath, expectedIDs: expectedIDs)
+        log("bootstrap session=\(sessionName): snapshot and topology acceptance start (\(elapsed()))")
+        let accepted = try accept(snapshot(connection), connection: connection, path: selectedPath, expectedIDs: expectedIDs)
+        try register(connection)
+        log("bootstrap session=\(sessionName): accepted workspace=\(accepted.workspaceID) pane=\(accepted.paneID) (\(elapsed()))")
+        return accepted
     }
 
     public static func statusArguments(host: String, session: String) -> [String] {
@@ -193,7 +229,7 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
 }
 
 public extension RemoteOnboardingBootstrap {
-    static func production(register: @escaping Register) -> RemoteOnboardingBootstrap {
+    static func production(register: @escaping Register, log: @escaping Log = { _ in }) -> RemoteOnboardingBootstrap {
         RemoteOnboardingBootstrap(command: { arguments, input in
             do {
                 let result = try FoundationProcessCommandRunner.run(
@@ -210,6 +246,9 @@ public extension RemoteOnboardingBootstrap {
             }
         }, attach: { arguments in
             let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = arguments
+            // A GUI app has no usable stdin for the forced-PTY attach client;
+            // inheriting one can stall ssh before it runs the remote command.
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice; try process.run()
             return FoundationRemoteBootstrapProcess(process)
         }, snapshot: { connection in
@@ -218,7 +257,7 @@ public extension RemoteOnboardingBootstrap {
             let api = HerdrSocketAPI(socketPath: socket)
             _ = try api.ping()
             return try api.snapshot()
-        }, register: register)
+        }, register: register, log: log)
     }
 }
 

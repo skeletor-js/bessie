@@ -85,7 +85,16 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
         }
         let cwd = try OnboardingPathValidator.absolute(directory)
         let quoted = "'" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return SSHHostKeyPolicy.requiredArguments + ["-o", "BatchMode=yes", "-tt", host, "cd -- \(quoted) && exec herdr session attach \(session)"]
+        // The attach client is long-lived, so it must bound connection
+        // establishment and detect a dead transport instead of hanging while
+        // onboarding waits on it.
+        return SSHHostKeyPolicy.requiredArguments + [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+            "-o", "ServerAliveInterval=10",
+            "-o", "ServerAliveCountMax=2",
+            "-tt", host, "cd -- \(quoted) && exec herdr session attach \(session)",
+        ]
     }
 }
 

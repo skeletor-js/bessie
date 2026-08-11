@@ -39,32 +39,36 @@ final class OnboardingCompletionCoordinator: ObservableObject {
     private var submitting = false
     private var service: (any OnboardingMaterializationService)?
 
+    /// Resolves the pending-attempt file. `BESSIE_PENDING_ONBOARDING_PATH`
+    /// exists so isolated acceptance runs never touch the real Application
+    /// Support directory, which ignores a redirected `HOME`.
+    nonisolated static func defaultAttemptURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let override = environment["BESSIE_PENDING_ONBOARDING_PATH"], override.hasPrefix("/") {
+            return URL(fileURLWithPath: override).standardizedFileURL
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Bessie/pending-onboarding-attempt.json")
+    }
+
     init(
         store: PendingOnboardingAttemptStore? = nil,
         service: (any OnboardingMaterializationService)? = nil,
         clearAttempt: (() throws -> Void)? = nil
     ) {
-        let defaultURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Bessie/pending-onboarding-attempt.json")
-        let resolvedStore = store ?? PendingOnboardingAttemptStore(url: defaultURL)
+        let resolvedStore = store ?? PendingOnboardingAttemptStore(url: Self.defaultAttemptURL())
         self.store = resolvedStore
         self.clearAttempt = clearAttempt ?? { try resolvedStore.clear() }
         self.service = service
-        do {
-            var loaded = try self.store.load()
-            if let legacy = loaded, legacy.requiresBoundedSessionMigration {
-                let migrated = try PendingOnboardingAttempt(
-                    connectionID: legacy.connectionID,
-                    path: legacy.path,
-                    stage: .validating
-                )
-                try self.store.save(migrated)
-                loaded = migrated
-            }
-            attempt = loaded
-            stage = loaded?.stage ?? .idle
+        // Onboarding never resumes a prior run: discard any stale Bessie-owned
+        // attempt metadata. Cleanup is best-effort and must not block or fail
+        // the fresh run; it never touches Herdr processes.
+        attempt = nil
+        stage = .idle
+        do { try self.clearAttempt() } catch {
+            BessieDiagnosticLog.append("Stale onboarding attempt cleanup failed at launch: \(String(reflecting: error))")
         }
-        catch { self.error = error.localizedDescription; stage = .failed }
     }
 
     var canSubmit: Bool { !submitting && stage != .completed }
@@ -72,12 +76,23 @@ final class OnboardingCompletionCoordinator: ObservableObject {
 
     var isSubmitting: Bool { submitting }
 
+    /// True while this run's materialization or completion is in flight. A
+    /// surfaced error always ends the working presentation so the user can
+    /// read it and retry; onboarding must never spin silently.
+    var isWorking: Bool {
+        if submitting { return true }
+        guard attempt != nil, error == nil else { return false }
+        return ![.idle, .completed, .failed].contains(stage)
+    }
+
     func configure(service: any OnboardingMaterializationService) {
         if self.service == nil { self.service = service }
     }
 
     func begin(connectionID: String, path: String) throws -> PendingOnboardingAttempt {
-        if let attempt { return attempt }
+        // A failed run never leaks its connection, path, or session name into
+        // the next run: retry after failure owns a fresh transient attempt.
+        if let attempt, stage != .failed { return attempt }
         let created = try PendingOnboardingAttempt(connectionID: connectionID, path: path)
         try persist(created, stage: .validating)
         return created
@@ -117,11 +132,9 @@ final class OnboardingCompletionCoordinator: ObservableObject {
         attempt.tabID = ids.tab ?? attempt.tabID
         attempt.paneID = ids.pane ?? attempt.paneID
         if next == .completed {
-            do {
-                try clearAttempt()
-            } catch {
-                self.error = "Bessie couldn't finish setup cleanup. \(error.localizedDescription)"
-                throw error
+            // A cleanup failure must never block a successfully opened terminal.
+            do { try clearAttempt() } catch {
+                BessieDiagnosticLog.append("Onboarding attempt cleanup failed at completion: \(String(reflecting: error))")
             }
             self.attempt = nil
             stage = .completed
@@ -131,19 +144,76 @@ final class OnboardingCompletionCoordinator: ObservableObject {
         try persist(attempt, stage: next)
     }
 
+    /// Starts a fresh onboarding run. Re-entering onboarding (Run Setup
+    /// Again) must reset a previously completed or abandoned coordinator so
+    /// Finish can actually submit; without this the `.completed` stage blocks
+    /// `canSubmit` forever. The in-memory reset is unconditional; metadata
+    /// cleanup is best-effort exactly like launch and never touches Herdr.
+    func beginFreshRun() {
+        attempt = nil
+        stage = .idle
+        error = nil
+        do { try clearAttempt() } catch {
+            BessieDiagnosticLog.append("Stale onboarding attempt cleanup failed at fresh run: \(String(reflecting: error))")
+        }
+    }
+
     func cancelBeforeMaterialization() throws {
         guard !materializationStarted else { return }
         try store.clear(); attempt = nil; stage = .idle; error = nil
     }
 
+    /// Commits completion in a safe order: durable completion persists first,
+    /// and only then does the coordinator advance to `.completed`. A
+    /// persistence failure keeps the materialized attempt retryable instead of
+    /// stranding a completed coordinator behind incomplete onboarding.
+    func completeAfterTerminalFocus(persistCompletion: () -> Bool) -> Bool {
+        guard persistCompletion() else {
+            reportCompletionFailure("Bessie couldn't save setup completion. Try Finish again.")
+            return false
+        }
+        if attempt != nil { try? advance(.completed) }
+        return true
+    }
+
+    /// Surfaces a post-materialization completion failure (terminal focus or
+    /// durable persistence) without discarding the materialized attempt, so
+    /// Finish can retry completion instead of re-bootstrapping.
+    func reportCompletionFailure(_ message: String) {
+        error = message
+        BessieDiagnosticLog.append("Onboarding completion failure surfaced: \(message)")
+    }
+
+    /// Clears a surfaced completion failure before retrying completion of the
+    /// already-materialized attempt.
+    func retryCompletion() {
+        guard attempt != nil else { return }
+        error = nil
+    }
+
     private func persist(_ value: PendingOnboardingAttempt, stage: OnboardingCompletionStage) throws {
         var value = value; value.stage = stage; try store.save(value)
         attempt = value; self.stage = stage
+        BessieDiagnosticLog.append(
+            "Onboarding stage=\(stage.rawValue) attempt=\(value.attemptID) connection=\(value.connectionID) session=\(value.sessionName)"
+        )
     }
 
     private func fail(_ failure: Error) {
+        BessieDiagnosticLog.append("Onboarding run failed at stage=\(stage.rawValue): \(String(reflecting: failure))")
         error = failure.localizedDescription; stage = .failed
         if var attempt { attempt.stage = .failed; try? store.save(attempt); self.attempt = attempt }
+    }
+}
+
+/// Narrow projection identity for level-triggered onboarding completion. The
+/// workspace count alone can stay stable while the expected pane appears, so
+/// reconciliation keys on the actual topology identifiers.
+enum OnboardingReconciliation {
+    static func signature(projection: HerdrSessionProjection?) -> String {
+        guard let projection else { return "" }
+        let parts = projection.workspaces.map(\.id) + projection.tabs.map(\.id) + projection.panes.map(\.id)
+        return parts.joined(separator: "|")
     }
 }
 
@@ -151,11 +221,13 @@ final class OnboardingCompletionCoordinator: ObservableObject {
 final class ProductionOnboardingMaterializationService: OnboardingMaterializationService {
     private unowned let fleet: ConnectionFleetViewModel
     private let remoteBootstrap: RemoteOnboardingBootstrap
-    private let register: @MainActor (BessieConnectionDefinition) throws -> Void
+    private let prepare: @MainActor (BessieConnectionDefinition) throws -> Void
 
     init(fleet: ConnectionFleetViewModel, remoteBootstrap: RemoteOnboardingBootstrap,
-         register: @escaping @MainActor (BessieConnectionDefinition) throws -> Void) {
-        self.fleet = fleet; self.remoteBootstrap = remoteBootstrap; self.register = register
+         prepare: @escaping @MainActor (BessieConnectionDefinition) throws -> Void) {
+        self.fleet = fleet
+        self.remoteBootstrap = remoteBootstrap
+        self.prepare = prepare
     }
 
     func materialize(
@@ -173,6 +245,7 @@ final class ProductionOnboardingMaterializationService: OnboardingMaterializatio
                                               sessionName: attempt.sessionName, expectedIDs: expected)
             }.value
             try progress(.adoptingWorkspace)
+            try prepare(result.connection)
             return OnboardingMaterializationResult(connectionID: result.connection.id, workspaceID: result.workspaceID,
                                                    tabID: result.tabID, paneID: result.paneID)
         }
@@ -181,7 +254,7 @@ final class ProductionOnboardingMaterializationService: OnboardingMaterializatio
             localDefinition = try BessieConnectionDefinition(
                 id: attempt.attemptID, name: "This Mac · Setup", kind: .local, session: attempt.sessionName
             ).validated()
-            try register(localDefinition)
+            try prepare(localDefinition)
         } else {
             localDefinition = definition
         }

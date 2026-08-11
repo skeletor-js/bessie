@@ -1079,8 +1079,14 @@ final class ConnectionFleetViewModel: ObservableObject {
     private var configuredConnections: [BessieConnectionDefinition] = []
     private var runtimeSelection: HerdrRuntimeSelection = .bundled
     private var bundledRuntimeURL: URL?
+    /// False while onboarding owns a transient fleet: scope changes stay
+    /// in-memory and never touch the durable scope default.
+    var persistsScopePreference = true
     private var preferredSelectedConnectionID: String = BessieConnectionDefinition.localBessie.id
     private var hasStarted = false
+    /// True once the fleet has applied any configuration. Onboarding re-entry
+    /// uses this to decide whether a transient resync is needed.
+    var isStarted: Bool { hasStarted }
     private var refreshTask: Task<Void, Never>?
     private(set) var refreshPassCount = 0
     /// Connection IDs the fleet has been asked to start this process (launch set + on-demand).
@@ -1378,7 +1384,7 @@ final class ConnectionFleetViewModel: ObservableObject {
         }
         if case .connection(let id) = herdScope, !desired.contains(id) {
             herdScope = .all
-            defaults.removeObject(forKey: scopeDefaultsKey)
+            if persistsScopePreference { defaults.removeObject(forKey: scopeDefaultsKey) }
         }
     }
 
@@ -1418,16 +1424,16 @@ final class ConnectionFleetViewModel: ObservableObject {
         case .all:
             guard herdScope != .all else { return }
             herdScope = .all
-            defaults.removeObject(forKey: scopeDefaultsKey)
+            if persistsScopePreference { defaults.removeObject(forKey: scopeDefaultsKey) }
         case .connection(let id):
             guard configuredConnections.contains(where: { $0.id == id }) else {
                 herdScope = .all
-                defaults.removeObject(forKey: scopeDefaultsKey)
+                if persistsScopePreference { defaults.removeObject(forKey: scopeDefaultsKey) }
                 return
             }
             guard herdScope != scope else { return }
             herdScope = .connection(id: id)
-            defaults.set(id, forKey: scopeDefaultsKey)
+            if persistsScopePreference { defaults.set(id, forKey: scopeDefaultsKey) }
             _ = activate(connectionID: id)
         }
     }
@@ -1729,10 +1735,13 @@ struct ConnectView: View {
     @Environment(\.bessieDensity) private var density
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
     @State private var setupAutomationStarted = false
+    @State private var onboardingFocusInFlight = false
     @State private var navigationRequest: ProductNavigationRequest?
     @State private var zenState = BessieZenPresentationState.inactive
     @State private var onboardingPath = Self.designOnboardingPath
-    @State private var onboardingConnectionID: String?
+    @State private var onboardingNotificationPolicy: BessieNotifications = .blockedOnly
+    @State private var onboardingConnection: BessieConnectionDefinition?
+    @State private var onboardingNavigatedAttemptID: String?
     @State private var showingColdOpen: Bool
     @State private var splashEntryGeneration = -1
 
@@ -1810,12 +1819,13 @@ struct ConnectView: View {
                             .frame(maxWidth: 760, maxHeight: 560)
                     }
                 }
-                .task(id: projection.workspaces.count) {
+                .task(id: onboardingReconcileID(projection: projection)) {
                     runSetupAutomation(model: model, projection: projection)
+                    reconcileOnboardingCompletion()
                 }
-                .task(id: terminalRegistry.controllers.values.contains(where: { $0.hasReadyFrame })) {
+                .task(id: readyTerminalPaneIDs) {
                     runSetupAutomation(model: model, projection: projection)
-                    resumeOnboardingCompletion(model: model, projection: projection)
+                    reconcileOnboardingCompletion()
                 }
             } else {
                 if !settings.onboarding.completed {
@@ -1840,24 +1850,38 @@ struct ConnectView: View {
         .task {
             onboardingCoordinator.configure(service: ProductionOnboardingMaterializationService(
                 fleet: fleet,
-                remoteBootstrap: .production { connection in
-                    try DispatchQueue.main.sync { try settings.registerOnboardingConnection(connection) }
-                },
-                register: settings.registerOnboardingConnection
+                remoteBootstrap: .production(register: { _ in }, log: { BessieDiagnosticLog.append($0) }),
+                prepare: selectOnboardingConnection
             ))
             enterOnboardingIfNeeded()
             updateIntentConnectionContext()
+            let initialConnections = settings.onboarding.completed
+                ? settings.enabledConnections
+                : [BessieConnectionDefinition.localBessie]
+            let initialConnectionID = settings.onboarding.completed
+                ? settings.selectedConnectionID
+                : BessieConnectionDefinition.localBessie.id
             fleet.start(
-                connections: settings.enabledConnections,
-                selectedConnectionID: settings.selectedConnectionID,
+                connections: initialConnections,
+                selectedConnectionID: initialConnectionID,
                 runtimeSelection: settings.runtimeSelection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
             )
         }
         .onChange(of: settings.setupEntryGeneration) { _, _ in enterOnboardingIfNeeded() }
-        .onChange(of: onboardingCoordinator.stage) { _, stage in handleOnboardingStage(stage) }
+        .onChange(of: settings.onboarding.completed) { _, completed in
+            guard completed else { return }
+            fleet.persistsScopePreference = true
+            fleet.sync(
+                connections: settings.enabledConnections,
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
+        }
+        .onChange(of: onboardingCoordinator.stage) { _, _ in reconcileOnboardingCompletion() }
         .onChange(of: settings.connections) { _, connections in
             updateIntentConnectionContext()
+            guard settings.onboarding.completed else { return }
             fleet.sync(
                 connections: connections.filter(\.enabled),
                 runtimeSelection: settings.runtimeSelection,
@@ -1866,15 +1890,20 @@ struct ConnectView: View {
         }
         .onChange(of: settings.runtimeSelection) { _, selection in
             terminalRegistry.releaseAll(); fleet.stop()
+            // While onboarding is active the restart stays inside the current
+            // run's transient definitions; durable herds and the durable
+            // selection return only after completion.
+            let transient = onboardingConnection ?? BessieConnectionDefinition.localBessie
             fleet.start(
-                connections: settings.enabledConnections,
-                selectedConnectionID: settings.selectedConnectionID,
+                connections: settings.onboarding.completed ? settings.enabledConnections : [transient],
+                selectedConnectionID: settings.onboarding.completed ? settings.selectedConnectionID : transient.id,
                 runtimeSelection: selection,
                 bundledRuntimeURL: Self.bundledRuntimeURL
             )
         }
         .onChange(of: settings.selectedConnectionID) { _, id in
             updateIntentConnectionContext()
+            guard settings.onboarding.completed else { return }
             _ = fleet.activate(connectionID: id)
         }
         .onChange(of: settings.defaultProjectConnectionID) { _, _ in
@@ -1888,7 +1917,9 @@ struct ConnectView: View {
         }
         .onChange(of: fleet.activeConnectionID) { _, id in
             terminalRegistry.releaseAll(unlessConnectedTo: id)
-            if let id, settings.selectedConnectionID != id {
+            if settings.onboarding.completed,
+               let id,
+               settings.selectedConnectionID != id {
                 settings.selectConnection(id)
             }
         }
@@ -1935,7 +1966,9 @@ struct ConnectView: View {
             projects: projects,
             state: settings.onboarding,
             connected: true,
-            completionAvailable: onboardingCoordinator.canSubmit,
+            completionAvailable: onboardingCoordinator.canSubmit && !onboardingWorking,
+            working: onboardingWorking,
+            workingStage: onboardingCoordinator.stage,
             connectionError: onboardingCoordinator.error,
             path: $onboardingPath,
             continueSetup: {
@@ -1948,7 +1981,9 @@ struct ConnectView: View {
             },
             finishSetup: submitOnboarding,
             cancelSetup: cancelOnboarding,
-            setupConnectionID: $onboardingConnectionID
+            selectedPolicy: $onboardingNotificationPolicy,
+            setupConnection: $onboardingConnection,
+            selectSetupConnection: selectOnboardingConnection
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(BessieOnboardingSurface(base: BessieDesign.background))
@@ -1960,22 +1995,66 @@ struct ConnectView: View {
             state: settings.onboarding,
             connected: false,
             completionAvailable: false,
+            working: false,
+            workingStage: nil,
             connectionError: onboardingCoordinator.error ?? "\(presentation.title). \(presentation.detail)",
             path: $onboardingPath,
             continueSetup: {},
             finishSetup: {},
             cancelSetup: cancelOnboarding,
-            setupConnectionID: $onboardingConnectionID
+            selectedPolicy: $onboardingNotificationPolicy,
+            setupConnection: $onboardingConnection,
+            selectSetupConnection: selectOnboardingConnection
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(BessieOnboardingSurface(base: BessieDesign.background))
     }
 
+    /// Pane IDs whose terminal controllers have produced a first frame. Used as
+    /// a task identity so completion re-reconciles when the setup pane becomes
+    /// ready even while older panes already had ready frames.
+    private var readyTerminalPaneIDs: Set<String> {
+        Set(terminalRegistry.controllers.filter { $0.value.hasReadyFrame }.keys)
+    }
+
+    /// True while the current onboarding run's materialization is in flight,
+    /// from submission until the terminal completes or an error surfaces.
+    private var onboardingWorking: Bool { onboardingCoordinator.isWorking }
+
+    /// Identity for level-triggered completion reconciliation. Keyed on
+    /// topology identifiers, not workspace count: the expected pane can appear
+    /// in a later snapshot while the count stays the same.
+    private func onboardingReconcileID(projection: HerdrSessionProjection) -> String {
+        settings.onboarding.completed ? "" : OnboardingReconciliation.signature(projection: projection)
+    }
+
     private func submitOnboarding() {
+        // A materialized attempt that failed only at completion (terminal
+        // focus or durable persistence) retries completion directly; a new
+        // bootstrap would orphan the already-created Herdr session.
+        if onboardingCoordinator.stage == .waitingForFirstFrame,
+           onboardingCoordinator.attempt?.paneID != nil {
+            onboardingCoordinator.retryCompletion()
+            settings.clearOnboardingCompletionError()
+            reconcileOnboardingCompletion()
+            return
+        }
+        // No silent guard: a missing connection or invalid path fails the
+        // coordinator run with an actionable error instead of doing nothing.
         onboardingCoordinator.submit(
-            connectionID: settings.selectedConnectionID,
+            connectionID: onboardingConnection?.id ?? "",
             path: onboardingPath
         )
+    }
+
+    private func selectOnboardingConnection(_ connection: BessieConnectionDefinition) {
+        onboardingConnection = connection
+        fleet.sync(
+            connections: [connection],
+            runtimeSelection: settings.runtimeSelection,
+            bundledRuntimeURL: Self.bundledRuntimeURL
+        )
+        _ = fleet.activate(connectionID: connection.id)
     }
 
     private func cancelOnboarding() {
@@ -1994,12 +2073,28 @@ struct ConnectView: View {
         guard !settings.onboarding.completed,
               splashEntryGeneration != settings.setupEntryGeneration else { return }
         splashEntryGeneration = settings.setupEntryGeneration
-        onboardingConnectionID = onboardingCoordinator.attempt?.connectionID
-        if let onboardingConnectionID,
-           !settings.connections.contains(where: { $0.id == onboardingConnectionID }) {
-            self.onboardingConnectionID = nil
+        settings.beginIsolatedOnboarding()
+        // A previously completed run leaves the coordinator at `.completed`,
+        // which blocks canSubmit; a fresh run owns a fresh coordinator state.
+        onboardingCoordinator.beginFreshRun()
+        onboardingConnection = nil
+        onboardingNavigatedAttemptID = nil
+        onboardingPath = Self.designOnboardingPath
+        onboardingNotificationPolicy = .blockedOnly
+        // Onboarding owns a transient fleet: prior durable herds must not keep
+        // running beneath the overlay, and scope changes made while onboarding
+        // is active must not persist. On first launch the `.task` start below
+        // already uses only the canonical local definition.
+        fleet.persistsScopePreference = false
+        if fleet.isStarted {
+            terminalRegistry.releaseAll()
+            fleet.sync(
+                connections: [BessieConnectionDefinition.localBessie],
+                runtimeSelection: settings.runtimeSelection,
+                bundledRuntimeURL: Self.bundledRuntimeURL
+            )
+            _ = fleet.activate(connectionID: BessieConnectionDefinition.localBessie.id)
         }
-        onboardingPath = onboardingCoordinator.attempt?.path ?? Self.designOnboardingPath
         if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
            (10...13).contains(Int(artboard) ?? 0) {
             showingColdOpen = false
@@ -2008,26 +2103,33 @@ struct ConnectView: View {
         showingColdOpen = true
     }
 
-    private func handleOnboardingStage(_ stage: OnboardingCompletionStage) {
-        guard stage == .waitingForFirstFrame,
+    /// Level-triggered onboarding completion: re-evaluated on coordinator stage
+    /// changes, projection changes, and terminal frame readiness so no single
+    /// missed edge can strand a successful materialization. Every guard below
+    /// is a "not ready yet" condition that a later trigger re-checks.
+    private func reconcileOnboardingCompletion() {
+        guard onboardingCoordinator.stage == .waitingForFirstFrame,
               let attempt = onboardingCoordinator.attempt,
               let model = fleet.activate(connectionID: attempt.connectionID),
               let projection = model.projection,
               let target = BessieSurfaceProjection(projection: projection).openTarget(paneID: attempt.paneID ?? "")
         else { return }
-        navigationRequest = ProductNavigationRequest(
-            connectionID: attempt.connectionID,
-            workspaceID: target.workspaceID,
-            tabID: target.tabID,
-            paneID: target.paneID
-        )
-        terminalRegistry.focusWhenPresented(paneID: target.paneID)
-        settings.advanceSetup(
-            runtimeReady: true,
-            sessionReady: true,
-            workspaceReady: true,
-            terminalControllerReady: false
-        )
+        if onboardingNavigatedAttemptID != attempt.attemptID {
+            onboardingNavigatedAttemptID = attempt.attemptID
+            navigationRequest = ProductNavigationRequest(
+                connectionID: attempt.connectionID,
+                workspaceID: target.workspaceID,
+                tabID: target.tabID,
+                paneID: target.paneID
+            )
+            terminalRegistry.focusWhenPresented(paneID: target.paneID)
+            settings.advanceSetup(
+                runtimeReady: true,
+                sessionReady: true,
+                workspaceReady: true,
+                terminalControllerReady: false
+            )
+        }
         resumeOnboardingCompletion(model: model, projection: projection)
     }
 
@@ -2164,27 +2266,51 @@ struct ConnectView: View {
             setupAutomationStarted = false
             return
         }
-        model.openPane(target) { _ in
+        // Level-triggered reconciliation can fire from several inputs; only
+        // one completion focus request may be in flight at a time.
+        guard !onboardingFocusInFlight else {
             setupAutomationStarted = false
-            do {
-                try onboardingCoordinator.advance(.completed)
-            } catch {
-                return
+            return
+        }
+        onboardingFocusInFlight = true
+        model.openPane(target) { _ in
+            terminalRegistry.focusWhenPresented(paneID: target.paneID) {
+                onboardingFocusInFlight = false
+                setupAutomationStarted = false
+                // Durable completion persists only after the terminal surface
+                // is mounted in the key window and AppKit confirms it as first responder.
+                guard onboardingCoordinator.completeAfterTerminalFocus(persistCompletion: {
+                    settings.finishSetup(
+                        connected: true,
+                        hasWorkspace: true,
+                        terminalControllerReady: true,
+                        notificationPolicy: onboardingNotificationPolicy,
+                        connection: model.activeConnection
+                    )
+                }) else { return }
+                navigationRequest = ProductNavigationRequest(
+                    connectionID: model.activeConnection.id,
+                    workspaceID: target.workspaceID,
+                    tabID: target.tabID,
+                    paneID: target.paneID
+                )
+            } onFocusFailed: {
+                onboardingFocusInFlight = false
+                setupAutomationStarted = false
+                settings.reportOnboardingFocusFailure()
+                onboardingCoordinator.reportCompletionFailure(
+                    "Bessie couldn't focus the ready terminal. Try Finish again."
+                )
             }
-            guard settings.finishSetup(
-                connected: true,
-                hasWorkspace: true,
-                terminalControllerReady: true
-            ) else { return }
-            navigationRequest = ProductNavigationRequest(
-                connectionID: model.activeConnection.id,
-                workspaceID: target.workspaceID,
-                tabID: target.tabID,
-                paneID: target.paneID
-            )
         } failure: {
+            onboardingFocusInFlight = false
             setupAutomationStarted = false
             settings.reportOnboardingFocusFailure()
+            // Ends the working spinner and re-enables Finish for a retry of
+            // the already-materialized attempt; never a silent stall.
+            onboardingCoordinator.reportCompletionFailure(
+                "Bessie couldn't focus the ready terminal. Try Finish again."
+            )
         }
     }
 

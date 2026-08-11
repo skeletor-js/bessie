@@ -101,12 +101,58 @@ final class RemoteOnboardingBootstrapTests: XCTestCase {
         XCTAssertEqual(fake.events.suffix(2), ["process.stop", "snapshot"])
     }
 
+    func testNeverReadySessionFailsByReadinessDeadlineAndStopsAttach() throws {
+        // The session never reports a detached server; a wall-clock deadline
+        // must end the run with an actionable error, stop the bootstrap attach
+        // client, and register nothing durable.
+        let notReady = RemoteBootstrapCommandResult(exitCode: 0, stdout: Self.status(detached: false))
+        let fake = FakeRemoteBootstrap(
+            commands: [.init(exitCode: 0, stdout: Self.sessions()), .init(exitCode: 0)]
+                + Array(repeating: notReady, count: 64),
+            snapshot: Self.snapshot()
+        )
+        let clock = TickingClock(step: 30)
+        let bootstrap = fake.bootstrap(pollCount: 1_000, readinessTimeout: 90, now: { clock.tick() })
+
+        XCTAssertThrowsError(try bootstrap.bootstrap(definition: Self.connection, path: "/srv/my work", sessionName: "bessie-new")) {
+            XCTAssertEqual($0 as? RemoteBootstrapError, .statusNotReady)
+        }
+        XCTAssertTrue(fake.events.contains("process.stop"), "the bootstrap attach client must be stopped on deadline expiry")
+        XCTAssertTrue(fake.registered.isEmpty, "a timed-out run must not register a durable connection")
+        XCTAssertLessThan(fake.arguments.count, 12, "the deadline, not command exhaustion, must bound the run")
+    }
+
+    func testBootstrapLogsEachPhaseForDiagnosis() throws {
+        let fake = FakeRemoteBootstrap(commands: Self.successCommands, snapshot: Self.snapshot())
+        let lines = LockedLines()
+        _ = try fake.bootstrap(log: { lines.append($0) }).bootstrap(
+            definition: Self.connection, path: "/srv/my work", sessionName: "bessie-new"
+        )
+        let joined = lines.all.joined(separator: "\n")
+        for phase in ["session-list", "path-check", "attach spawn", "status poll", "accepted"] {
+            XCTAssertTrue(joined.contains(phase), "bootstrap must log the \(phase) phase; got:\n\(joined)")
+        }
+        XCTAssertFalse(joined.contains("/srv/my work"), "logs must not contain the selected path")
+    }
+
+    func testAttachArgumentsBoundConnectionAndDetectDeadTransport() throws {
+        let args = try RemoteHerdrBridgePlan.remoteAttachArguments(
+            for: Self.connection, session: "bessie-new", directory: "/srv/my work"
+        )
+        // The long-lived attach client must not hang forever on an unreachable
+        // or silently dead transport while onboarding shows a spinner.
+        XCTAssertTrue(args.contains("ConnectTimeout=8"), "attach must bound connection establishment")
+        XCTAssertTrue(args.contains("ServerAliveInterval=10"), "attach must detect a dead transport")
+        XCTAssertTrue(args.contains("ServerAliveCountMax=2"), "attach must exit after missed keepalives")
+    }
+
     func testRejectsExtraOrIncorrectParentTopology() throws {
         for snapshot in [Self.snapshot(extraPane: true), Self.snapshot(tabWorkspace: "wrong")] {
             let fake = FakeRemoteBootstrap(commands: Self.successCommands, snapshot: snapshot)
             XCTAssertThrowsError(try fake.bootstrap().bootstrap(definition: Self.connection, path: "/srv/my work", sessionName: "bessie-new")) {
                 XCTAssertEqual($0 as? RemoteBootstrapError, .ambiguousTopology)
             }
+            XCTAssertTrue(fake.registered.isEmpty)
         }
     }
 
@@ -167,14 +213,39 @@ private final class FakeRemoteBootstrap: @unchecked Sendable {
     init(commands: [RemoteBootstrapCommandResult], snapshot: HerdrSnapshot = RemoteOnboardingBootstrapTests.snapshot()) {
         self.commands = commands; suppliedSnapshot = snapshot
     }
-    func bootstrap() -> RemoteOnboardingBootstrap {
+    func bootstrap(
+        pollCount: Int = 4,
+        readinessTimeout: TimeInterval = 90,
+        now: (@Sendable () -> TimeInterval)? = nil,
+        log: @escaping RemoteOnboardingBootstrap.Log = { _ in }
+    ) -> RemoteOnboardingBootstrap {
         RemoteOnboardingBootstrap(command: { [self] args, input in
             arguments.append(args); inputs.append(input); return commands.removeFirst()
         }, attach: { [self] args in
             attachCount += 1; attachArguments = args; return FakeBootstrapProcess { self.events.append("process.stop") }
         }, snapshot: { [self] _ in events.append("snapshot"); return suppliedSnapshot },
-        register: { [self] in registered.append($0) }, pollCount: 4, sleep: {})
+        register: { [self] in registered.append($0) }, pollCount: pollCount, sleep: {},
+        readinessTimeout: readinessTimeout, now: now ?? { ProcessInfo.processInfo.systemUptime }, log: log)
     }
+}
+
+/// Deterministic monotonic clock for deadline tests.
+private final class TickingClock: @unchecked Sendable {
+    private var value = 0.0
+    private let step: Double
+    private let lock = NSLock()
+    init(step: Double) { self.step = step }
+    func tick() -> TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        value += step; return value
+    }
+}
+
+private final class LockedLines: @unchecked Sendable {
+    private var lines: [String] = []
+    private let lock = NSLock()
+    func append(_ line: String) { lock.lock(); defer { lock.unlock() }; lines.append(line) }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }
 
 private final class FakeBootstrapProcess: RemoteBootstrapProcess, @unchecked Sendable {

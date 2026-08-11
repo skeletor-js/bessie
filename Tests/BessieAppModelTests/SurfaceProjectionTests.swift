@@ -1437,6 +1437,33 @@ final class SurfaceProjectionTests: XCTestCase {
         registry.releaseAll()
     }
 
+    @MainActor
+    func testRegistryBoundsUnpresentedOnboardingFocusAndReportsFailure() async {
+        let registry = TerminalControllerRegistry()
+        let endpoint = HerdrTerminalEndpoint(
+            connectionID: "test",
+            executablePath: "/usr/bin/false",
+            socketPath: "/tmp/missing"
+        )
+        registry.reconcile(
+            presentedPaneIDs: ["p1"],
+            availablePaneIDs: ["p1"],
+            endpoint: endpoint
+        )
+        let focused = expectation(description: "terminal focus succeeded")
+        focused.isInverted = true
+        let failed = expectation(description: "terminal focus failed")
+
+        registry.focusWhenPresented(paneID: "p1") {
+            focused.fulfill()
+        } onFocusFailed: {
+            failed.fulfill()
+        }
+
+        await fulfillment(of: [failed, focused], timeout: 3)
+        registry.releaseAll()
+    }
+
     func testPaneLocalUseCallbackMarshalsBackgroundCallsToMainThread() {
         let callbackRan = expectation(description: "local pane use callback ran")
         let callback = PaneLocalUseCallback {

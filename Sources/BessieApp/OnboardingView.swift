@@ -3,6 +3,21 @@ import BessieCore
 import SwiftUI
 import UserNotifications
 
+/// Stage-specific progress text so a stalled phase identifies itself instead
+/// of hiding behind one generic spinner label.
+enum OnboardingProgressLabel {
+    static func text(for stage: OnboardingCompletionStage?) -> String {
+        switch stage {
+        case .validating, .startingSession: "Starting setup…"
+        case .connecting: "Connecting and starting the Herdr session…"
+        case .creatingWorkspace: "Creating your first workspace…"
+        case .adoptingWorkspace: "Connecting Bessie to the new session…"
+        case .waitingForFirstFrame: "Opening your Herdr terminal…"
+        case .idle, .completed, .failed, nil: "Working…"
+        }
+    }
+}
+
 struct OnboardingView: View {
     @EnvironmentObject private var settings: BessieSettingsModel
     @EnvironmentObject private var notifications: BessieNotificationCoordinator
@@ -10,17 +25,21 @@ struct OnboardingView: View {
     let state: OnboardingState
     let connected: Bool
     let completionAvailable: Bool
+    let working: Bool
+    let workingStage: OnboardingCompletionStage?
     let connectionError: String?
     @Binding var path: String
     let continueSetup: () -> Void
     let finishSetup: () -> Void
     let cancelSetup: () -> Void
-    @State private var selectedPolicy: BessieNotifications = .blockedOnly
-    @Binding var setupConnectionID: String?
+    @Binding var selectedPolicy: BessieNotifications
+    @Binding var setupConnection: BessieConnectionDefinition?
+    let selectSetupConnection: (BessieConnectionDefinition) -> Void
     @State private var showAddRemote = false
     @State private var remoteName = ""
     @State private var remoteHost = ""
     @State private var remoteSession = ""
+    @State private var setupConnectionError: String?
     @FocusState private var pathFocused: Bool
 
     var body: some View {
@@ -43,7 +62,17 @@ struct OnboardingView: View {
                                 .padding(.top, 9)
                                 .padding(.bottom, 26)
                             content
-                            if let error = settings.onboardingCompletionError {
+                            if working {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text(OnboardingProgressLabel.text(for: workingStage))
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(BessieDesign.subtle)
+                                }
+                                .padding(.top, 12)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel("Setup in progress. \(OnboardingProgressLabel.text(for: workingStage))")
+                            } else if let error = settings.onboardingCompletionError {
                                 Text(error)
                                     .font(.system(size: 11.5))
                                     .foregroundStyle(BessieDesign.strong)
@@ -74,11 +103,6 @@ struct OnboardingView: View {
         .task {
             projects.load()
             notifications.refreshAuthorization()
-            selectedPolicy = settings.preferences.notifications
-            if ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"] != nil,
-               setupConnectionID == nil {
-                setupConnectionID = settings.selectedConnectionID
-            }
             pathFocused = state.step == .connect
         }
         .onChange(of: state.step) { _, step in
@@ -175,14 +199,12 @@ struct OnboardingView: View {
 
     private var connectContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let local = settings.connections.first(where: { $0.kind == .local }) {
-                connectionCard(
-                    connection: local,
-                    icon: .desktop,
-                    title: "This Mac",
-                    subtitle: "Use the Herdr runtime on this Mac"
-                )
-            }
+            connectionCard(
+                connection: .localBessie,
+                icon: .desktop,
+                title: "This Mac",
+                subtitle: "Use the Herdr runtime on this Mac"
+            )
             remoteConnectionCard
             if selectedSetupConnection?.kind == .local {
                 localFolderSelection
@@ -201,7 +223,7 @@ struct OnboardingView: View {
     }
 
     private var selectedSetupConnection: BessieConnectionDefinition? {
-        setupConnectionID.flatMap { id in settings.connections.first(where: { $0.id == id }) }
+        setupConnection
     }
 
     private var localFolderSelection: some View {
@@ -235,7 +257,7 @@ struct OnboardingView: View {
         title: String,
         subtitle: String
     ) -> some View {
-        let selected = setupConnectionID == connection.id
+        let selected = setupConnection?.id == connection.id
         return Button {
             chooseConnection(connection)
         } label: {
@@ -422,11 +444,16 @@ struct OnboardingView: View {
         HStack(spacing: 10) {
             if state.step == .notifications {
                 Button("Finish and open terminal") {
-                    settings.preferences.notifications = selectedPolicy
+                    // The choice is not persisted here: it commits atomically
+                    // with durable completion inside finishSetup.
                     finishSetup()
                 }
                 .buttonStyle(OnboardingPrimaryButtonStyle(width: 155)).disabled(!completionAvailable)
-                Button("Skip", action: finishSetup).buttonStyle(.plain).disabled(!completionAvailable)
+                Button("Skip") {
+                    // Skip keeps the existing notification preference.
+                    selectedPolicy = settings.preferences.notifications
+                    finishSetup()
+                }.buttonStyle(.plain).disabled(!completionAvailable)
             } else {
                 Button("Continue", action: continueSetup)
                 .buttonStyle(OnboardingPrimaryButtonStyle(width: 72)).disabled(!canContinue)
@@ -439,9 +466,7 @@ struct OnboardingView: View {
 
     private var canContinue: Bool {
         guard state.step == .connect else { return true }
-        guard setupConnectionID != nil,
-              setupConnectionID == settings.selectedConnectionID,
-              connected
+        guard setupConnection != nil, connected
         else { return false }
         do { _ = try OnboardingPathValidator.absolute(path); return true } catch { return false }
     }
@@ -495,9 +520,10 @@ struct OnboardingView: View {
     }
 
     private func chooseConnection(_ connection: BessieConnectionDefinition) {
-        guard settings.selectConnectionForSetup(connection.id) else { return }
-        if setupConnectionID != connection.id { path = "" }
-        setupConnectionID = connection.id
+        if setupConnection?.id != connection.id { path = "" }
+        setupConnection = connection
+        setupConnectionError = nil
+        selectSetupConnection(connection)
         if connection.kind == .local { chooseFolder() }
         else { pathFocused = true }
     }
@@ -516,7 +542,7 @@ struct OnboardingView: View {
                 .lineSpacing(2)
                 .foregroundStyle(BessieDesign.subtle)
                 .padding(.top, 12)
-            if let error = settings.connectionError {
+            if let error = setupConnectionError {
                 Text(error)
                     .font(.system(size: 10.5))
                     .foregroundStyle(BessieDesign.strong)
@@ -557,16 +583,28 @@ struct OnboardingView: View {
         remoteName = ""
         remoteHost = ""
         remoteSession = ""
-        settings.clearConnectionError()
+        setupConnectionError = nil
         showAddRemote = true
     }
 
     private func addRemote() {
-        guard settings.addConnection(name: remoteName, sshHost: remoteHost, session: remoteSession) else { return }
-        setupConnectionID = settings.selectedConnectionID
-        path = ""
-        showAddRemote = false
-        pathFocused = true
+        do {
+            let connection = try BessieConnectionDefinition(
+                name: remoteName,
+                kind: .ssh,
+                sshHost: remoteHost,
+                session: remoteSession,
+                connectAtLaunch: false
+            ).validated()
+            setupConnection = connection
+            setupConnectionError = nil
+            path = ""
+            showAddRemote = false
+            selectSetupConnection(connection)
+            pathFocused = true
+        } catch {
+            setupConnectionError = error.localizedDescription
+        }
     }
 }
 

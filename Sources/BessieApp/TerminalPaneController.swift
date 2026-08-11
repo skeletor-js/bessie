@@ -222,6 +222,9 @@ final class TerminalControllerRegistry: ObservableObject {
     private var pendingSwitchStartedAt: [String: TimeInterval] = [:]
     private var pendingFocusPaneID: String?
     private var pendingFocusRefresh: PaneTerminalController.SurfaceRefresh = .full
+    private var pendingFocusCompletion: (() -> Void)?
+    private var pendingFocusFailure: (() -> Void)?
+    private var pendingFocusDeadline: TimeInterval?
     private var paneIncarnations: [String: BessiePaneIncarnation] = [:]
     private var recordLocalPaneUse: (BessiePaneIncarnation) -> Void = { _ in }
     private(set) var effectiveTheme = BessieThemeRegistry.definitions[.dark]!.resolvedTerminalTheme
@@ -343,10 +346,23 @@ final class TerminalControllerRegistry: ObservableObject {
         }
     }
 
-    func focusWhenPresented(paneID: String, refresh: PaneTerminalController.SurfaceRefresh = .display) {
+    func focusWhenPresented(
+        paneID: String,
+        refresh: PaneTerminalController.SurfaceRefresh = .display,
+        onFocused: (() -> Void)? = nil,
+        onFocusFailed: (() -> Void)? = nil
+    ) {
         pendingFocusPaneID = paneID
         pendingFocusRefresh = refresh
-        guard isInteractivelyPresented(paneID) else { return }
+        pendingFocusCompletion = onFocused
+        pendingFocusFailure = onFocusFailed
+        pendingFocusDeadline = onFocused == nil
+            ? nil
+            : ProcessInfo.processInfo.systemUptime + 2
+        guard isInteractivelyPresented(paneID) else {
+            schedulePendingFocusRetry(paneID: paneID, refresh: refresh)
+            return
+        }
         activatePresentedSurface(paneID: paneID, refresh: refresh)
     }
 
@@ -361,8 +377,13 @@ final class TerminalControllerRegistry: ObservableObject {
         pendingSwitchStartedAt.removeAll()
         pendingFocusPaneID = nil
         pendingFocusRefresh = .full
+        pendingFocusCompletion = nil
+        let focusFailure = pendingFocusFailure
+        pendingFocusFailure = nil
+        pendingFocusDeadline = nil
         endpoint = nil
         diagnosticRevision += 1
+        focusFailure?()
     }
 
     func releaseAll(unlessConnectedTo connectionID: String?) {
@@ -405,13 +426,26 @@ final class TerminalControllerRegistry: ObservableObject {
         refresh: PaneTerminalController.SurfaceRefresh
     ) {
         guard let controller = controllers[paneID], isInteractivelyPresented(paneID) else { return }
-        if pendingFocusPaneID == paneID {
-            pendingFocusPaneID = nil
-            pendingFocusRefresh = .full
-        }
         // One activation path: focus + a single refresh mode. Full is for park/reattach;
         // display-only is for already-mounted same-tab hops (avoids Herdr resize storms).
-        controller.makeTerminalFirstResponder(refresh: refresh)
+        let focused = controller.makeTerminalFirstResponder(refresh: refresh)
+        if focused {
+            if pendingFocusPaneID == paneID {
+                pendingFocusPaneID = nil
+                pendingFocusRefresh = .full
+            }
+            let completion = pendingFocusCompletion
+            pendingFocusCompletion = nil
+            pendingFocusFailure = nil
+            pendingFocusDeadline = nil
+            completion?()
+        } else if let deadline = pendingFocusDeadline {
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                failPendingFocus()
+            } else {
+                schedulePendingFocusRetry(paneID: paneID, refresh: refresh)
+            }
+        }
 
         guard BessieDiagnosticLog.isEnabled else {
             pendingSwitchStartedAt[paneID] = nil
@@ -434,6 +468,35 @@ final class TerminalControllerRegistry: ObservableObject {
             ))
             self.pendingSwitchStartedAt[paneID] = nil
         }
+    }
+
+    private func schedulePendingFocusRetry(
+        paneID: String,
+        refresh: PaneTerminalController.SurfaceRefresh
+    ) {
+        guard let deadline = pendingFocusDeadline else { return }
+        guard ProcessInfo.processInfo.systemUptime < deadline else {
+            failPendingFocus()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.pendingFocusPaneID == paneID else { return }
+            guard self.isInteractivelyPresented(paneID) else {
+                self.schedulePendingFocusRetry(paneID: paneID, refresh: refresh)
+                return
+            }
+            self.activatePresentedSurface(paneID: paneID, refresh: refresh)
+        }
+    }
+
+    private func failPendingFocus() {
+        pendingFocusPaneID = nil
+        pendingFocusRefresh = .full
+        pendingFocusCompletion = nil
+        pendingFocusDeadline = nil
+        let failure = pendingFocusFailure
+        pendingFocusFailure = nil
+        failure?()
     }
 
     var diagnosticFacts: TerminalControllerFacts {
@@ -885,13 +948,19 @@ final class PaneTerminalController: ObservableObject, Identifiable {
         terminalView.fitToSize()
     }
 
-    func makeTerminalFirstResponder(refresh: SurfaceRefresh = .display) {
+    @discardableResult
+    func makeTerminalFirstResponder(refresh: SurfaceRefresh = .display) -> Bool {
         guard isSurfacePresented, terminalView.window?.isKeyWindow == true else {
             if isSurfacePresented { refreshAfterReattach(refresh) }
-            return
+            return false
         }
-        terminalView.window?.makeFirstResponder(terminalView)
+        guard terminalView.window?.makeFirstResponder(terminalView) == true,
+              terminalView.window?.firstResponder === terminalView else {
+            refreshAfterReattach(refresh)
+            return false
+        }
         refreshAfterReattach(refresh)
+        return true
     }
 
     private func handle(_ state: TerminalControllerStatus) {

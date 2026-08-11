@@ -1069,14 +1069,25 @@ struct BessieProductShell: View {
             BessieWindowSnapshot.captureWhenReady(registry: terminalRegistry, paneIDs: Set(projection.panes.map(\.id)))
         }
         .onChange(of: selectedWorkspaceID) { _, id in
+            // Selection made during an incomplete onboarding run is transient
+            // and never recorded into durable presentation state.
+            guard settings.onboarding.completed else { return }
             settings.recordLastWorkspace(id, connectionID: selectedTopologyConnectionID ?? model.activeConnection.id)
         }
         .onChange(of: workspaceScope) { _, scope in
+            guard settings.onboarding.completed else { return }
             if let scope { settings.recordWorkspaceScope(scope) }
         }
         .onChange(of: settings.onboarding.completed) { _, completed in
             if !completed, showCommandPalette { commandPalette.dismiss() }
             refreshCommandPaletteAvailability()
+            // Restoration was suppressed while onboarding ran; derive a fresh
+            // scope from the accepted topology instead of stale preferences,
+            // and reconcile pane presentations against the restored herds.
+            if completed {
+                initializeWorkspaceScopeIfNeeded()
+                reconcilePanePresentationsFromFreshSnapshots()
+            }
         }
         .onChange(of: fleet.connectedConnectionIDs) { _, connectedIDs in
             for id in connectedIDs { commandPaletteRetryAttempts.removeValue(forKey: id) }
@@ -3098,6 +3109,7 @@ struct BessieProductShell: View {
     }
 
     private func reconcilePanePresentationsFromFreshSnapshots() {
+        guard settings.onboarding.completed else { return }
         for item in fleet.topologyConnections where fleet.connectedConnectionIDs.contains(item.connection.id) {
             let incarnations = Set(item.projection.panes.map {
                 BessiePaneIncarnation(
@@ -3416,13 +3428,21 @@ struct BessieProductShell: View {
                     }
                 }
             }
-        } else {
+        } else if settings.onboarding.completed {
             restoreActiveSelection()
         }
         selectedTopologyConnectionID = model.activeConnection.id
-        workspaceScope = settings.workspaceScopePreference
-        initializeWorkspaceScopeIfNeeded()
-        if let workspaceScope { reconcileWorkspaceScopeSelection(workspaceScope) }
+        // While onboarding is incomplete the shell mounts beneath the overlay
+        // without restoring prior durable selection or workspace scope: the
+        // current onboarding run owns navigation, and completion re-derives a
+        // fresh scope instead of resurrecting stale state.
+        if settings.onboarding.completed {
+            workspaceScope = settings.workspaceScopePreference
+            initializeWorkspaceScopeIfNeeded()
+            if let workspaceScope {
+                reconcileWorkspaceScopeSelection(workspaceScope)
+            }
+        }
         consumeNavigationRequest(navigationRequest)
         if environment["BESSIE_ZEN_AUTOMATION"] == "1",
            let paneID = selectedPaneID ?? projection.focusedPane?.id {
@@ -3444,6 +3464,16 @@ struct BessieProductShell: View {
 
     private func activeConnectionChanged() {
         shortcuts.cancelPrefixSequence()
+        // During an incomplete onboarding run the shell never restores durable
+        // last-workspace selection; the transient run owns navigation, and its
+        // Finish flow drives selection through an explicit navigation request.
+        guard settings.onboarding.completed else {
+            selectedPaneID = nil
+            selectedWorkspaceID = nil
+            destination = .herd
+            selectedTopologyConnectionID = model.activeConnection.id
+            return
+        }
         guard BessieActiveConnectionSelection.shouldRestore(
             selectedConnectionID: selectedTopologyConnectionID,
             activeConnectionID: model.activeConnection.id

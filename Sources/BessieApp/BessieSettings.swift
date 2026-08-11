@@ -6,6 +6,126 @@ import Foundation
 import SwiftUI
 import UserNotifications
 
+struct BessieOnboardingSettingsJournal: Codable, Equatable {
+    static let currentSchemaVersion = 1
+    let schemaVersion: Int
+    let previousPresentationExists: Bool
+    let previousPresentation: BessiePresentationState
+    let previousConnectionsExists: Bool
+    let previousConnections: BessieConnectionState
+    let acceptedPresentation: BessiePresentationState
+    let acceptedConnections: BessieConnectionState
+
+    init(
+        previousPresentationExists: Bool,
+        previousPresentation: BessiePresentationState,
+        previousConnectionsExists: Bool,
+        previousConnections: BessieConnectionState,
+        acceptedPresentation: BessiePresentationState,
+        acceptedConnections: BessieConnectionState
+    ) {
+        schemaVersion = Self.currentSchemaVersion
+        self.previousPresentationExists = previousPresentationExists
+        self.previousPresentation = previousPresentation
+        self.previousConnectionsExists = previousConnectionsExists
+        self.previousConnections = previousConnections
+        self.acceptedPresentation = acceptedPresentation
+        self.acceptedConnections = acceptedConnections
+    }
+}
+
+enum BessieOnboardingSettingsTransaction {
+    static func journalURL(for connectionsURL: URL) -> URL {
+        connectionsURL.appendingPathExtension("onboarding-commit.json")
+    }
+
+    static func commit(
+        journal: BessieOnboardingSettingsJournal,
+        journalURL: URL,
+        presentationStore: BessiePresentationStore,
+        connectionStore: BessieConnectionStore
+    ) throws {
+        try save(journal, to: journalURL)
+        do {
+            try connectionStore.save(journal.acceptedConnections)
+            try presentationStore.save(journal.acceptedPresentation)
+            try FileManager.default.removeItem(at: journalURL)
+        } catch {
+            do {
+                try restorePrevious(
+                    journal,
+                    journalURL: journalURL,
+                    presentationStore: presentationStore,
+                    connectionStore: connectionStore
+                )
+            } catch {
+                BessieDiagnosticLog.append("Onboarding settings transaction rollback failed: \(String(reflecting: error))")
+            }
+            throw error
+        }
+    }
+
+    static func recoverIfNeeded(
+        journalURL: URL,
+        presentationStore: BessiePresentationStore,
+        connectionStore: BessieConnectionStore
+    ) throws {
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
+        let data = try Data(contentsOf: journalURL, options: [.mappedIfSafe])
+        guard data.count <= 1_048_576 else { throw BessiePresentationPersistenceError.invalidSource }
+        let journal = try JSONDecoder().decode(BessieOnboardingSettingsJournal.self, from: data)
+        guard journal.schemaVersion == BessieOnboardingSettingsJournal.currentSchemaVersion else {
+            throw BessiePresentationPersistenceError.invalidSource
+        }
+        let currentPresentationExists = FileManager.default.fileExists(atPath: presentationStore.url.path)
+        let currentConnectionsExists = FileManager.default.fileExists(atPath: connectionStore.url.path)
+        let currentPresentation = try presentationStore.loadWithNormalizationStatus().state
+        let currentConnections = try connectionStore.load()
+        if currentPresentationExists,
+           currentConnectionsExists,
+           currentPresentation == journal.acceptedPresentation,
+           currentConnections == journal.acceptedConnections {
+            try FileManager.default.removeItem(at: journalURL)
+            return
+        }
+        try restorePrevious(
+            journal,
+            journalURL: journalURL,
+            presentationStore: presentationStore,
+            connectionStore: connectionStore
+        )
+    }
+
+    private static func save(_ journal: BessieOnboardingSettingsJournal, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(journal).write(to: url, options: [.atomic])
+    }
+
+    private static func restorePrevious(
+        _ journal: BessieOnboardingSettingsJournal,
+        journalURL: URL,
+        presentationStore: BessiePresentationStore,
+        connectionStore: BessieConnectionStore
+    ) throws {
+        if journal.previousConnectionsExists { try connectionStore.save(journal.previousConnections) }
+        else if FileManager.default.fileExists(atPath: connectionStore.url.path) {
+            try FileManager.default.removeItem(at: connectionStore.url)
+        }
+        if journal.previousPresentationExists { try presentationStore.save(journal.previousPresentation) }
+        else if FileManager.default.fileExists(atPath: presentationStore.url.path) {
+            try FileManager.default.removeItem(at: presentationStore.url)
+        }
+        if FileManager.default.fileExists(atPath: journalURL.path) {
+            try FileManager.default.removeItem(at: journalURL)
+        }
+    }
+}
+
 @MainActor
 final class BessieSettingsModel: ObservableObject {
     @Published var preferences: BessiePreferences {
@@ -64,6 +184,9 @@ final class BessieSettingsModel: ObservableObject {
 
     init(presentationURL: URL, connectionsURL: URL, runtimeSelectionURL: URL) {
         store = BessiePresentationStore(url: presentationURL)
+        connectionStore = BessieConnectionStore(url: connectionsURL)
+        runtimeStore = HerdrRuntimeSelectionStore(url: runtimeSelectionURL)
+        runtimeSelection = runtimeStore.load()
         var acquiredPresentationLease: BessiePresentationLease?
         var presentationLeaseFailure: Error?
         do {
@@ -72,11 +195,33 @@ final class BessieSettingsModel: ObservableObject {
             presentationLeaseFailure = error
         }
         presentationLease = acquiredPresentationLease
+        var acquiredLease: BessieConfigurationLease?
+        var leaseFailure: Error?
+        do {
+            acquiredLease = try BessieConfigurationLease.acquireShared(for: connectionsURL)
+        } catch {
+            leaseFailure = error
+        }
+        configurationLease = acquiredLease
+        var recoveryFailure: Error?
+        if presentationLeaseFailure == nil, leaseFailure == nil {
+            do {
+                try BessieOnboardingSettingsTransaction.recoverIfNeeded(
+                    journalURL: BessieOnboardingSettingsTransaction.journalURL(for: connectionsURL),
+                    presentationStore: store,
+                    connectionStore: connectionStore
+                )
+            } catch {
+                recoveryFailure = error
+                BessieDiagnosticLog.append("Onboarding settings transaction recovery failed: \(String(reflecting: error))")
+            }
+        }
         let state: BessiePresentationState?
         let loadBlocker: String?
         let presentationDidNormalize: Bool
         do {
             if let presentationLeaseFailure { throw presentationLeaseFailure }
+            if let recoveryFailure { throw recoveryFailure }
             let loaded = try store.loadWithNormalizationStatus()
             state = loaded.state
             presentationDidNormalize = loaded.didNormalize
@@ -105,23 +250,14 @@ final class BessieSettingsModel: ObservableObject {
         legacyLastWorkspaceID = state?.lastWorkspaceID
         lastWorkspaceIDByConnectionID = state?.lastWorkspaceIDByConnectionID ?? [:]
         workspaceScopePreference = state?.workspaceScope
-        connectionStore = BessieConnectionStore(url: connectionsURL)
-        runtimeStore = HerdrRuntimeSelectionStore(url: runtimeSelectionURL)
-        runtimeSelection = runtimeStore.load()
-        var acquiredLease: BessieConfigurationLease?
-        var leaseFailure: Error?
-        do {
-            acquiredLease = try BessieConfigurationLease.acquireShared(for: connectionsURL)
-        } catch {
-            leaseFailure = error
-        }
-        configurationLease = acquiredLease
+
         let loadedConnections: [BessieConnectionDefinition]
         let loadedSelectedConnectionID: String
         let loadedDefaultProjectConnectionID: String
         let connectionLoadError: String?
         do {
             if let leaseFailure { throw leaseFailure }
+            if let recoveryFailure { throw recoveryFailure }
             let connectionState = try connectionStore.load()
             loadedConnections = connectionState.connections
             loadedSelectedConnectionID = connectionState.selectedConnectionID
@@ -462,6 +598,12 @@ final class BessieSettingsModel: ObservableObject {
         persist()
     }
 
+    func beginIsolatedOnboarding() {
+        onboarding = OnboardingState()
+        onboardingCompletionError = nil
+        connectionError = nil
+    }
+
     var canCancelSetupBeforeMaterialization: Bool { completionBeforeSetupEntry }
 
     func cancelSetupAgainBeforeMaterialization() {
@@ -488,7 +630,13 @@ final class BessieSettingsModel: ObservableObject {
     }
 
     @discardableResult
-    func finishSetup(connected: Bool, hasWorkspace: Bool, terminalControllerReady: Bool) -> Bool {
+    func finishSetup(
+        connected: Bool,
+        hasWorkspace: Bool,
+        terminalControllerReady: Bool,
+        notificationPolicy: BessieNotifications? = nil,
+        connection: BessieConnectionDefinition? = nil
+    ) -> Bool {
         guard presentationPersistenceError == nil else {
             onboardingCompletionError = presentationPersistenceError
             return false
@@ -497,14 +645,81 @@ final class BessieSettingsModel: ObservableObject {
             onboardingCompletionError = "Connect to Herdr, open a workspace, and wait for the terminal before finishing."
             return false
         }
+        if connection != nil, connectionConfigurationLoadFailed {
+            onboardingCompletionError =
+                "Repair or restore connections.json before finishing setup. Bessie has left the unreadable file untouched."
+            return false
+        }
         let previous = onboarding
-        onboarding = OnboardingState(step: .notifications, completed: true)
+        let previousCompletionBeforeSetupEntry = completionBeforeSetupEntry
+        let previousConnectionState = BessieConnectionState(
+            selectedConnectionID: selectedConnectionID,
+            defaultProjectConnectionID: defaultProjectConnectionID,
+            connections: connections
+        )
+        let connectionCandidate: BessieConnectionState?
         do {
-            try store.save(presentationState)
+            if let connection {
+                let accepted = try connection.validated()
+                var definitions = connections
+                if let index = definitions.firstIndex(where: { $0.id == accepted.id }) {
+                    definitions[index] = accepted
+                } else {
+                    definitions.append(accepted)
+                }
+                connectionCandidate = try BessieConnectionState.validated(
+                    selectedConnectionID: accepted.id,
+                    defaultProjectConnectionID: accepted.id,
+                    connections: definitions
+                )
+            } else {
+                connectionCandidate = nil
+            }
+        } catch {
+            onboardingCompletionError = "Bessie couldn't save the accepted herd. \(error.localizedDescription)"
+            return false
+        }
+        onboarding = OnboardingState(step: .notifications, completed: true)
+        completionBeforeSetupEntry = false
+        // The current run's notification choice commits atomically with
+        // completion: a persistence failure leaves both the in-memory
+        // preferences and the durable presentation state untouched.
+        var candidate = preferences
+        if let notificationPolicy { candidate.notifications = notificationPolicy }
+        do {
+            let acceptedPresentation = presentationState(preferences: candidate)
+            if let connectionCandidate {
+                let journal = BessieOnboardingSettingsJournal(
+                    previousPresentationExists: FileManager.default.fileExists(atPath: store.url.path),
+                    previousPresentation: presentationState(preferences: preferences),
+                    previousConnectionsExists: FileManager.default.fileExists(atPath: connectionStore.url.path),
+                    previousConnections: previousConnectionState,
+                    acceptedPresentation: acceptedPresentation,
+                    acceptedConnections: connectionCandidate
+                )
+                try BessieOnboardingSettingsTransaction.commit(
+                    journal: journal,
+                    journalURL: BessieOnboardingSettingsTransaction.journalURL(for: connectionStore.url),
+                    presentationStore: store,
+                    connectionStore: connectionStore
+                )
+            } else {
+                try store.save(acceptedPresentation)
+            }
+            if let connectionCandidate {
+                connections = connectionCandidate.connections
+                selectedConnectionID = connectionCandidate.selectedConnectionID
+                defaultProjectConnectionID = connectionCandidate.defaultProjectConnectionID
+                connectionError = nil
+            }
+            publishingPersistedPreferences = true
+            preferences = candidate
+            publishingPersistedPreferences = false
             onboardingCompletionError = nil
             return true
         } catch {
             onboarding = previous
+            completionBeforeSetupEntry = previousCompletionBeforeSetupEntry
             onboardingCompletionError = "Bessie couldn't save setup completion. \(error.localizedDescription)"
             BessieDiagnosticLog.append("Onboarding completion persistence failed: \(String(reflecting: error))")
             return false
@@ -513,6 +728,10 @@ final class BessieSettingsModel: ObservableObject {
 
     func reportOnboardingFocusFailure() {
         onboardingCompletionError = "Bessie couldn't focus the ready terminal. Try Finish again."
+    }
+
+    func clearOnboardingCompletionError() {
+        onboardingCompletionError = nil
     }
 
     private var presentationState: BessiePresentationState {
@@ -524,7 +743,10 @@ final class BessieSettingsModel: ObservableObject {
             lastWorkspaceID: lastWorkspaceIDByConnectionID[BessieConnectionDefinition.localBessie.id] ?? legacyLastWorkspaceID,
             lastWorkspaceIDByConnectionID: lastWorkspaceIDByConnectionID,
             preferences: preferences,
-            firstRealTerminalCompletionVersion: onboarding.completed ? BessiePresentationState.firstRealTerminalCompletionVersion : nil,
+            // A re-entered setup run is transient: the prior durable completion
+            // survives on disk until the replacement setup actually succeeds.
+            firstRealTerminalCompletionVersion: onboarding.completed || completionBeforeSetupEntry
+                ? BessiePresentationState.firstRealTerminalCompletionVersion : nil,
             panePresentationRevision: panePresentationLedger.revision == 0 ? nil : panePresentationLedger.revision,
             panePresentationPreferences: panePresentationLedger.records.isEmpty ? nil : panePresentationLedger.records,
             workspaceScope: workspaceScopePreference
