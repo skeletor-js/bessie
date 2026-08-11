@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import BessieCore
@@ -388,6 +389,26 @@ final class BessieConnectionTests: XCTestCase {
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr.sock:/home/hermes/.config/herdr/herdr.sock"))
         XCTAssertTrue(plan.sshArguments.contains("/tmp/bessie/hermes/herdr-client.sock:/home/hermes/.config/herdr/herdr-client.sock"))
         XCTAssertEqual(plan.sshArguments.suffix(2), ["-N", "hermes"])
+    }
+
+    func testRemoteBridgeCachePathIsDeterministicAndLeavesOpenSSHSuffixHeadroom() throws {
+        let connectionID = "bessie-onboarding-2025118d-daff-4541-958e-deaff5eb527f"
+        let cacheRoot = URL(fileURLWithPath: "/private/tmp/.bessie-501", isDirectory: true)
+        let first = RemoteHerdrBridge.localDirectoryURL(connectionID: connectionID, cacheRoot: cacheRoot)
+        let repeated = RemoteHerdrBridge.localDirectoryURL(connectionID: connectionID, cacheRoot: cacheRoot)
+        let other = RemoteHerdrBridge.localDirectoryURL(connectionID: connectionID + "-other", cacheRoot: cacheRoot)
+        let connection = BessieConnectionDefinition(id: connectionID, name: "Remote", kind: .ssh, sshHost: "hermes")
+        let plan = try RemoteHerdrBridgePlan(
+            connection: connection,
+            localDirectory: first,
+            remoteSocketPath: "/home/hermes/.config/herdr/herdr.sock"
+        )
+
+        XCTAssertEqual(first, repeated)
+        XCTAssertNotEqual(first, other)
+        XCTAssertEqual(first.deletingLastPathComponent(), cacheRoot)
+        XCTAssertTrue(first.lastPathComponent.hasPrefix(".r-"))
+        XCTAssertLessThan(plan.localControlPath.utf8.count + 17, MemoryLayout.size(ofValue: sockaddr_un().sun_path))
     }
 
     func testRemoteBridgeStartupOnlyRequestsRemoteStatus() throws {

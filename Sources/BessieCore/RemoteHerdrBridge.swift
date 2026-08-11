@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -89,6 +90,8 @@ public struct RemoteHerdrBridgePlan: Equatable, Sendable {
 }
 
 public final class RemoteHerdrBridge: @unchecked Sendable {
+    private static let openSSHSuffixHeadroom = 17
+
     public let connection: BessieConnectionDefinition
     private let sshPath: String
     private let cacheRoot: URL
@@ -118,14 +121,18 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         guard connection.kind == .ssh else { throw BessieConnectionError.invalidSSHHost }
         self.sshPath = sshPath
         self.fileManager = fileManager
-        self.cacheRoot = cacheRoot ?? URL(fileURLWithPath: "/tmp", isDirectory: true)
-            .appendingPathComponent("bessie-\(NSUserName())", isDirectory: true)
+        self.cacheRoot = cacheRoot ?? Self.defaultCacheRootURL
+        let controlPath = Self.localDirectoryURL(connectionID: connection.id, cacheRoot: self.cacheRoot)
+            .appendingPathComponent("ssh-control.sock").path
+        guard controlPath.utf8.count + Self.openSSHSuffixHeadroom < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
+            throw BessieConnectionError.tunnelFailed("The local SSH control path is too long.")
+        }
     }
 
     deinit { stop(removeCacheDirectory: false) }
 
     public func start() throws -> String {
-        let directory = cacheRoot.appendingPathComponent(safeID, isDirectory: true)
+        let directory = Self.localDirectoryURL(connectionID: connection.id, cacheRoot: cacheRoot)
         try prepareDirectory(directory)
 
         // 1) Healthy existing forwards (same process or ControlPersist master) — no SSH spawn.
@@ -183,10 +190,14 @@ public final class RemoteHerdrBridge: @unchecked Sendable {
         }
     }
 
-    private var safeID: String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
-        let mapped = connection.id.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" }
-        return String(mapped)
+    public static var defaultCacheRootURL: URL {
+        URL(fileURLWithPath: "/private/tmp/.bessie-\(getuid())", isDirectory: true)
+    }
+
+    public static func localDirectoryURL(connectionID: String, cacheRoot: URL) -> URL {
+        let digest = SHA256.hash(data: Data(connectionID.utf8))
+        let token = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return cacheRoot.appendingPathComponent(".r-\(token)", isDirectory: true)
     }
 
     private func prepareDirectory(_ directory: URL) throws {
