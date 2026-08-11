@@ -13,7 +13,7 @@ curl -i http://127.0.0.1:8787/appcast.xml
 curl -i http://127.0.0.1:8787/install
 ```
 
-Wrangler may choose another port when 8787 is occupied. Before release bytes exist, `/install` returns honest shell text that exits nonzero and exact `/appcast.xml` returns `503` plain text with `no-store`; neither endpoint falls through to landing-page HTML.
+Wrangler may choose another port when 8787 is occupied. `/install` returns the pinned build-15 shell installer. It verifies the immutable archive checksum, Developer ID signature, notarization ticket, and Gatekeeper assessment before replacing `/Applications/Bessie.app`; it never invokes `sudo`. Until a signed feed is staged, exact `/appcast.xml` returns `503` plain text with `no-store`. Neither endpoint falls through to landing-page HTML.
 
 ## Stage a signed appcast
 
@@ -57,7 +57,7 @@ npx wrangler whoami
 npm run deploy
 ```
 
-The predeploy gate reruns site checks and validates the deployment's appcast state. A pre-release deploy may have neither an appcast nor a staging receipt; once either exists, both are required and the signed feed is reverified. A Workers preview deployment is not production acceptance. Attaching `bessie.dev`, changing DNS, or exposing the production appcast are separate maintainer operations.
+The predeploy gate reruns site checks and validates the deployment's appcast state. A site deploy may have neither an appcast nor a staging receipt; once either exists, both are required and the signed feed is reverified. A Workers preview deployment is not production acceptance. Attaching `bessie.dev`, changing DNS, or exposing the production appcast are separate maintainer operations.
 
 Before attaching a custom domain, record existing apex, `www`, MX, TXT, Worker routes, and the rollback deployment. Never replace unrelated DNS records. Publish the appcast only after the GitHub release asset is public, immutable, non-draft, and anonymously byte-verified.
 

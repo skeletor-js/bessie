@@ -38,8 +38,11 @@ if (!config.includes('openingVideo:true') || !config.includes('coldOpen:false'))
 if (!main.includes('finishOpening') || !css.includes('#site-opening.is-done') || !css.includes('prefers-reduced-motion: reduce')) {
   throw new Error('site opening video is missing its fail-open or reduced-motion behavior');
 }
-if (!main.includes('row.hidden = !download')) {
-  throw new Error('unavailable install command is not hidden');
+if (!html.includes('data-copy-row') || !html.includes('data-install') || !config.includes("installCmd:'curl -fsSL https://bessie.dev/install | sh'")) {
+  throw new Error('curl installer UI is missing');
+}
+if (!config.includes("downloadUrl:'https://github.com/skeletor-js/bessie/releases/download/v1.0.0/Bessie-1.0.0-15.zip'")) {
+  throw new Error('public release download URL is missing');
 }
 for (const stale of [
   'Point it at the Herdr you already run.', 'it starts nothing',

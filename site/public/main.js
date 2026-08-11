@@ -91,8 +91,8 @@ class BessieLanding {
     }
     const download = (this.props.downloadUrl || '').trim();
     for (const el of r.querySelectorAll('[data-link="download"]')) { el.href = download || '#get'; if(download){el.target='_blank';el.rel='noopener'}else{el.removeAttribute('target');el.removeAttribute('rel')} }
-    for (const row of r.querySelectorAll('[data-copy-row]')) row.hidden = !download;
     const cmd = (this.props.installCmd || '').trim();
+    for (const row of r.querySelectorAll('[data-copy-row]')) row.hidden = !cmd;
     if (cmd){
       for (const el of r.querySelectorAll('[data-install]')){
         el.textContent = cmd;

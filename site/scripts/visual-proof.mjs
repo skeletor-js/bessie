@@ -49,12 +49,18 @@ async function capture(width) {
   if (repoLinks.some(link => link.href !== 'https://github.com/skeletor-js/bessie' || link.rel !== 'noopener' || link.target !== '_blank')) {
     throw new Error(`${width}px: repo CTA configuration is wrong`);
   }
-  if (await page.locator('[data-link="download"]').evaluateAll(elements => elements.some(element => element.getAttribute('href') !== '#get'))) {
-    throw new Error(`${width}px: unavailable download CTA does not fail honestly to #get`);
+  const releaseURL = 'https://github.com/skeletor-js/bessie/releases/download/v1.0.0/Bessie-1.0.0-15.zip';
+  if (await page.locator('[data-link="download"]').evaluateAll((elements, expected) => elements.some(element =>
+    element.getAttribute('href') !== expected || element.getAttribute('target') !== '_blank' || element.getAttribute('rel') !== 'noopener'
+  ), releaseURL)) {
+    throw new Error(`${width}px: release download CTA configuration is wrong`);
   }
 
-  if (await page.locator('[data-copy-row]:visible').count()) {
-    throw new Error(`${width}px: unavailable install command is visible`);
+  if (await page.locator('[data-copy-row]:visible').count() !== 2) {
+    throw new Error(`${width}px: curl installer rows are not visible`);
+  }
+  if (await page.locator('[data-install]').evaluateAll(elements => elements.some(element => element.textContent !== 'curl -fsSL https://bessie.dev/install | sh'))) {
+    throw new Error(`${width}px: curl installer command is wrong`);
   }
 
   const age = page.locator('.rr-age').first();
@@ -66,8 +72,8 @@ async function capture(width) {
     const response = await fetch('/install');
     return { status: response.status, body: await response.text() };
   });
-  if (install.status !== 200 || !/No binary was downloaded[\s\S]*exit 1/.test(install.body)) {
-    throw new Error(`${width}px: /install is not the honest unavailable stub`);
+  if (install.status !== 200 || !/Bessie-1\.0\.0-15\.zip[\s\S]*codesign --verify[\s\S]*stapler validate[\s\S]*spctl --assess/.test(install.body)) {
+    throw new Error(`${width}px: /install is not the verified build-15 installer`);
   }
   await page.close();
 }
@@ -79,6 +85,7 @@ async function verifyFallbackAndWatchdog() {
       openingVideo: false,
       coldOpen: false,
       parallax: false,
+      installCmd: 'curl -fsSL https://bessie.dev/install | sh',
       downloadUrl: 'https://example.invalid/Bessie.zip',
     };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });

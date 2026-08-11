@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { validateAppcast } from '../lib/appcast.mjs';
 import worker from '../worker.js';
+import { installer } from '../lib/installer.mjs';
 import { stagePreparedAppcast, verifyDeployAppcastState, verifyStagedAppcast } from './stage-appcast.mjs';
 
 const signature = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
@@ -156,7 +157,13 @@ const installResponse = await worker.fetch(
   { ASSETS: assetsReturning(validFeed) },
 );
 assert.equal(installResponse.status, 200);
-assert.match(await installResponse.text(), /No binary was downloaded[\s\S]*exit 1/);
+assert.equal(await installResponse.text(), installer);
+assert.match(installer, /Bessie-1\.0\.0-15\.zip/);
+assert.match(installer, /4875eba124d34d724fc3f899beb1f5e29afe29c37d228d7cb61d72589579e534/);
+for (const required of ['codesign --verify --deep --strict', 'xcrun stapler validate', 'spctl --assess --type execute']) {
+  assert.match(installer, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+}
+assert.doesNotMatch(installer, /\bsudo\b/);
 
 const work = await mkdtemp(path.join(os.tmpdir(), 'bessie-site-appcast-'));
 try {

@@ -1,14 +1,5 @@
 import { validateAppcast } from './lib/appcast.mjs';
-
-const installer = `#!/bin/sh
-set -eu
-cat >&2 <<'MESSAGE'
-Bessie for macOS is not published yet.
-No binary was downloaded and no system changes were made.
-Follow releases at https://github.com/skeletor-js/bessie/releases
-MESSAGE
-exit 1
-`;
+import { installer } from './lib/installer.mjs';
 
 const machineHeaders = {
   'X-Content-Type-Options': 'nosniff',
