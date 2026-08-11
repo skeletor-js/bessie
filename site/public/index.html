@@ -60,9 +60,9 @@
 <h2 data-rise="" style="margin:0;font:500 34px/1.18 var(--font);letter-spacing:-0.02em;color:var(--strong);text-wrap:pretty;">Every agent. One native window.</h2>
 <p data-rise="" style="margin:16px 0 0;font:400 14.5px/1.65 var(--font);color:var(--default);text-wrap:pretty;">Each pane is a real Herdr terminal. Read output, answer prompts, interrupt a run, or keep working without switching apps or losing the rest of the herd.</p>
 </div>
-<div data-par="64" data-reveal="" style="width:1040px;max-width:100%;height:718px;position:relative;">
-<div class="win" data-lights="mono" data-fit="1180x815" style="width:1180px;height:815px;transform:scale(.8814);transform-origin:top left;">
-<div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-title">bessie — the herd</span></div>
+<div data-par="64" data-reveal="" style="width:1040px;max-width:100%;height:652px;position:relative;">
+<div class="win" data-lights="mono" data-fit="1180x740" style="width:1180px;height:740px;transform:scale(.8814);transform-origin:top left;">
+<div class="win-bar" aria-label="Native window title bar"><span class="win-lights"><i></i><i></i><i></i></span></div>
 <div class="win-body">
 <div class="rail" style="width:var(--rail-w);">
 <div class="rail-top"><div class="rail-brand"><span class="flame"><img class="bessie-logo" src="/assets/bessie-logo.svg" alt=""></span></div><button class="ricon"><i class="ph-thin ph-magnifying-glass"></i></button></div>
@@ -77,22 +77,22 @@
 </div>
 <div style="height:1px;background:var(--border);margin:11px 1px 0;"></div>
 <div class="rail-group"><div class="rail-group-label">Needs you · 2</div>
-<button class="rail-row is-blocked is-selected"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">claude · bessie / dev / theme</span></span></button>
-<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">codex · herdr-docs / main / schema</span></span></button>
+<button class="rail-row is-blocked is-selected"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">claude · local · bessie · dev</span></span></button>
+<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">codex · local · herdr-docs · main</span></span></button>
 </div>
 <div class="rail-group"><div class="rail-group-label">Working · 2</div>
-<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Animate the cowprint field</span><span class="rr-loc"><span class="rr-loc-text">codex · bessie / dev / motion</span></span></button>
-<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Trim the rail render cost</span><span class="rr-loc"><span class="rr-loc-text">grok · bessie / dev / perf</span></span></button>
+<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Animate the cowprint field</span><span class="rr-loc"><span class="rr-loc-text">codex · local · bessie · dev</span></span></button>
+<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Trim the rail render cost</span><span class="rr-loc"><span class="rr-loc-text">grok · local · bessie · dev</span></span></button>
 </div>
 <div class="rail-group"><div class="rail-group-label">Done · 2</div>
-<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Sync client docs to build 3</span><span class="rr-loc"><span class="rr-loc-text">claude · herdr-docs / main / sync</span></span></button>
-<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Fix the flaky snapshot test</span><span class="rr-loc"><span class="rr-loc-text">amp · bessie / tests / snapshots</span></span></button>
+<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Sync client docs to build 3</span><span class="rr-loc"><span class="rr-loc-text">claude · local · herdr-docs · main</span></span></button>
+<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Fix the flaky snapshot test</span><span class="rr-loc"><span class="rr-loc-text">amp · local · bessie · tests</span></span></button>
 </div>
 <div class="rail-group"><div class="rail-group-label">Idle · 1</div>
-<button class="rail-row"><span class="state state-idle"></span><span class="rr-title">Draft release notes</span><span class="rr-loc"><span class="rr-loc-text">claude · herdr-docs / main / notes</span></span></button>
+<button class="rail-row"><span class="state state-idle"></span><span class="rr-title">Draft release notes</span><span class="rr-loc"><span class="rr-loc-text">claude · local · herdr-docs · main</span></span></button>
 </div>
 <div class="rail-group"><div class="rail-group-label">Unknown · 1</div>
-<button class="rail-row"><span class="state state-unknown"></span><span class="rr-title">scratch</span><span class="rr-loc"><span class="rr-loc-text">codex · bessie / dev / scratch</span></span></button>
+<button class="rail-row"><span class="state state-unknown"></span><span class="rr-title">scratch</span><span class="rr-loc"><span class="rr-loc-text">codex · local · bessie · dev</span></span></button>
 </div>
 <div class="rail-group">
 <button class="rail-item" style="color:var(--subtle);"><i class="ph-thin ph-caret-right" style="font-size:11px;"></i><i class="ph-thin ph-terminal-window" style="font-size:13px;"></i><span class="ri-label">Shells</span><span style="font:400 11px/1 var(--mono);color:var(--faint);">3</span></button>
@@ -101,12 +101,6 @@
 <div class="rail-foot"><button class="foot-settings"><i class="ph-thin ph-gear"></i>Settings</button><button class="ricon"><i class="ph-thin ph-sun"></i></button></div>
 </div>
 <div class="main">
-<div class="topbar"><div class="crumbs"><span>local</span><span class="sep">/</span><span>bessie</span><span class="sep">/</span><span>dev</span><span class="sep">/</span><span class="head">theme</span></div><span class="spacer"></span><div class="tb-actions"><button class="btn-icon"><i class="ph-thin ph-dots-three"></i></button></div></div>
-<div style="display:flex;align-items:center;gap:2px;height:34px;padding:0 10px;border-bottom:1px solid var(--border);flex-shrink:0;">
-<span class="wb-tab is-active"><span class="state state-needs"></span>dev<span style="font:400 10px/1 var(--mono);color:var(--faint);">4</span></span>
-<span class="wb-tab">tests<span style="font:400 10px/1 var(--mono);color:var(--faint);">1</span></span>
-<button class="btn-icon" style="width:24px;height:24px;"><i class="ph-thin ph-plus"></i></button>
-</div>
 <div class="pane-grid">
 <div class="pane is-active is-blocked">
 <div class="pane-head"><span class="state state-needs"></span><span class="pane-name">theme</span><span class="pane-meta">claude · 58×26 · 38s</span><span style="flex:1;"></span><button class="btn-icon"><i class="ph-thin ph-corners-out ico-12"></i></button></div>
@@ -173,13 +167,13 @@
 <div data-par="46" data-reveal="" style="width:420px;max-width:100%;">
 <div style="display:flex;flex-direction:column;gap:9px;padding:13px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--r-card);">
 <div style="display:flex;align-items:center;gap:8px;padding:0 2px 3px;"><span style="font:600 11px/1 var(--mono);color:var(--faint);letter-spacing:0.05em;text-transform:uppercase;">Needs you · 2</span></div>
-<button class="rail-row is-blocked is-selected"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">claude · bessie / dev / theme</span></span></button>
-<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">codex · herdr-docs / main / schema</span></span></button>
+<button class="rail-row is-blocked is-selected"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">claude · local · bessie · dev</span></span></button>
+<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">codex · local · herdr-docs · main</span></span></button>
 <div style="height:1px;background:var(--border);margin:2px 0;"></div>
-<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Animate the cowprint field</span><span class="rr-loc"><span class="rr-loc-text">codex · bessie / dev / motion</span></span></button>
-<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Sync client docs to build 3</span><span class="rr-loc"><span class="rr-loc-text">claude · herdr-docs / main / sync</span></span></button>
-<button class="rail-row"><span class="state state-idle"></span><span class="rr-title">Draft release notes</span><span class="rr-loc"><span class="rr-loc-text">claude · herdr-docs / main / notes</span></span></button>
-<button class="rail-row"><span class="state state-unknown"></span><span class="rr-title">scratch</span><span class="rr-loc"><span class="rr-loc-text">codex · bessie / dev / scratch</span></span></button>
+<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Animate the cowprint field</span><span class="rr-loc"><span class="rr-loc-text">codex · local · bessie · dev</span></span></button>
+<button class="rail-row"><span class="state state-done"></span><span class="rr-title">Sync client docs to build 3</span><span class="rr-loc"><span class="rr-loc-text">claude · local · herdr-docs · main</span></span></button>
+<button class="rail-row"><span class="state state-idle"></span><span class="rr-title">Draft release notes</span><span class="rr-loc"><span class="rr-loc-text">claude · local · herdr-docs · main</span></span></button>
+<button class="rail-row"><span class="state state-unknown"></span><span class="rr-title">scratch</span><span class="rr-loc"><span class="rr-loc-text">codex · local · bessie · dev</span></span></button>
 </div>
 </div>
 </div>
@@ -191,18 +185,18 @@
 <h2 data-rise="" style="margin:0;font:500 34px/1.18 var(--font);letter-spacing:-0.02em;color:var(--strong);text-wrap:pretty;">Jump straight to any pane.</h2>
 <p data-rise="" style="margin:16px 0 0;font:400 14.5px/1.65 var(--font);color:var(--default);text-wrap:pretty;">Open the command palette and type part of an agent, pane, workspace, project, or command name. Every result includes its location, so the right <span style="font-family:var(--mono);">scratch</span> is easy to spot.</p>
 </div>
-<div data-par="70" data-reveal="" style="width:100%;max-width:760px;">
-<div class="cmdk" style="width:100%;">
+<div data-par="70" data-reveal="" style="width:560px;max-width:100%;">
+<div class="cmdk">
 <div class="cmdk-input"><i class="ph-thin ph-magnifying-glass"></i><input value="" data-typed="sch" readonly=""><kbd>esc</kbd></div>
 <div class="cmdk-list" data-stagger="46">
-<div class="cmdk-row is-first"><span class="state state-needs"></span><span class="cl">schema<span style="color:var(--subtle);"> · Migrate docs to schema 3</span></span><span class="cg" style="font-family:var(--mono);">herdr-docs / main · 2m</span></div>
+<div class="cmdk-row is-first"><span class="state state-needs"></span><span class="cl">schema<span style="color:var(--subtle);"> · Migrate docs to schema 3</span></span><span class="cg" style="font-family:var(--mono);">herdr-docs / main</span></div>
 <div class="cmdk-row"><span class="state state-done"></span><span class="cl">snapshots<span style="color:var(--subtle);"> · Fix the flaky snapshot test</span></span><span class="cg" style="font-family:var(--mono);">bessie / tests</span></div>
-<div class="cmdk-row"><i class="ph-thin ph-terminal-window"></i><span class="cl">scratch</span><span class="cg" style="font-family:var(--mono);">bessie / dev</span></div>
+<div class="cmdk-row"><span class="state state-unknown"></span><span class="cl">scratch<span style="color:var(--subtle);"> · codex</span></span><span class="cg" style="font-family:var(--mono);">bessie / dev</span></div>
 <div class="cmdk-row"><i class="ph-thin ph-stack"></i><span class="cl">docs sweep</span><span class="cg">project · 4 panes</span></div>
-<div class="cmdk-row"><i class="ph-thin ph-square-split-horizontal"></i><span class="cl">Split pane</span><span class="cg">⌃S "</span></div>
+<div class="cmdk-row"><i class="ph-thin ph-terminal-window"></i><span class="cl">Split pane</span><span class="cg">⌃S "</span></div>
 <div class="cmdk-row"><i class="ph-thin ph-hard-drives"></i><span class="cl">Reconnect ci-box</span><span class="cg">herd · lost 4m</span></div>
 </div>
-<div class="cmdk-foot"><span>↑↓ move</span><span>↵ open</span><span>⌘↩ alternate</span><span style="margin-left:auto;">panes · workspaces · projects · herds · commands</span></div>
+<div class="cmdk-foot"><span>↑↓ move</span><span>↵ open</span><span style="margin-left:auto;">panes · workspaces · projects · herds · commands</span></div>
 </div>
 </div>
 </div>
@@ -221,16 +215,16 @@
 <div class="zen-shell" style="background:var(--code-bg);border:1px solid var(--border);border-radius:var(--r-card);overflow:hidden;height:420px;">
 <aside class="zen-rail" aria-label="Collapsed herd rail">
 <span class="flame"><img class="bessie-logo" src="/assets/bessie-logo.svg" alt=""></span>
-<i class="ph-thin ph-magnifying-glass"></i>
-<span class="zen-divider"></span>
-<span class="state state-needs"></span>
-<span class="state state-working"></span>
-<span class="state state-working"></span>
-<span class="state state-done"></span>
-<span class="state state-idle"></span>
-<span class="state state-unknown"></span>
+<span class="zen-state is-selected"><span class="state state-needs"></span></span>
+<span class="zen-state"><span class="state state-needs"></span></span>
+<span class="zen-state"><span class="state state-working"></span></span>
+<span class="zen-state"><span class="state state-working"></span></span>
+<span class="zen-state"><span class="state state-done"></span></span>
+<span class="zen-state"><span class="state state-done"></span></span>
+<span class="zen-state"><span class="state state-idle"></span></span>
+<span class="zen-state"><span class="state state-unknown"></span></span>
 <span class="zen-spacer"></span>
-<i class="ph-thin ph-gear"></i>
+<i class="ph-thin ph-caret-right"></i>
 </aside>
 <div style="min-width:0;display:flex;flex:1;flex-direction:column;">
 <div style="flex-shrink:0;display:flex;align-items:center;gap:10px;height:34px;padding:0 18px;opacity:.5;">
@@ -259,21 +253,21 @@
 </div>
 <div style="display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:70px;align-items:center;">
 <div data-par="56" data-reveal="" style="min-width:0;display:flex;justify-content:center;">
-<div style="width:340px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:10px;overflow:hidden;">
-<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);">
+<div style="width:312px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:10px;overflow:hidden;">
+<div style="display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-bottom:1px solid var(--border);box-sizing:border-box;">
 <span style="font:500 12.5px/1 var(--font);color:var(--strong);">2 need you · 2 working</span>
 </div>
 <div style="padding:5px;display:flex;flex-direction:column;gap:5px;">
-<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">local / bessie / theme · claude</span></span></button>
-<button class="rail-row is-blocked"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">local / herdr-docs / schema · codex</span></span></button>
+<button class="rail-row menu-row is-highlighted"><span class="state state-needs"></span><span class="rr-title">Migrate docs to schema 3</span><span class="rr-loc"><span class="rr-loc-text">herdr-docs / main / schema</span></span></button>
+<button class="rail-row menu-row is-highlighted"><span class="state state-needs"></span><span class="rr-title">Replace the cream theme</span><span class="rr-loc"><span class="rr-loc-text">bessie / dev / theme</span></span></button>
 </div>
 <div style="padding:4px 5px 6px;border-top:1px solid var(--border);">
 <div class="menu-status-label">Working</div>
-<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Animate the cowprint field</span><span class="rr-loc"><span class="rr-loc-text">local / bessie / motion · codex</span></span></button>
-<button class="rail-row"><span class="state state-working"></span><span class="rr-title">Prove direct write ordering</span><span class="rr-loc"><span class="rr-loc-text">ci-box / herdr-core / ordering · amp</span></span></button>
-<div class="menu-totals"><span><span class="state state-done"></span>Done · 4</span><span><span class="state state-idle"></span>Idle · 3</span><span><span class="state state-unknown"></span>Unknown · 1</span></div>
+<button class="rail-row menu-row"><span class="state state-working"></span><span class="rr-title">Verify terminal input</span><span class="rr-loc"><span class="rr-loc-text">bessie / dev / terminal</span></span></button>
+<button class="rail-row menu-row"><span class="state state-working"></span><span class="rr-title">Run release checks</span><span class="rr-loc"><span class="rr-loc-text">bessie / dev / verify</span></span></button>
 </div>
-<div style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--border);background:var(--bg-inset);">
+<div class="menu-totals"><span><span class="state state-done"></span><span>Done</span><strong>4</strong></span><span><span class="state state-idle"></span><span>Idle</span><strong>3</strong></span><span><span class="state state-unknown"></span><span>Unknown</span><strong>1</strong></span></div>
+<div style="display:flex;align-items:center;gap:6px;height:46px;padding:0 10px;border-top:1px solid var(--border);background:var(--bg-inset);box-sizing:border-box;">
 <button class="btn btn-sm btn-quiet" style="flex:1;justify-content:flex-start;">Open Bessie<kbd style="margin-left:auto;">⌘⇧B</kbd></button>
 </div>
 </div>
