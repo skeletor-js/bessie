@@ -46,6 +46,7 @@ final class OnboardingStateTests: XCTestCase {
         XCTAssertFalse(onboarding.contains("ForEach(settings.connections.filter"))
         XCTAssertTrue(onboarding.contains("Button { prepareAddRemote() } label: {"))
         XCTAssertTrue(app.contains("onboardingConnectionID = onboardingCoordinator.attempt?.connectionID"))
+        XCTAssertTrue(app.contains("onboardingPath = onboardingCoordinator.attempt?.path ?? Self.designOnboardingPath"))
     }
 
     private func appSource(_ name: String) throws -> String {

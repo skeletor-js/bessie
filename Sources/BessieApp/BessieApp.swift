@@ -1999,7 +1999,7 @@ struct ConnectView: View {
            !settings.connections.contains(where: { $0.id == onboardingConnectionID }) {
             self.onboardingConnectionID = nil
         }
-        onboardingPath = Self.designOnboardingPath
+        onboardingPath = onboardingCoordinator.attempt?.path ?? Self.designOnboardingPath
         if let artboard = ProcessInfo.processInfo.environment["BESSIE_DESIGN_ARTBOARD"],
            (10...13).contains(Int(artboard) ?? 0) {
             showingColdOpen = false
