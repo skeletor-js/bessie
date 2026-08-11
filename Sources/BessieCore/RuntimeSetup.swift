@@ -326,6 +326,9 @@ public enum OnboardingPersistenceError: Error, Equatable, LocalizedError {
 
 public enum OnboardingPathValidator {
     public static func absolute(_ value: String) throws -> String {
+        guard !value.contains("\n"), !value.contains("\r") else {
+            throw OnboardingPersistenceError.pathMustBeAbsolute
+        }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/"), !trimmed.contains("\0") else { throw OnboardingPersistenceError.pathMustBeAbsolute }
         return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL.path

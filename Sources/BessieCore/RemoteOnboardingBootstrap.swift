@@ -142,7 +142,8 @@ public final class RemoteOnboardingBootstrap: @unchecked Sendable {
     /// checks directory, search, read, and write usability without evaluating the value as shell.
     public static func pathValidationArguments(host: String) -> [String] {
         SSHHostKeyPolicy.requiredArguments + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
-            "IFS= read -r p || exit 20; [ -d \"$p\" ] && [ -r \"$p\" ] && [ -w \"$p\" ] && [ -x \"$p\" ] || exit 20"]
+            "IFS= read -r p || exit 20; if IFS= read -r _; then exit 20; fi; [ -d \"$p\" ] && [ -r \"$p\" ] && [ -w \"$p\" ] && [ -x \"$p\" ] || exit 20",
+        ]
     }
 
     private func accept(_ snapshot: HerdrSnapshot, connection: BessieConnectionDefinition, path: String,

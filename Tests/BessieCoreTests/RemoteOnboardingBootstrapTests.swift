@@ -39,20 +39,27 @@ final class RemoteOnboardingBootstrapTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let script = try XCTUnwrap(RemoteOnboardingBootstrap.pathValidationArguments(host: "studio").last)
-        let process = Process()
-        let input = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
-        process.currentDirectoryURL = root
-        process.standardInput = input
-        try process.run()
-        input.fileHandleForWriting.write(Data("\(directory.path)\n".utf8))
-        try input.fileHandleForWriting.close()
-        process.waitUntilExit()
-
-        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(try executePathValidation(input: "\(directory.path)\n", currentDirectory: root), 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testEmbeddedNewlineIsRejectedByShellAndBeforeBootstrapSideEffects() throws {
+        XCTAssertEqual(try executePathValidation(input: "/tmp\n/definitely-not-a-directory\n"), 20)
+
+        let fake = FakeRemoteBootstrap(commands: [
+            .init(exitCode: 0, stdout: Self.sessions()),
+            .init(exitCode: 20),
+        ])
+        XCTAssertThrowsError(try fake.bootstrap().bootstrap(
+            definition: Self.connection,
+            path: "/tmp\n/definitely-not-a-directory",
+            sessionName: "bessie-new"
+        )) {
+            XCTAssertEqual($0 as? OnboardingPersistenceError, .pathMustBeAbsolute)
+        }
+        XCTAssertTrue(fake.arguments.isEmpty)
+        XCTAssertTrue(fake.registered.isEmpty)
+        XCTAssertEqual(fake.attachCount, 0)
     }
 
     func testAttachUsesForcedPTYAndSelectedCWDWaitsForDetachedThenStopsBeforeContinuedProof() throws {
@@ -87,6 +94,22 @@ final class RemoteOnboardingBootstrapTests: XCTestCase {
     }
 
     private static let connection = BessieConnectionDefinition(id: "remote", name: "Remote", kind: .ssh, sshHost: "studio")
+
+    private func executePathValidation(input bytes: String, currentDirectory: URL? = nil) throws -> Int32 {
+        let script = try XCTUnwrap(RemoteOnboardingBootstrap.pathValidationArguments(host: "studio").last)
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.currentDirectoryURL = currentDirectory
+        process.standardInput = input
+        try process.run()
+        input.fileHandleForWriting.write(Data(bytes.utf8))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
     private static let successCommands: [RemoteBootstrapCommandResult] = [
         .init(exitCode: 0, stdout: sessions()), .init(exitCode: 0), .init(exitCode: 0, stdout: status(detached: true)),
         .init(exitCode: 0, stdout: status(detached: true)),

@@ -102,6 +102,8 @@ final class RuntimeSetupTests: XCTestCase {
 
     func testAbsolutePathAndRemoteAttachCommandAreSafeAndUseSelectedCWD() throws {
         XCTAssertThrowsError(try OnboardingPathValidator.absolute("relative"))
+        XCTAssertThrowsError(try OnboardingPathValidator.absolute("/tmp\n/not-the-selected-path"))
+        XCTAssertThrowsError(try OnboardingPathValidator.absolute("/tmp\r/not-the-selected-path"))
         let connection = BessieConnectionDefinition(name: "Remote", kind: .ssh, sshHost: "studio", session: "old")
         let args = try RemoteHerdrBridgePlan.remoteAttachArguments(for: connection, session: "bessie-new", directory: "/srv/my work")
         XCTAssertTrue(args.contains("-tt")); XCTAssertEqual(args.last, "cd -- '/srv/my work' && exec herdr session attach bessie-new")
