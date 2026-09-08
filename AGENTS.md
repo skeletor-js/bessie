@@ -51,20 +51,20 @@ No private workspace, personal machine path, or off-repository document is requi
 
 ## Validation
 
-Run the ordinary repository checks:
+For code changes, run the ordinary repository checks below. Documentation-only changes need relevant content and link checks, not a native build:
 
 ```bash
 ./scripts/check.sh
 ```
 
-Native behavior must also be exercised on macOS. Use focused Swift tests for changed behavior and verify observable terminal input/output against a real isolated Herdr pane. For release candidates, follow `docs/releases/README.md` and `scripts/mac-verify.sh`.
+Exercise changed native behavior on macOS using focused Swift tests or direct checks. Verify terminal input/output against a real isolated Herdr pane when terminal behavior changes. Use `docs/releases/README.md` and `scripts/mac-verify.sh` for release candidates, not ordinary edits. Reuse passing results unless relevant code, failures, or concrete concerns justify another run.
 
 Do not delete, skip, weaken, narrow, or relabel a check to manufacture a pass. Compilation alone is not acceptance for UI, terminal, lifecycle, packaging, or update behavior.
 
 ## Working discipline
 
 - Match existing Swift and shell conventions.
-- Add focused tests for model decoding, transport envelopes, state transitions, layout projection, compatibility checks, and terminal frame/input sequencing.
+- For changes to decoding, transport, state, layout, compatibility, or terminal sequencing, reuse focused tests; add a regression test when it protects an uncovered failure.
 - Keep dependencies and abstractions narrow.
 - Never commit credentials, signing material, notarization profiles, local runtime state, build products, or generated release secrets.
 - Keep committed documentation and configuration portable. Do not add personal usernames, machine-specific absolute paths, private workstream references, or local evidence directories except clearly synthetic values inside tests.
