@@ -33,7 +33,6 @@ from pathlib import Path
 
 contributor_files = [
     Path("AGENTS.md"),
-    Path("CLAUDE.md"),
     Path("CONTRIBUTING.md"),
     Path(".github/copilot-instructions.md"),
     Path(".agents/skills/operating-bessie/SKILL.md"),
@@ -54,8 +53,6 @@ for path in contributor_files:
         if marker in lowered:
             raise SystemExit(f"personal or machine-specific reference in {path}: {marker}")
 
-if Path("CLAUDE.md").read_text(encoding="utf-8").splitlines()[-1] != "@AGENTS.md":
-    raise SystemExit("CLAUDE.md must import AGENTS.md instead of duplicating contributor policy")
 PY
 
 production_bundle_id=$(BESSIE_PACKAGE_VARIANT=production BESSIE_CODESIGN_IDENTITY=identity-check ./scripts/package-app.sh --print-bundle-identifier)
